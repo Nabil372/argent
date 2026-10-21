@@ -118,6 +118,11 @@ describe("classifyMcpEntry", () => {
     expect(classifyMcpEntry(entry, ctx()).status).toBe("ok");
   });
 
+  it("doesn't count a package that only contains the argent name as on-demand", () => {
+    const entry = { command: "npx", args: ["-y", "-p", "@swmansion/argent-fork", "argent", "mcp"] };
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("error");
+  });
+
   it("fails entries that don't end in `mcp`", () => {
     for (const entry of [
       { command: "argent", args: [] },
