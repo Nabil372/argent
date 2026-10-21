@@ -67,11 +67,22 @@ const CASES = {
       summary: "1. tool: screenshot {}",
       target: undefined,
     },
+    {
+      // A summary entry is one line: a line break in the name must not split it.
+      step: { kind: "tool", name: "key\nboard", args: {} },
+      summary: "1. tool: key\\nboard {}",
+      target: undefined,
+    },
   ],
   "echo": [
     {
       step: { kind: "echo", message: "checkout starts here" },
       summary: "1. echo: checkout starts here",
+      target: undefined,
+    },
+    {
+      step: { kind: "echo", message: "first\r\nsecond\u001b[2J" },
+      summary: "1. echo: first\\r\\nsecond\\u001b[2J",
       target: undefined,
     },
   ],
