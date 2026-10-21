@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { FAILURE_CODES, getFailureSignal, type DeviceInfo } from "@argent/registry";
 import { goBack, goForward, navigate, reload } from "../src/chromium-server/navigation";
+import {
+  chromiumImpl,
+  type OpenUrlChromiumServices,
+} from "../src/tools/open-url/platforms/chromium";
 import type { CDPClient } from "../src/utils/debugger/cdp-client";
 
 function stubCdp(history?: {
@@ -23,9 +28,24 @@ describe("chromium-server/navigation", () => {
 
   it("navigate: throws on the errorText of a failed navigation", async () => {
     const send = vi.fn().mockResolvedValue({ errorText: "net::ERR_NAME_NOT_RESOLVED" });
-    await expect(navigate({ send } as unknown as CDPClient, "http://x.invalid/")).rejects.toThrow(
+    const err = await navigate({ send } as unknown as CDPClient, "http://x.invalid/").catch(
+      (e: unknown) => e
+    );
+    expect((err as Error).message).toBe(
       "Chromium could not navigate to http://x.invalid/: net::ERR_NAME_NOT_RESOLVED"
     );
+    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.CHROMIUM_NAVIGATE_FAILED);
+  });
+
+  it("open-url: propagates a failed navigation without refreshing the viewport", async () => {
+    const refreshViewport = vi.fn();
+    const services = {
+      chromium: { navigate: vi.fn().mockRejectedValue(new Error("rejected")), refreshViewport },
+    } as unknown as OpenUrlChromiumServices;
+    await expect(
+      chromiumImpl.handler(services, { udid: "chromium-cdp-9222", url: "x://y" }, {} as DeviceInfo)
+    ).rejects.toThrow("rejected");
+    expect(refreshViewport).not.toHaveBeenCalled();
   });
 
   it("navigate: resolves on an HTTP error status", async () => {
