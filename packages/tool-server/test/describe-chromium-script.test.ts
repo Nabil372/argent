@@ -803,7 +803,7 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     expect(findById(tree, "txt")!.label).toBe("typed text");
   });
 
-  // reference/flow-yaml.mdx lists these as fields `'^$'` never passes on.
+  // reference/e2e-yaml.mdx lists these as fields `'^$'` never passes on.
   it("reads an input's aria-label or placeholder in place of its value, and an empty one's title", () => {
     const { tree } = run([
       inputEl({ value: "abc", attrs: { "id": "aria", "aria-label": "Name" }, rect: BOX }),
