@@ -60,6 +60,7 @@ vi.mock("../src/blueprints/ax-service", () => ({
 }));
 
 import { createBootDeviceTool } from "../src/tools/devices/boot-device";
+import { InvalidToolInputError } from "../src/utils/capability";
 import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
 
 describe("boot-device — iOS path", () => {
@@ -699,6 +700,36 @@ describe("boot-device — input validation (exclusive udid/avdName)", () => {
   it("rejects when neither udid nor avdName is provided — no target", async () => {
     const tool = createBootDeviceTool({ resolveService: async () => {} } as unknown as Registry);
     await expect(tool.execute!({}, {})).rejects.toThrow(/exactly one of `udid`/);
+  });
+
+  it.each(["remote:", "remote:chromium-cdp-9222", "remote:emulator-5554", "remote:remote:x"])(
+    "refuses %s before it reaches sim-remote",
+    async (udid) => {
+      mockExecFile.mockClear();
+      const tool = createBootDeviceTool({
+        resolveService: async () => ({}),
+      } as unknown as Registry);
+      const error = await tool.execute!({}, { udid }).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(InvalidToolInputError);
+      expect((error as Error).message).toBe(`'${udid}' is not \`remote:<simulator udid>\`.`);
+      expect(mockExecFile).not.toHaveBeenCalled();
+    }
+  );
+
+  it("passes remote:<simulator udid> on to sim-remote", async () => {
+    __resetDepCacheForTests();
+    __primeDepCacheForTests(["sim-remote"]);
+    mockExecFile.mockReset().mockImplementation((...args: unknown[]) => {
+      getCallback(args)(new Error("sim-remote stub"));
+      return {} as never;
+    });
+    const tool = createBootDeviceTool({ resolveService: async () => ({}) } as unknown as Registry);
+    const error = await tool.execute!(
+      {},
+      { udid: "remote:11111111-1111-1111-1111-111111111111" }
+    ).catch((e: unknown) => e);
+    expect(error).not.toBeInstanceOf(InvalidToolInputError);
+    expect(mockExecFile.mock.calls[0]?.[0]).toBe("sim-remote");
   });
 
   it("bounds bootTimeoutMs to [30s, 15min]", () => {
