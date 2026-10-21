@@ -739,8 +739,8 @@ export async function update(args: string[]): Promise<void> {
         // for an editor started without the shell PATH.
         if (isGlobalNodeEntry(existing) && next.command === MCP_BINARY_NAME) {
           results.push(
-            `${pc.yellow("!")} ${adapter.name} kept the pinned global entry (no global install ` +
-              `resolved to re-pin it) ${pc.dim(configPath)}`
+            `${pc.yellow("!")} ${adapter.name} kept the pinned global entry (this run can't ` +
+              `re-pin it: a local-mode project, or no global install on PATH) ${pc.dim(configPath)}`
           );
           continue;
         }
