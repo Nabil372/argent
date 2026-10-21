@@ -62,7 +62,7 @@ const zodSchema = z.object({
           .number()
           .optional()
           .describe(
-            `Wait time in ms after this step before the next (default ${DEFAULT_INTER_STEP_DELAY_MS}). Added after the settle wait, so 0 means no extra wait, not back-to-back dispatch; pass settle:false for that.`
+            `Wait time in ms after this step before the next (default ${DEFAULT_INTER_STEP_DELAY_MS}). Added after the settle wait, so 0 means no extra wait, not back-to-back dispatch; for that pass the top-level settle:false (next to udid and steps, not inside a step).`
           ),
       })
     )
@@ -72,7 +72,7 @@ const zodSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements move, but not animations that leave the tree unchanged, such as a native iOS push, so keep await-ui-element gates for those. Set false for timing-critical input (games, double-taps split across steps)."
+      "Top-level, applies to the whole sequence (a per-step settle key is ignored). Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements are already moving, but not motion that starts more than ~100ms after the step (a sheet opened after a fetch) or animations that leave the tree unchanged (a native iOS push), so keep await-ui-element gates for those. If one wait hits the 1s cap (a spinner, a slow tree read), the rest of the sequence skips it. Set false for timing-critical input (games, double-taps split across steps)."
     ),
 });
 
@@ -221,6 +221,10 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
       const { udid, steps } = params;
       const device = resolveDevice(udid);
       const results: StepResult[] = [];
+      // Cleared once a wait fails or hits its cap: a screen that never goes
+      // still (a spinner) or a tree read slower than the cap would otherwise
+      // add the full timeout to every remaining step and buy nothing.
+      let settle = params.settle !== false;
       // The HTTP layer aborts `signal` on client disconnect, and `longRunning`
       // drops the MCP adapter's own fetch timeout — so honour the signal between
       // steps and on the inter-step delay instead of running the rest of the
@@ -285,7 +289,7 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
 
         const next = steps[results.length];
         if (
-          params.settle !== false &&
+          settle &&
           next &&
           next.tool !== AWAIT_UI_ELEMENT_TOOL_ID &&
           next.tool !== "shake" &&
@@ -293,13 +297,14 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           (step.tool !== "keyboard" || keyMayMoveUi(step.args)) &&
           canSettle(registry, device)
         ) {
-          // Best effort: a device without a readable tree just times out.
-          await invokeSubTool(registry, ctx, SETTLE_IDLE_TOOL_ID, {
-            udid,
-            timeoutMs: SETTLE_TIMEOUT_MS,
-            pollIntervalMs: 50,
-            minStableMs: 100,
-          }).catch(() => undefined);
+          // Best effort: a failed or capped wait never fails the sequence.
+          const idle = await invokeSubTool<{ settled?: boolean }>(
+            registry,
+            ctx,
+            SETTLE_IDLE_TOOL_ID,
+            { udid, timeoutMs: SETTLE_TIMEOUT_MS, pollIntervalMs: 50, minStableMs: 100 }
+          ).catch(() => undefined);
+          if (!idle || idle.settled === false) settle = false;
         }
 
         const delay = step.delayMs ?? DEFAULT_INTER_STEP_DELAY_MS;

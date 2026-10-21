@@ -180,7 +180,31 @@ describe("run-sequence", () => {
     ]);
   });
 
-  it.each(["paste", "rotate", "fold", "gesture-swipe"])("settles after %s", async (step) => {
+  it.each([{ key: "return" }, { key: "esc" }, { key: "ENTER" }, { text: "query\r" }])(
+    "settles after keyboard %o",
+    async (args) => {
+      expect(
+        await settledAfter([
+          { tool: "keyboard", args },
+          { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+        ])
+      ).toEqual(["keyboard", "await-screen-idle", "gesture-tap"]);
+    }
+  );
+
+  it.each([
+    "paste",
+    "rotate",
+    "fold",
+    "gesture-tap",
+    "gesture-swipe",
+    "gesture-scroll",
+    "gesture-drag",
+    "gesture-custom",
+    "gesture-pinch",
+    "gesture-rotate",
+    "button",
+  ])("settles after %s", async (step) => {
     expect(
       await settledAfter([
         { tool: step, args: {} },
@@ -240,6 +264,45 @@ describe("run-sequence", () => {
 
     expect(result).toMatchObject({ completed: 2, total: 2 });
     expect(result.steps.every((s) => "result" in s)).toBe(true);
+  });
+
+  it.each([
+    ["hits its cap", () => ({ settled: false, waitedMs: 1000, polls: 3 })],
+    [
+      "fails",
+      () => {
+        throw new Error("no tree");
+      },
+    ],
+  ])("stops settling for the rest of the sequence once a wait %s", async (_label, idle) => {
+    const registry = mockRegistry((id) => (id === "await-screen-idle" ? idle() : { ok: true }));
+    const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 }, delayMs: 0 };
+
+    await createRunSequenceTool(registry).execute({}, { udid: IOS, steps: [tap, tap, tap] });
+
+    expect(invokedTools(registry)).toEqual([
+      "gesture-tap",
+      "await-screen-idle",
+      "gesture-tap",
+      "gesture-tap",
+    ]);
+  });
+
+  it("keeps settling while each wait settles", async () => {
+    const registry = mockRegistry((id) =>
+      id === "await-screen-idle" ? { settled: true, waitedMs: 150, polls: 4 } : { ok: true }
+    );
+    const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 }, delayMs: 0 };
+
+    await createRunSequenceTool(registry).execute({}, { udid: IOS, steps: [tap, tap, tap] });
+
+    expect(invokedTools(registry)).toEqual([
+      "gesture-tap",
+      "await-screen-idle",
+      "gesture-tap",
+      "await-screen-idle",
+      "gesture-tap",
+    ]);
   });
 
   it("stops at an unrecognized tool without invoking it", async () => {
