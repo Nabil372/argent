@@ -60,7 +60,7 @@ const zodSchema = z.object({
   device_id: z
     .string()
     .describe(
-      "Device id from list-devices — the SAME id you passed to debugger-connect (iOS simulator UDID or Android serial)."
+      "Device id from list-devices: the SAME id you passed to debugger-connect (iOS simulator UDID or Android serial)."
     ),
   sample_interval_us: z.coerce
     .number()
@@ -110,7 +110,7 @@ export function createReactProfilerStartTool(
     description: `Start CPU profiling + React commit capture on the connected Hermes runtime.
 Delegates React commit capture to the in-app React DevTools backend (ri.startProfiling).
 If another tool-server already owns the session, returns { already_running: true, owner, stale, how_to_reclaim } without clobbering their data. Pass { force: true } to reclaim a fresh owner's session, but BEFORE OVERTAKING - ask the user for approval first, see relevant skill for guidance.
-Before calling this, ask the user if they also want native profiling (native-profiler-start) — recommend running both in parallel for a complete picture.
+Before calling this, ask the user if they also want native profiling (native-profiler-start), and recommend running both in parallel for a complete picture.
 After starting, ask the user to perform the interaction to profile, then call react-profiler-stop.
 Returns { started_at, startedAtEpochMs, hermes_version, detected_architecture } on success, or the already_running payload described above.
 Fails if the Hermes runtime is not reachable or the Metro CDP connection cannot be established.`,
@@ -212,8 +212,7 @@ Fails if the Hermes runtime is not reachable or the Metro CDP connection cannot 
       // Bootstrap it ourselves via react-devtools-core before giving up.
       if (!("rendererInterfaceFound" in state) || !state.rendererInterfaceFound) {
         const bootstrapJson = (await cdp.evaluate(BOOTSTRAP_DEVTOOLS_BACKEND_SCRIPT)) as
-          | string
-          | undefined;
+          string | undefined;
         if (!bootstrapJson) {
           throw new FailureError(
             "Failed to attach React DevTools backend (no value returned from runtime).",
@@ -313,8 +312,7 @@ Fails if the Hermes runtime is not reachable or the Metro CDP connection cannot 
       await cdp.send("Profiler.start", { interval: params.sample_interval_us });
 
       const startJson = (await cdp.evaluate(buildStartScript(JSON.stringify(ownerPayload)))) as
-        | string
-        | undefined;
+        string | undefined;
       if (!startJson) {
         throw new FailureError("Failed to start React profiler (no value returned from runtime).", {
           error_code: FAILURE_CODES.REACT_PROFILER_NO_RUNTIME_DATA,
