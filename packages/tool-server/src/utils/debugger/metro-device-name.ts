@@ -1,8 +1,14 @@
+import * as fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { classifyDevice } from "../device-info";
 import { externalNativeId } from "../external-devices";
-import { deviceSetForUdid, simctlPrefix } from "../ios-device-sets";
+import {
+  configuredAdditionalDeviceSets,
+  deviceSetForUdid,
+  simctlPrefix,
+  type DeviceSetPath,
+} from "../ios-device-sets";
 import { SIMCTL_KILL_SIGNAL } from "../simctl-config";
 
 const execFileAsync = promisify(execFile);
@@ -49,26 +55,49 @@ export async function metroDeviceNamesFor(deviceId: string): Promise<MetroDevice
   }
 }
 
+type SimctlDevice = { udid: string; name: string; state?: string };
+
+async function listDevices(deviceSet: DeviceSetPath): Promise<SimctlDevice[]> {
+  const { stdout } = await execFileAsync(
+    "xcrun",
+    [...simctlPrefix(deviceSet), "list", "devices", "-j"],
+    { timeout: LOOKUP_TIMEOUT_MS, killSignal: SIMCTL_KILL_SIGNAL, maxBuffer: 16 * 1024 * 1024 }
+  );
+  const parsed = JSON.parse(stdout) as { devices?: Record<string, SimctlDevice[]> };
+  return Object.values(parsed.devices ?? {}).flat();
+}
+
+/**
+ * The booted simulators of every other device set. One Metro serves simulators
+ * from all of them, so a same-named simulator in another set is a twin too.
+ * A set that is missing or fails to list counts as empty: it is only used to
+ * refuse, never to resolve.
+ */
+async function otherSetDevices(own: DeviceSetPath): Promise<SimctlDevice[]> {
+  const sets = [null, ...configuredAdditionalDeviceSets()].filter(
+    (set) => set !== own && (set === null || fs.existsSync(set))
+  );
+  const lists = await Promise.all(sets.map((set) => listDevices(set).catch(() => [])));
+  return lists.flat();
+}
+
 async function iosSimulatorNames(deviceId: string): Promise<MetroDeviceNames | undefined> {
   const udid = externalNativeId(deviceId).toUpperCase();
-  const args = [...simctlPrefix(await deviceSetForUdid(deviceId)), "list", "devices", "-j"];
-  const { stdout } = await execFileAsync("xcrun", args, {
-    timeout: LOOKUP_TIMEOUT_MS,
-    killSignal: SIMCTL_KILL_SIGNAL,
-    maxBuffer: 16 * 1024 * 1024,
-  });
-  const parsed = JSON.parse(stdout) as {
-    devices?: Record<string, Array<{ udid: string; name: string; state?: string }>>;
-  };
-  const all = Object.values(parsed.devices ?? {}).flat();
-  const hit = all.find((d) => d.udid.toUpperCase() === udid);
+  const ownSet = await deviceSetForUdid(deviceId);
+  const [own, others] = await Promise.all([listDevices(ownSet), otherSetDevices(ownSet)]);
+  const hit = own.find((d) => d.udid.toUpperCase() === udid);
   if (!hit) return undefined;
-  const bootedTwins = all.filter(
-    (d) => d.state === "Booted" && d.name === hit.name && d.udid.toUpperCase() !== udid
+  // Compare as Metro lists them: `QA&1` and `QA&2` both reach it as `QA`.
+  const parsedName = asParsedByMetro(hit.name);
+  const bootedTwins = [...own, ...others].filter(
+    (d) =>
+      d.state === "Booted" &&
+      d.udid.toUpperCase() !== udid &&
+      (d.name === hit.name || asParsedByMetro(d.name) === parsedName)
   ).length;
   return {
     name: hit.name,
-    forms: [...new Set([hit.name, asParsedByMetro(hit.name)])],
+    forms: [...new Set([hit.name, parsedName])],
     bootedTwins,
   };
 }

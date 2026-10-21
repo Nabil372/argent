@@ -15,7 +15,7 @@ const namesFor = vi.hoisted(() =>
         "CCCCCCCC-0000-0000-0000-000000000000": "iPhone 15",
         "BBBBBBBB-0000-0000-0000-000000000000": "Pixel 9",
       } as Record<string, string>
-    )[deviceId];
+    )[deviceId.toUpperCase()];
     return name ? { name, forms: [name], bootedTwins: 0 } : undefined;
   })
 );
@@ -156,5 +156,12 @@ describe("multi-device debugger routing (mock Metro, two devices)", () => {
     await expect(
       registry.invokeTool("debugger-connect", { port: mockPort, device_id: SIM_B })
     ).rejects.toThrow(/already connected as "logical-bbb"/);
+  });
+
+  it("refuses another spelling of a UDID whose app already has a session", async () => {
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: SIM_C });
+    await expect(
+      registry.invokeTool("debugger-connect", { port: mockPort, device_id: SIM_C.toLowerCase() })
+    ).rejects.toThrow(`already connected as "${SIM_C}"`);
   });
 });

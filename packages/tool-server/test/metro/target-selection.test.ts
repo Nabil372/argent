@@ -321,4 +321,19 @@ describe("selectTarget by simulator UDID (device name hint)", () => {
     );
     expect(f.message).toContain("iPhone 16 Pro (legacy inspector — no logicalDeviceId)");
   });
+
+  it("keeps the base rules when a legacy target without a device name shares the Metro", () => {
+    // The name only proves where an app is when every target reports one.
+    const legacy = makeTarget({
+      id: "legacy",
+      title: "React Native Experimental",
+      description: "",
+      webSocketDebuggerUrl: "ws://localhost:8081/inspector/debug?device=5&page=1",
+    });
+    const f = failureOf(() =>
+      selectTarget([a, legacy], 8081, { deviceId: "UDID-A", deviceNames: hint("bench-ARG-A") })
+    );
+    expect(f.code).toBe(FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH);
+    expect(f.message).toMatch(/No debugger target matches device_id "UDID-A"/);
+  });
 });
