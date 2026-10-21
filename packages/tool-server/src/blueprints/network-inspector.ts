@@ -34,7 +34,7 @@ export const networkInspectorBlueprint: ServiceBlueprint<NetworkInspectorApi, st
     rememberNetworkCaptureIntent(payload);
     const cdp = debuggerApi.cdp;
 
-    // Idempotent — the script guards itself with __argent_network_installed.
+    // Idempotent — the script guards itself with __argent_network_v2.
     await cdp.evaluate(NETWORK_INTERCEPTOR_SCRIPT).catch((err: unknown) => {
       const msg = err instanceof Error ? err.message : String(err);
       process.stderr.write(

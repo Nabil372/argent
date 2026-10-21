@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { ToolDefinition } from "@argent/registry";
 import {
   listAndroidDevices,
+  isFoldableAvd,
   listAvds,
   consolePortFromAdbSerial,
   ADB_DEVICES_TIMEOUT_MS,
@@ -60,6 +61,8 @@ type AndroidDevice = {
   avdName: string | null;
   sdkLevel: number | null;
   runtimeKind?: "mobile" | "tv";
+  /** Present, and true, for an emulator whose AVD profile has a hinge. */
+  foldable?: true;
 };
 
 /**
@@ -93,7 +96,7 @@ type ListedDevice =
 
 type ListDevicesResult = {
   devices: ListedDevice[];
-  avds: Array<{ name: string }>;
+  avds: Array<{ name: string; foldable?: true }>;
   /**
    * Rules for a provider's device, present only when one is listed. Most
    * installs have no provider and the description is read once per session, so
@@ -283,13 +286,13 @@ export const listDevicesTool: ToolDefinition<Record<string, never>, ListDevicesR
   description: `List iOS simulators, Android emulators, connected physical Android devices, running Chromium apps, and Vega (Fire TV) devices in one place.
 Use at the start of a session to pick a target id ('udid' for iOS entries, 'serial' for Android/Vega entries, 'id' for Chromium) to pass to interaction tools, and to see which targets are already running.
 Returns { devices, avds } where each device carries a 'platform' discriminator ('ios', 'android', 'chromium', or 'vega'); 'avds' lists Android AVDs bootable via boot-device. A Vega VVD is listed under 'devices' whether running or stopped (state 'running'/'stopped'); start a stopped one with boot-device using its 'vvdImage'.
-Android entries also carry a 'kind' ('emulator' for a local AVD, 'device' for a physical phone connected over USB / wireless adb) — physical phones are detected from \`adb devices\` (any serial that is not an \`emulator-*\` one) and are driven through the same interaction tools as emulators; they do not need boot-device (just connect the phone with USB debugging authorised).
+Android entries also carry a 'kind' ('emulator' for a local AVD, 'device' for a physical phone connected over USB / wireless adb). Physical phones are detected from \`adb devices\` (any serial that is not an \`emulator-*\` one) and are driven through the same interaction tools as emulators; they do not need boot-device (just connect the phone with USB debugging authorised).
 Physical iPhones appear as iOS entries with kind 'device' (no iPads); no boot-device. State 'connected' = cabled and usable; 'paired' = not reachable over USB, never auto-bound.
-TV targets are tagged with runtimeKind 'tv' (Apple TV simulators on iOS, Android TV / leanback devices on Android) — these are focus-driven, not touch-driven: use \`describe\` to read focus, \`tv-remote\` for remote presses (up/down/left/right/select/back/menu/home), and \`keyboard\` to type, rather than the coordinate/gesture tools.
-iOS simulators from an additional CoreSimulator device set (the 'ios.additionalDeviceSets' configuration — e.g. devices created by Radon IDE) are listed alongside default-set ones, tagged with their owning 'deviceSet' path; they are driven through the same tools by udid, but run headless (no Simulator.app window attaches to them).
-A foldable iOS simulator (the iPhone Duo) has 'foldable: true'. Use the \`fold\` tool to fold or unfold it.
-Chromium apps are discovered by probing CDP debugging ports (default 9222; extend via the ARGENT_CHROMIUM_PORTS=<comma-separated-ports> env var). They must already be running with --remote-debugging-port=<port> — use boot-device with electronAppPath to launch one.
-Booted/ready devices are listed first. Platforms whose CLI is unavailable are silently omitted — an empty result usually means xcode-select, Android platform-tools, or the Vega SDK is not installed.`,
+TV targets are tagged with runtimeKind 'tv' (Apple TV simulators on iOS, Android TV / leanback devices on Android). These are focus-driven, not touch-driven: use \`describe\` to read focus, \`tv-remote\` for remote presses (up/down/left/right/select/back/menu/home), and \`keyboard\` to type, rather than the coordinate/gesture tools.
+iOS simulators from an additional CoreSimulator device set (the 'ios.additionalDeviceSets' configuration, e.g. devices created by Radon IDE) are listed alongside default-set ones, tagged with their owning 'deviceSet' path; they are driven through the same tools by udid, but run headless (no Simulator.app window attaches to them).
+A foldable iOS simulator (the iPhone Duo) or Android emulator (and its AVD) has 'foldable: true'. Use the \`fold\` tool to fold or unfold it.
+Chromium apps are discovered by probing CDP debugging ports (default 9222; extend via the ARGENT_CHROMIUM_PORTS=<comma-separated-ports> env var). They must already be running with --remote-debugging-port=<port>; use boot-device with electronAppPath to launch one.
+Booted/ready devices are listed first. Platforms whose CLI is unavailable are silently omitted; an empty result usually means xcode-select, Android platform-tools, or the Vega SDK is not installed.`,
   alwaysLoad: true,
   searchHint:
     "list devices simulators emulators avd serial udid ios android chromium vega app fire tv session start",
@@ -364,6 +367,16 @@ Booted/ready devices are listed first. Platforms whose CLI is unavailable are si
         tunnelState: d.tunnelState,
       }));
     iosRemote.sort(sortIosRemote);
+    // One config.ini read per AVD name, shared by the running emulators and the AVD list.
+    const foldableAvds = new Set(
+      (
+        await Promise.all(
+          [...new Set([...avds.map((a) => a.name), ...android.map((d) => d.avdName)])]
+            .filter((name): name is string => name !== null)
+            .map(async (name) => ((await isFoldableAvd(name)) ? name : null))
+        )
+      ).filter((name): name is string => name !== null)
+    );
     const androidTagged: AndroidDevice[] = android.map((d) => ({
       platform: "android",
       serial: d.serial,
@@ -374,6 +387,7 @@ Booted/ready devices are listed first. Platforms whose CLI is unavailable are si
       avdName: d.avdName,
       sdkLevel: d.sdkLevel,
       runtimeKind: d.runtimeKind,
+      ...(d.avdName !== null && foldableAvds.has(d.avdName) ? { foldable: true as const } : {}),
     }));
     // Drop a running VVD's adb shadow row so it appears only once (as vega),
     // and likewise any serial an external provider has claimed.
@@ -393,6 +407,14 @@ Booted/ready devices are listed first. Platforms whose CLI is unavailable are si
     ];
     devices.sort((a, b) => readinessRank(a) - readinessRank(b));
 
-    return { devices, avds, ...(external.length > 0 ? { hint: EXTERNAL_DEVICES_HINT } : {}) };
+    const avdsTagged = avds.map((a) =>
+      foldableAvds.has(a.name) ? { ...a, foldable: true as const } : a
+    );
+
+    return {
+      devices,
+      avds: avdsTagged,
+      ...(external.length > 0 ? { hint: EXTERNAL_DEVICES_HINT } : {}),
+    };
   },
 };

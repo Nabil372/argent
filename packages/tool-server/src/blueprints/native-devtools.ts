@@ -62,7 +62,7 @@ export function isInjectableBundleId(bundleId: string): boolean {
 export const NON_INJECTABLE_NATIVE_WARNING =
   "Do not fall back to the native-devtools feature tools (native-describe-screen, " +
   "native-find-views, native-full-hierarchy, native-network-logs, native-view-at-point, " +
-  "native-user-interactable-view-at-point) — they run the same injection precheck and fail " +
+  "native-user-interactable-view-at-point): they run the same injection precheck and fail " +
   "with the same non-injectable error.";
 
 /**
@@ -419,7 +419,7 @@ export interface NetworkEvent {
   timestamp: number;
 }
 
-export type ViewInspectorMethod =
+type ViewInspectorMethod =
   | "ViewHierarchy.getFullHierarchy"
   | "ViewHierarchy.findViews"
   | "ViewHierarchy.viewAtPoint"
@@ -428,7 +428,7 @@ export type ViewInspectorMethod =
 
 type InspectorMethod = ViewInspectorMethod | "Application.getState";
 
-export type NativeApplicationState = "active" | "inactive" | "background" | "unknown";
+type NativeApplicationState = "active" | "inactive" | "background" | "unknown";
 
 export interface NativeAppState {
   bundleId: string;
