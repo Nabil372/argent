@@ -72,4 +72,16 @@ describe("LogFileWriter round-trips levels of any length", () => {
     });
     expect(w.readAll()[0]!.level).toBe("trace");
   });
+
+  it("preserves camelCase CDP levels through readAll() and readFiltered()", () => {
+    const levels = ["startGroup", "startGroupCollapsed", "endGroup", "profileEnd", "timeEnd"];
+    w = new LogFileWriter(59235);
+    levels.forEach((level, id) =>
+      w.write({ id, timestamp: new Date(1710000000000).toISOString(), level, message: "c" })
+    );
+    expect(w.readAll().map((e) => e.level)).toEqual(levels);
+    for (const level of levels) {
+      expect(w.readFiltered({ level }).total).toBe(1);
+    }
+  });
 });
