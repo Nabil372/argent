@@ -410,7 +410,21 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         events,
       };
     } catch (err) {
-      logWriter.close();
+      // The socket dropping mid-setup is the app dying while the debugger
+      // attaches. The runtime may already have replayed its startup logs, so
+      // keep them as crash evidence, the same as `dispose` does.
+      const captured = logWriter.getStats().totalEntries;
+      const keepFile = captured > 0 && !cdp.isConnected();
+      if (keepFile) {
+        const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
+        recordReapedSession(
+          "js-runtime-debugger",
+          [deviceId, selected.target.reactNative?.logicalDeviceId],
+          `The log file with its ${entries} is kept at ${logWriter.getFilePath()}.`,
+          true
+        );
+      }
+      logWriter.close({ keepFile });
       await cdp.disconnect().catch(() => {});
       throw err;
     }

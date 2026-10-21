@@ -14,6 +14,10 @@ import {
   jsRuntimeDebuggerBlueprint,
   type JsRuntimeDebuggerApi,
 } from "../../src/blueprints/js-runtime-debugger";
+import {
+  __resetReapedSessionsForTesting,
+  takeReapedSession,
+} from "../../src/utils/reaped-sessions";
 import { scopeTempHome } from "../helpers/temp-home";
 
 scopeTempHome("argent-startup-log-home-");
@@ -25,6 +29,7 @@ let wss: WebSocketServer;
 let mockPort: number;
 let registry: Registry;
 let failSetup = false;
+let dropOnSetup = false;
 
 function handleCDPMessage(ws: WebSocket, raw: string) {
   const { id, method } = JSON.parse(raw) as { id: number; method: string };
@@ -40,6 +45,10 @@ function handleCDPMessage(ws: WebSocket, raw: string) {
         },
       })
     );
+  }
+  if (method === "Runtime.addBinding" && dropOnSetup) {
+    ws.terminate();
+    return;
   }
   if (method === "Runtime.addBinding" && failSetup) {
     ws.send(JSON.stringify({ id, error: { code: -32000, message: "Runtime.addBinding failed" } }));
@@ -94,6 +103,8 @@ beforeAll(async () => {
 afterEach(async () => {
   await registry?.dispose();
   failSetup = false;
+  dropOnSetup = false;
+  __resetReapedSessionsForTesting();
 });
 
 afterAll(async () => {
@@ -122,5 +133,18 @@ describe("JsRuntimeDebugger startup log capture", () => {
     await expect(connect()).rejects.toThrow();
     await vi.waitFor(() => expect(wss.clients.size).toBe(0));
     expect(logFiles()).toEqual([]);
+    expect(takeReapedSession("js-runtime-debugger", DEVICE)).toBeUndefined();
+  });
+
+  it("keeps the replayed logs and names the file when the app dies during the setup", async () => {
+    dropOnSetup = true;
+    await expect(connect()).rejects.toThrow();
+    const files = logFiles();
+    expect(files).toHaveLength(1);
+    const file = path.join(process.env.HOME!, ".argent", "tmp", files[0]!);
+    expect(fs.readFileSync(file, "utf-8")).toContain("printed at startup");
+    const reaped = takeReapedSession("js-runtime-debugger", DEVICE);
+    expect(reaped?.connectionLost).toBe(true);
+    expect(reaped?.salvage).toContain(`kept at ${file}`);
   });
 });
