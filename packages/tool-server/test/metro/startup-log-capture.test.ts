@@ -24,7 +24,7 @@ let mockServer: http.Server;
 let wss: WebSocketServer;
 let mockPort: number;
 let registry: Registry;
-let failDebuggerEnable = false;
+let failSetup = false;
 
 function handleCDPMessage(ws: WebSocket, raw: string) {
   const { id, method } = JSON.parse(raw) as { id: number; method: string };
@@ -41,8 +41,8 @@ function handleCDPMessage(ws: WebSocket, raw: string) {
       })
     );
   }
-  if (method === "Debugger.enable" && failDebuggerEnable) {
-    ws.send(JSON.stringify({ id, error: { code: -32000, message: "Debugger.enable failed" } }));
+  if (method === "Runtime.addBinding" && failSetup) {
+    ws.send(JSON.stringify({ id, error: { code: -32000, message: "Runtime.addBinding failed" } }));
     return;
   }
   if (method === "Runtime.evaluate") {
@@ -93,7 +93,7 @@ beforeAll(async () => {
 
 afterEach(async () => {
   await registry?.dispose();
-  failDebuggerEnable = false;
+  failSetup = false;
 });
 
 afterAll(async () => {
@@ -118,7 +118,7 @@ describe("JsRuntimeDebugger startup log capture", () => {
   });
 
   it("closes the socket and removes the log file when the setup fails", async () => {
-    failDebuggerEnable = true;
+    failSetup = true;
     await expect(connect()).rejects.toThrow();
     await vi.waitFor(() => expect(wss.clients.size).toBe(0));
     expect(logFiles()).toEqual([]);

@@ -66,7 +66,7 @@ const zodSchema = z
       .min(1)
       .optional()
       .describe(
-        "Directory where diff artifacts should be written. Optional — defaults to a temp directory; the diff images are returned in the result either way."
+        "Directory where diff artifacts should be written. Optional: defaults to a temp directory; the diff images are returned in the result either way."
       ),
   })
   .strict();
