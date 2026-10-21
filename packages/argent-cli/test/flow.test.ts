@@ -1672,7 +1672,7 @@ describe("argent e2e run", () => {
 
     expect(toolsClientMock.callTool).not.toHaveBeenCalled();
     expect(logs).toEqual([]);
-    expect(errs.join("\n")).toContain("Usage: argent flow");
+    expect(errs.join("\n")).toContain("Usage: argent e2e");
   });
 
   it("emits a structured error for a pre-flight refusal in streaming mode", async () => {
