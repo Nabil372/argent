@@ -217,10 +217,13 @@ describe("parseRunArgs", () => {
   });
 
   it("throws on a separately supplied empty value, like the --flag= form", () => {
-    for (const flag of ["--device", "--platform", "--output"]) {
+    for (const flag of ["--device", "--output"]) {
       expect(() => parseRunArgs(["checkout.yaml", flag, ""])).toThrow(FlagParseException);
       expect(() => parseRunArgs(["checkout.yaml", flag, ""])).toThrow(`${flag} requires a value`);
     }
+    expect(() => parseRunArgs(["checkout.yaml", "--platform", ""])).toThrow(
+      '--platform must be "ios", "android", "chromium", "vega" or "ios-remote", got ""'
+    );
   });
 
   it("accepts the --flag=value form for every value-taking flag", () => {
