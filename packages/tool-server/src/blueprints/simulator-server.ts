@@ -279,7 +279,9 @@ const SAFE_SIMULATOR_DEVICE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 /**
  * iOS simulators, Android emulators and physical Android phones each get their
  * own simulator-server controller; the phone one (`android_device`, screen-sharing
- * agent over adb) is picked by `kind`, not by platform alone.
+ * agent over adb) is picked by `kind`, not by platform alone. An emulator whose
+ * gRPC bridge cannot be discovered is later retried on `android_device` too
+ * (see `spawnWithEmulatorFallback`), while keeping `kind: "emulator"`.
  */
 function subcommandForDevice(device: DeviceInfo): "ios" | "android" | "android_device" {
   if (device.platform === "ios") {
@@ -300,14 +302,18 @@ function subcommandForDevice(device: DeviceInfo): "ios" | "android" | "android_d
 
 /**
  * The emulator controller finds an AVD's gRPC bridge through the emulator's
- * discovery file (`avd/running/pid_*.ini` under the user's home). An emulator
- * started outside argent with another HOME (a CI runner, a service account)
- * has no such file where argent looks, so simulator-server exits with "not
- * found among running emulators". The phone controller (screen-sharing agent
- * over adb) needs nothing but adb, so such an emulator is retried through it
- * instead of leaving the device with no screenshot, tap or swipe at all.
+ * discovery file (`avd/running/pid_*.ini` in a per-user directory: under the
+ * user's home or cache folder, or `$XDG_RUNTIME_DIR` / `/run/user/<uid>` on
+ * Linux). An emulator started outside argent by another user or HOME (a CI
+ * runner, a service account) has no such file where argent looks, so
+ * simulator-server exits with "not found among running emulators", or, on
+ * Linux when no discovery directory exists at all, "Failed to find any running
+ * emulator". The phone controller (screen-sharing agent over adb) needs
+ * nothing but adb, so such an emulator is retried through it instead of
+ * leaving the device with no screenshot, tap or swipe at all.
  */
-const EMULATOR_NOT_DISCOVERED = /not found among running emulators/;
+const EMULATOR_NOT_DISCOVERED =
+  /not found among running emulators|Failed to find any running emulator/;
 
 async function spawnWithEmulatorFallback(
   device: DeviceInfo
@@ -322,7 +328,19 @@ async function spawnWithEmulatorFallback(
       `[sim ${device.id}] emulator not found through gRPC discovery; ` +
         `falling back to the adb screen-sharing controller\n`
     );
-    return spawnSimulatorServerProcess(device.id, "android_device");
+    try {
+      return await spawnSimulatorServerProcess(device.id, "android_device");
+    } catch (fallbackErr) {
+      // "Failed to find any running emulator" also means no emulator is up at
+      // all; then the fallback fails too, and the emulator controller's error
+      // (and its failure signal) is the one that explains it.
+      const fallbackMessage =
+        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+      process.stderr.write(
+        `[sim ${device.id}] adb screen-sharing fallback failed too: ${fallbackMessage}\n`
+      );
+      throw err;
+    }
   }
 }
 
