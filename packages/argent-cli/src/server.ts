@@ -439,7 +439,11 @@ async function runForeground(
       process.removeListener("SIGINT", onInt);
       process.removeListener("SIGTERM", onTerm);
       if (stateWritten) {
-        fs.rmSync(stateFileForBundle(paths.bundlePath), { force: true });
+        try {
+          fs.rmSync(stateFileForBundle(paths.bundlePath), { force: true });
+        } catch {
+          /* non-fatal: the exit code must still mirror the child's */
+        }
       }
     };
     // Spawn-level failures (ENOENT, EACCES) emit `error` instead of `exit`; report
