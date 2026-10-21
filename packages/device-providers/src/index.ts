@@ -9,10 +9,6 @@
  *
  * The JSON document in `~/.argent/providers/` stays the contract of record;
  * this package is a convenience for providers that happen to be Node.
- *
- * This package is CommonJS, unlike its ESM siblings: the Vega CI container runs
- * the tool-server's `tsc` dist on Node 20.18, where requiring an ESM module that
- * imports zod overflows the stack.
  */
 
 export {
