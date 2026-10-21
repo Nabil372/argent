@@ -1451,10 +1451,17 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
           }
         );
       }
-      if (isDebuggerNotConnectedResult(params.command, toolResult))
-        throw new Error(
-          `${params.command} found no debugger (${toolResult.reason}): ${toolResult.detail} - nothing was recorded; ${toolResult.guidance}`
+      if (isDebuggerNotConnectedResult(params.command, toolResult)) {
+        throw new FailureError(
+          `${params.command} found no debugger (${toolResult.reason}): ${toolResult.detail} - nothing was recorded; ${toolResult.guidance}`,
+          {
+            error_code: FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED,
+            failure_stage: "flow_add_step_debugger_not_connected",
+            failure_area: "tool_server",
+            error_kind: "not_found",
+          }
         );
+      }
 
       // A wait that HELD is asked the runner's tree as well, so the author
       // learns now — rather than after polish — whether the conversion is safe.

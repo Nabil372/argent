@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Registry } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal, type Registry } from "@argent/registry";
 import { createFlowAddStepTool } from "../../src/tools/flows/flow-add-step";
 import { flowStartRecordingTool } from "../../src/tools/flows/flow-start-recording";
 import { __resetRecordingsForTesting, parseFlow } from "../../src/tools/flows/flow-utils";
@@ -59,9 +59,11 @@ describe("flow-add-step on a not_connected debugger result", () => {
   it.each(["debugger-status", "debugger-log-registry"])(
     "refuses %s and records nothing",
     async (command) => {
-      await expect(addStep(NOT_CONNECTED, command)).rejects.toThrow(
+      const err: unknown = await addStep(NOT_CONNECTED, command).catch((e: unknown) => e);
+      expect((err as Error).message).toBe(
         `${command} found no debugger (no_app_connected): Metro at port 8081 has no CDP targets - nothing was recorded; launch the app`
       );
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED);
       expect(await recordedSteps()).toEqual([]);
     }
   );
