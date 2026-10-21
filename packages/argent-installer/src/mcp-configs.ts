@@ -154,7 +154,9 @@ export function resolveLocalCommandMode(root: string): McpCommandMode {
 export function resolveGlobalCommandMode(): McpCommandMode {
   const launch = getGloballyInstalledLaunchPaths();
   const node = launch?.node ?? process.execPath;
-  if (!launch || !/^node(\.exe)?$/i.test(path.basename(node))) return { kind: "global" };
+  if (!launch || !path.isAbsolute(node) || !/^node(\.exe)?$/i.test(path.basename(node))) {
+    return { kind: "global" };
+  }
   return { kind: "global-node", node, cli: launch.cli };
 }
 

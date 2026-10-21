@@ -12,11 +12,17 @@ import { isYarnPnp } from "./preflight.js";
 // update/uninstall probe and handle each independently.
 
 // `which argent` also matches temp package runners (npx / pnpm dlx / bunx /
-// yarn dlx), which prepend their cache .bin/ dir to PATH.
+// yarn dlx), which prepend their cache .bin/ dir to PATH. pnpm 8 used
+// `dlx-<pid>` dirs, current pnpm `<cache>/pnpm/dlx/<hash>/`; a versioned
+// `bunx pkg@spec` installs into `$TMPDIR/bunx-<uid>-<spec>/`.
 const TEMP_RUNNER_MARKERS = [
   "_npx",
   "/dlx-",
   "\\dlx-",
+  "/pnpm/dlx/",
+  "\\pnpm\\dlx\\",
+  "/bunx-",
+  "\\bunx-",
   "bun/install/cache",
   ".bun\\install\\cache",
 ];
@@ -85,6 +91,19 @@ function packageRootOfBinary(binaryPath: string | null): string | null {
 }
 
 /**
+ * `<root>/<bin>` (`dist/cli.js`) of an argent package root, when that CLI
+ * entrypoint exists. The one resolution both the cli.json record and the
+ * global-scope MCP entry use.
+ */
+export function cliEntryOf(packageRoot: string | null): string | null {
+  if (!packageRoot) return null;
+  const binSub = argentBinSubpath(packageRoot);
+  if (!binSub) return null;
+  const cli = path.join(packageRoot, binSub);
+  return fs.existsSync(cli) ? cli : null;
+}
+
+/**
  * Absolute paths that launch the global install without PATH: its CLI
  * entrypoint (`<root>/dist/cli.js`) and the `node` beside its bin link, when
  * there is one. That `node` is the prefix's stable name (nvm's binary, or
@@ -94,14 +113,12 @@ function packageRootOfBinary(binaryPath: string | null): string | null {
  */
 export function getGloballyInstalledLaunchPaths(): { cli: string; node: string | null } | null {
   const binaryPath = getGlobalBinaryPath();
-  const packageRoot = packageRootOfBinary(binaryPath);
-  if (!binaryPath || !packageRoot) return null;
-  const binSub = argentBinSubpath(packageRoot);
-  if (!binSub) return null;
-  const cli = path.join(packageRoot, binSub);
-  if (!fs.existsSync(cli)) return null;
+  const cli = cliEntryOf(packageRootOfBinary(binaryPath));
+  if (!binaryPath || !cli) return null;
+  // `which -a` echoes relative PATH entries as-is; the editor would resolve a
+  // relative `node` against its own cwd, so anchor it to this one.
   const node = path.join(
-    path.dirname(binaryPath),
+    path.dirname(path.resolve(binaryPath)),
     process.platform === "win32" ? "node.exe" : "node"
   );
   return { cli, node: fs.existsSync(node) ? node : null };
@@ -236,7 +253,7 @@ export function readLocalPackageVersionUncached(projectRoot: string): string | n
  * read from the installed `package.json`'s `bin` rather than hard-coded, so a
  * rename can never leave a caller pointing at a file that isn't there.
  */
-export function argentBinSubpath(pkgDir: string): string | null {
+function argentBinSubpath(pkgDir: string): string | null {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8")) as {
       bin?: string | Record<string, string>;

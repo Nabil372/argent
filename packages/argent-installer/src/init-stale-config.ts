@@ -17,8 +17,8 @@ interface StaleConfigCleanupResult {
 }
 
 // A removal in a GLOBAL config file, executed only after the caller's
-// one-shot confirmation — the "dead" verdict is a PATH probe in this shell,
-// which version managers (nvm) can fool.
+// one-shot confirmation — for a bare `argent` entry the "dead" verdict is a
+// PATH probe in this shell, which version managers (nvm) can fool.
 interface PendingCrossProjectRemoval {
   adapterName: string;
   location: string;
@@ -33,7 +33,8 @@ interface PendingCrossProjectRemoval {
 //
 // Scope precedence can't be trusted to make the fresh entry win, so: remove
 // hidden-scope findings the adapter marks autoRemove; remove bare-`argent`
-// entries when no global argent is on PATH, behind one confirmation (see
+// entries when no global argent is on PATH, and pinned node + cli.js entries
+// whose files are gone, behind one confirmation (see
 // confirmCrossProjectRemovals); warn with the exact location about anything
 // else, never touch it (may be hand-tuned or backed by a working global
 // install).
@@ -71,11 +72,16 @@ export async function cleanupStaleMcpConfigs(args: {
   // (see hasCustomizingEnv).
   // A global-node entry names its files outright: dead once either is gone
   // (an nvm prune, an uninstalled global), no PATH probe involved.
+  const missingGlobalNodeFile = (entry: McpServerEntry): string | null => {
+    if (!isGlobalNodeEntry(entry)) return null;
+    if (!fs.existsSync(entry.command)) return entry.command;
+    return fs.existsSync(entry.args[0]!) ? null : entry.args[0]!;
+  };
   const isProvablyDead = (entry: McpServerEntry | null): boolean =>
     entry !== null &&
     !hasCustomizingEnv(entry) &&
     (isGlobalNodeEntry(entry)
-      ? !fs.existsSync(entry.command) || !fs.existsSync(entry.args[0]!)
+      ? missingGlobalNodeFile(entry) !== null
       : entry.command === MCP_BINARY_NAME && !globalArgentOnPath);
 
   const removed = (adapterName: string, location: string, what: string): void => {
@@ -151,13 +157,23 @@ export async function cleanupStaleMcpConfigs(args: {
           adapterName: adapter.name,
           location: globalPath,
           what: isGlobalNodeEntry(entry)
-            ? `a dead global entry (runs \`${entry.args[0]}\`, which no longer exists)`
+            ? `a dead global entry (\`${missingGlobalNodeFile(entry)}\` no longer exists)`
             : `a dead global entry (runs \`${MCP_BINARY_NAME}\`, which is no longer on PATH)`,
           exec: () => adapter.remove(globalPath),
         });
-      } else if (isGlobalNodeEntry(entry) && !hasCustomizingEnv(entry)) {
-        // A live global-node entry: a working global install the user kept,
-        // same as a bare `argent` on PATH below — stay quiet.
+      } else if (isGlobalNodeEntry(entry)) {
+        // A live one is a working global install the user kept, same as a bare
+        // `argent` on PATH below — stay quiet. Custom env keeps a dead one out
+        // of the removal above, so say why it stays.
+        const missing = missingGlobalNodeFile(entry);
+        if (missing !== null) {
+          warned(
+            adapter.name,
+            globalPath,
+            `a global-scope argent entry with custom env vars runs \`${missing}\`, which no ` +
+              "longer exists — if it is a leftover, remove it"
+          );
+        }
       } else if (entry.command !== MCP_BINARY_NAME) {
         // May be a hand-tuned dev setup rather than a leftover — warn, never
         // remove.
@@ -186,21 +202,43 @@ export async function cleanupStaleMcpConfigs(args: {
     // written, but it may be a committed team file — never auto-remove.
     for (const adapter of writtenAdapters) {
       const projectPath = adapter.projectPath(effectiveRoot);
-      if (!projectPath) continue;
+      const globalPath = adapter.globalPath();
+      // At $HOME, Cursor and Codex read one file for both scopes: the entry
+      // there is the global one just written, not a project-scope rival.
+      if (!projectPath || projectPath === globalPath) continue;
       let entry: McpServerEntry | null;
       try {
         entry = adapter.getArgentEntry(projectPath);
       } catch {
         continue;
       }
-      // A bare-command entry duplicates the global one harmlessly; a
-      // local-mode `node …` command does not.
-      if (entry !== null && entry.command !== MCP_BINARY_NAME) {
+      if (entry === null) continue;
+      if (entry.command !== MCP_BINARY_NAME) {
+        // A local-mode `node …` command runs a different copy.
         warned(
           adapter.name,
           projectPath,
           "a project-scope entry takes precedence over the global entry in this project; " +
             "if you are migrating away from a local install, remove it (argent uninstall)"
+        );
+        continue;
+      }
+      // A bare-command entry ran the same install as a bare global one, but it
+      // also outranks a pinned global entry, and an editor started without the
+      // shell PATH can't resolve it (#1287).
+      let globalEntry: McpServerEntry | null = null;
+      try {
+        globalEntry = globalPath ? adapter.getArgentEntry(globalPath) : null;
+      } catch {
+        // unreadable: nothing to compare against
+      }
+      if (installMode === "global" && isGlobalNodeEntry(globalEntry)) {
+        warned(
+          adapter.name,
+          projectPath,
+          "a project-scope `argent` entry takes precedence over the global entry in this " +
+            "project, and an editor started without your shell PATH can't run it — if your " +
+            "team doesn't rely on it, remove it"
         );
       }
     }

@@ -9,6 +9,7 @@ import {
   getMcpEntry,
   getMcpEntryForScope,
   isArgentManagedEntry,
+  isGlobalNodeEntry,
   resolveLocalCommandMode,
   addClaudePermission,
   removeClaudePermission,
@@ -206,6 +207,35 @@ describe("isArgentManagedEntry", () => {
         command: "/usr/local/bin/node",
         args: ["/usr/local/lib/node_modules/@swmansion/argent/dist/cli.js", "mcp"],
         env: { PATH: "/custom" },
+      })
+    ).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("isGlobalNodeEntry", () => {
+  const node = "/Users/me/.nvm/versions/node/v24.1.0/bin/node";
+  const cli = "/Users/me/.nvm/versions/node/v24.1.0/lib/node_modules/@swmansion/argent/dist/cli.js";
+
+  it("accepts exactly absolute node + absolute cli.js + mcp", () => {
+    expect(isGlobalNodeEntry({ command: node, args: [cli, "mcp"] })).toBe(true);
+  });
+
+  it("rejects a relative node, which the dead check would resolve against cwd", () => {
+    expect(isGlobalNodeEntry({ command: "node", args: [cli, "mcp"] })).toBe(false);
+    expect(isGlobalNodeEntry({ command: "bin/node", args: [cli, "mcp"] })).toBe(false);
+  });
+
+  it("rejects extra or missing args, so update never strips user flags", () => {
+    expect(isGlobalNodeEntry({ command: node, args: [cli, "mcp", "--verbose"] })).toBe(false);
+    expect(isGlobalNodeEntry({ command: node, args: [cli] })).toBe(false);
+    expect(isGlobalNodeEntry({ command: node, args: [cli, "serve"] })).toBe(false);
+  });
+
+  it("rejects a relative cli.js", () => {
+    expect(
+      isGlobalNodeEntry({
+        command: node,
+        args: ["lib/node_modules/@swmansion/argent/dist/cli.js", "mcp"],
       })
     ).toBe(false);
   });
