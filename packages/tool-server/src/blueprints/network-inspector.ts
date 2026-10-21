@@ -8,7 +8,6 @@ import {
 import type { CDPClient } from "../utils/debugger/cdp-client";
 import type { JsRuntimeDebuggerApi } from "./js-runtime-debugger";
 import { NETWORK_INTERCEPTOR_SCRIPT } from "../utils/debugger/scripts/network-interceptor";
-import { rememberNetworkCaptureIntent } from "../utils/debugger/network-capture-intent";
 
 export const NETWORK_INSPECTOR_NAMESPACE = "NetworkInspector";
 
@@ -29,9 +28,8 @@ export const networkInspectorBlueprint: ServiceBlueprint<NetworkInspectorApi, st
     return { debugger: `JsRuntimeDebugger:${payload}` };
   },
 
-  async factory(deps, payload) {
+  async factory(deps, _payload) {
     const debuggerApi = deps.debugger as JsRuntimeDebuggerApi;
-    rememberNetworkCaptureIntent(payload);
     const cdp = debuggerApi.cdp;
 
     // Idempotent — the script guards itself with __argent_network_v2.

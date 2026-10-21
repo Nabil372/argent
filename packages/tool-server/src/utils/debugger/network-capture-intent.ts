@@ -1,20 +1,28 @@
 /**
- * Devices whose network traffic an agent has asked to see (a NetworkInspector
- * was created for them), keyed "port:deviceId".
+ * Debugger connects that must install the network interceptor first, keyed
+ * "port:deviceId".
  *
  * The interceptor lives in the app's JS runtime, so an app restart drops it,
  * and the NetworkInspector service only reinstalls it on the agent's next
- * view-network-logs, long after the app's launch requests have gone out. The
- * debugger reads this at connect and installs the interceptor first thing, so
- * a relaunch (restart-app re-attaches the debugger) captures its startup
- * traffic.
+ * view-network-logs, long after the app's launch requests have gone out.
+ * restart-app requests a capture here only for a device whose NetworkInspector
+ * was running when it restarted the app. The debugger's next connect for that
+ * key takes the request and installs the interceptor before its setup.
+ *
+ * A request serves one connect. restart-app cancels it when its re-attach ends,
+ * so no later connect from another tool or agent patches the app's fetch.
  */
-const wanted = new Set<string>();
+const requested = new Set<string>();
 
-export function rememberNetworkCaptureIntent(key: string): void {
-  wanted.add(key);
+export function requestNetworkCaptureOnConnect(key: string): void {
+  requested.add(key);
 }
 
-export function wantsNetworkCapture(key: string): boolean {
-  return wanted.has(key);
+/** True once for a requested key: the request is removed as it is read. */
+export function takeNetworkCaptureRequest(key: string): boolean {
+  return requested.delete(key);
+}
+
+export function cancelNetworkCaptureRequest(key: string): void {
+  requested.delete(key);
 }

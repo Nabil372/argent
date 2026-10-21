@@ -2,6 +2,12 @@ import { ServiceState } from "@argent/registry";
 import { z } from "zod";
 import type { Registry, ServiceRef, ToolCapability, ToolDefinition } from "@argent/registry";
 import { nativeDevtoolsRef } from "../../blueprints/native-devtools";
+import { JS_RUNTIME_DEBUGGER_NAMESPACE } from "../../blueprints/js-runtime-debugger";
+import { NETWORK_INSPECTOR_NAMESPACE } from "../../blueprints/network-inspector";
+import {
+  cancelNetworkCaptureRequest,
+  requestNetworkCaptureOnConnect,
+} from "../../utils/debugger/network-capture-intent";
 import { resolveDevice } from "../../utils/device-info";
 import { dispatchByPlatform } from "../../utils/cross-platform-tool";
 import { BUNDLE_ID_MESSAGE, BUNDLE_ID_PATTERN } from "../../utils/bundle-id";
@@ -101,72 +107,107 @@ Returns { restarted, bundleId }. Fails if the app is not installed.`,
     const sessions = runningDebuggerSessions(registry, params.udid);
     // End them cleanly first rather than leaving a dead socket for the next
     // call to trip over; the relaunched app gets a fresh session and log.
-    for (const urn of sessions) await registry.disposeService(urn).catch(() => {});
-    const result = await relaunch(services, params, ctx);
-    for (const urn of sessions) void reattachDebugger(registry, urn);
+    for (const session of sessions) {
+      await registry.disposeService(session.urn).catch(() => {});
+      if (session.networkUrn) requestNetworkCaptureOnConnect(session.payload);
+    }
+    let result: RestartAppResult;
+    try {
+      result = await relaunch(services, params, ctx);
+    } catch (err) {
+      for (const session of sessions) cancelNetworkCaptureRequest(session.payload);
+      throw err;
+    }
+    for (const session of sessions) void reattachDebugger(registry, session);
     return result;
   };
   return tool;
 }
 
+interface DebuggerSession {
+  urn: string;
+  /** "port:deviceId", shared by the debugger and its NetworkInspector. */
+  payload: string;
+  /** Set when a NetworkInspector was running on this session. */
+  networkUrn?: string;
+}
+
 /** JS-runtime debugger sessions currently attached to `udid`'s app. */
-function runningDebuggerSessions(registry: Registry, udid: string): string[] {
-  const urns: string[] = [];
+function runningDebuggerSessions(registry: Registry, udid: string): DebuggerSession[] {
+  const sessions: DebuggerSession[] = [];
   // Best effort: a registry without a snapshot (tests, embedders) has nothing to re-attach.
   const services =
     typeof registry.getSnapshot === "function" ? registry.getSnapshot().services : [];
+  const running = new Set<string>();
   for (const [urn, node] of services) {
-    if (
-      urn.startsWith("JsRuntimeDebugger:") &&
-      urn.endsWith(`:${udid}`) &&
-      node.state === ServiceState.RUNNING
-    ) {
-      urns.push(urn);
+    if (node.state === ServiceState.RUNNING) running.add(urn);
+  }
+  for (const urn of running) {
+    if (urn.startsWith(`${JS_RUNTIME_DEBUGGER_NAMESPACE}:`) && urn.endsWith(`:${udid}`)) {
+      const payload = urn.slice(JS_RUNTIME_DEBUGGER_NAMESPACE.length + 1);
+      const networkUrn = `${NETWORK_INSPECTOR_NAMESPACE}:${payload}`;
+      sessions.push({ urn, payload, networkUrn: running.has(networkUrn) ? networkUrn : undefined });
     }
   }
-  return urns;
+  return sessions;
 }
 
 const REATTACH_BUDGET_MS = 30_000;
 const REATTACH_INTERVAL_MS = 250;
-// The relaunched app sends its first requests about half a second after its
-// runtime appears on Metro, so watch Metro's target list closely and connect
-// the moment one shows up; a full connect attempt every 250ms lost that race.
+// A full connect attempt (Metro discovery, then the CDP setup) on a fixed
+// interval can start just after the relaunched runtime appears and miss the
+// app's first requests. Reading Metro's target list is cheap, so read it often
+// and connect as soon as a new target shows up.
 const TARGET_POLL_MS = 50;
+// A Metro that accepts the connection but never answers must not stall the loop.
+const TARGET_LIST_TIMEOUT_MS = 1_000;
 
 /**
  * Reconnect a debugger session as soon as the relaunched app's runtime shows up
- * on Metro, so console logs from its startup are captured.
+ * on Metro, so console logs from its startup are captured. When the agent was
+ * watching the app's network, the reconnect also installs the network
+ * interceptor first and brings the NetworkInspector back, so the launch
+ * requests are captured too.
  * Logs printed while no session is attached are lost for good — the runtime
  * does not replay them — so waiting for the agent's next debugger call (the old
  * behaviour) dropped the whole cold start.
  */
-async function reattachDebugger(registry: Registry, urn: string): Promise<void> {
-  const port = urn.split(":")[1];
+async function reattachDebugger(registry: Registry, session: DebuggerSession): Promise<void> {
+  const port = session.payload.split(":")[0];
   const deadline = Date.now() + REATTACH_BUDGET_MS;
   let nextAttempt = 0;
   let targetsAtLastAttempt = -1;
-  while (Date.now() < deadline) {
-    const targets = await metroTargetCount(port);
-    // Retry at once when a target appears, otherwise every REATTACH_INTERVAL_MS
-    // (another device's app on the same Metro must not turn this into a busy loop).
-    if (Date.now() >= nextAttempt || targets > targetsAtLastAttempt) {
-      try {
-        await registry.resolveService(urn);
+  try {
+    while (Date.now() < deadline) {
+      const targets = await metroTargetCount(port);
+      // Retry at once when a target appears, otherwise every REATTACH_INTERVAL_MS
+      // (another device's app on the same Metro must not turn this into a busy loop).
+      if (Date.now() >= nextAttempt || targets > targetsAtLastAttempt) {
+        try {
+          await registry.resolveService(session.urn);
+        } catch {
+          nextAttempt = Date.now() + REATTACH_INTERVAL_MS;
+          targetsAtLastAttempt = targets;
+          await new Promise((r) => setTimeout(r, TARGET_POLL_MS));
+          continue;
+        }
+        if (session.networkUrn) await registry.resolveService(session.networkUrn).catch(() => {});
         return;
-      } catch {
-        nextAttempt = Date.now() + REATTACH_INTERVAL_MS;
-        targetsAtLastAttempt = targets;
       }
+      await new Promise((r) => setTimeout(r, TARGET_POLL_MS));
     }
-    await new Promise((r) => setTimeout(r, TARGET_POLL_MS));
+  } finally {
+    // Unused when the re-attach failed: no later connect may take it.
+    cancelNetworkCaptureRequest(session.payload);
   }
 }
 
 /** How many runtimes Metro lists right now, or -1 when it can't be read. */
 async function metroTargetCount(port: string | undefined): Promise<number> {
   try {
-    const res = await fetch(`http://localhost:${port}/json/list`);
+    const res = await fetch(`http://localhost:${port}/json/list`, {
+      signal: AbortSignal.timeout(TARGET_LIST_TIMEOUT_MS),
+    });
     const targets: unknown = await res.json();
     return Array.isArray(targets) ? targets.length : -1;
   } catch {

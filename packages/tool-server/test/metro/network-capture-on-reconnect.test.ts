@@ -1,9 +1,9 @@
 /**
  * The network interceptor lives in the app's JS runtime, so an app restart
- * drops it. Once an agent has watched a device's network, the debugger's next
- * connect (restart-app re-attaches it as the app starts) must install the
- * interceptor before its seconds-long setup, or the relaunched app's first
- * requests go out unseen.
+ * drops it. When restart-app relaunches an app whose network the agent was
+ * watching, the debugger's re-attach must install the interceptor before its
+ * seconds-long setup, or the relaunched app's first requests go out unseen.
+ * Any other connect must leave the app's fetch alone.
  *
  * Drives the real Registry → JsRuntimeDebugger / NetworkInspector path against
  * a mock Metro and records the CDP messages the debugger sends.
@@ -14,13 +14,15 @@ import * as http from "node:http";
 import { Registry } from "@argent/registry";
 import { jsRuntimeDebuggerBlueprint } from "../../src/blueprints/js-runtime-debugger";
 import { networkInspectorBlueprint } from "../../src/blueprints/network-inspector";
+import { requestNetworkCaptureOnConnect } from "../../src/utils/debugger/network-capture-intent";
 import { scopeTempHome } from "../helpers/temp-home";
 
 // The debugger builds a real LogFileWriter under os.homedir()/.argent/tmp.
 scopeTempHome("argent-network-reconnect-home-");
 
-const WATCHED = "watched-device";
-const UNWATCHED = "unwatched-device";
+// The udid the tools key sessions by. Metro names the same device differently,
+// so the request key must be built from this id, not from the target.
+const UDID = "11111111-2222-3333-4444-555555555555";
 
 let mockServer: http.Server;
 let wss: WebSocketServer;
@@ -28,14 +30,17 @@ let mockPort: number;
 let registry: Registry;
 let sent: Array<{ method: string; expression?: string }> = [];
 
-function target(id: string, page: number) {
+function target() {
   return {
-    id: `page-${page}`,
-    title: `app (${id})`,
+    id: "page-1",
+    title: "app (iPhone 17 Pro)",
     description: "[C++ connection]",
-    webSocketDebuggerUrl: `ws://localhost:${mockPort}/inspector/debug?device=${id}&page=${page}`,
-    deviceName: id,
-    reactNative: { logicalDeviceId: id, capabilities: { prefersFuseboxFrontend: true } },
+    webSocketDebuggerUrl: `ws://localhost:${mockPort}/inspector/debug?device=metro-device&page=1`,
+    deviceName: "iPhone 17 Pro",
+    reactNative: {
+      logicalDeviceId: "metro-logical-device-id",
+      capabilities: { prefersFuseboxFrontend: true },
+    },
   };
 }
 
@@ -59,7 +64,7 @@ beforeAll(async () => {
       }
       if (req.url === "/json/list") {
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify([target(WATCHED, 1), target(UNWATCHED, 2)]));
+        res.end(JSON.stringify([target()]));
         return;
       }
       res.statusCode = 404;
@@ -83,7 +88,11 @@ afterAll(async () => {
   await new Promise<void>((resolve) => wss.close(() => mockServer.close(() => resolve())));
 });
 
-beforeEach(() => {
+const DEBUGGER_URN = () => `JsRuntimeDebugger:${mockPort}:${UDID}`;
+
+beforeEach(async () => {
+  // Each test starts without a session; the first has none to end.
+  await registry.disposeService(DEBUGGER_URN()).catch(() => {});
   sent = [];
 });
 
@@ -94,25 +103,34 @@ const interceptorAt = () =>
 const setupAt = () => sent.findIndex((m) => m.method === "Runtime.enable");
 
 /** What restart-app does to a debugger session: tear it down, then connect again. */
-async function reconnect(deviceId: string): Promise<void> {
-  const urn = `JsRuntimeDebugger:${mockPort}:${deviceId}`;
-  await registry.disposeService(urn);
+async function reconnect(requestCapture: boolean): Promise<void> {
+  await registry.disposeService(DEBUGGER_URN());
+  if (requestCapture) requestNetworkCaptureOnConnect(`${mockPort}:${UDID}`);
   sent = [];
-  await registry.resolveService(urn);
+  await registry.resolveService(DEBUGGER_URN());
 }
 
 describe("network capture when the debugger reconnects", () => {
-  it("installs the interceptor before the setup for a device whose network was watched", async () => {
-    await registry.resolveService(`NetworkInspector:${mockPort}:${WATCHED}`);
-    await reconnect(WATCHED);
+  it("installs the interceptor before the setup when restart-app requested it", async () => {
+    await registry.resolveService(DEBUGGER_URN());
+    await reconnect(true);
 
     expect(interceptorAt()).toBeGreaterThanOrEqual(0);
     expect(interceptorAt()).toBeLessThan(setupAt());
   });
 
-  it("injects nothing for a device nobody watched", async () => {
-    await registry.resolveService(`JsRuntimeDebugger:${mockPort}:${UNWATCHED}`);
-    await reconnect(UNWATCHED);
+  it("serves one connect only", async () => {
+    await registry.resolveService(DEBUGGER_URN());
+    await reconnect(true);
+    await reconnect(false);
+
+    expect(setupAt()).toBeGreaterThanOrEqual(0);
+    expect(interceptorAt()).toBe(-1);
+  });
+
+  it("injects nothing on a later connect after the NetworkInspector was torn down", async () => {
+    await registry.resolveService(`NetworkInspector:${mockPort}:${UDID}`);
+    await reconnect(false);
 
     expect(setupAt()).toBeGreaterThanOrEqual(0);
     expect(interceptorAt()).toBe(-1);
