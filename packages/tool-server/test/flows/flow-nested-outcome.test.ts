@@ -248,7 +248,7 @@ describe("a failure carrying no message still says something after the colon", (
 
     expect(out?.status).toBe("fail");
     expect(out?.reason).toBe(
-      'flow "login" failed: 0 passed, 1 failed, 0 errored (gesture-tap: no reason given)'
+      'e2e test "login" failed: 0 passed, 1 failed, 0 errored (gesture-tap: no reason given)'
     );
   });
 
