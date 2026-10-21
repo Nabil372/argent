@@ -126,12 +126,12 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
       failedMsg: ({ failureSignal }) =>
         `Failed while waiting for screen to settle: ${failureSignal.error_code}`,
     },
-    description: `Block until the screen has rendered content and stopped changing, or a timeout elapses.
+    description: `Block until the screen has rendered content and held it for minStableMs, or a timeout elapses.
 
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
-${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }; settled=false means the screen never went
-still before the timeout. Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
+${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }; settled=false means that did
+not happen before the timeout. Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
