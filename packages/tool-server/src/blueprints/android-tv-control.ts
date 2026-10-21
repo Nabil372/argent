@@ -135,6 +135,17 @@ function toTvElement(n: TvNode): TvElement {
   };
 }
 
+/** Focus view of a uiautomator-schema hierarchy: a `uiautomator dump` or the android-devtools helper's. */
+export function tvFocusViewFromXml(xml: string): TvDescribeResponse {
+  const { focused, focusable } = collectTvNodes(xml);
+  const pkg = focused?.pkg || focusable.find((n) => n.pkg)?.pkg;
+  return {
+    bundleId: pkg || undefined,
+    focused: focused ? toTvElement(focused) : null,
+    focusable: focusable.map(toTvElement),
+  };
+}
+
 export const androidTvControlBlueprint: ServiceBlueprint<TvControlApi, DeviceInfo> = {
   namespace: ANDROID_TV_CONTROL_NAMESPACE,
 
@@ -202,23 +213,13 @@ export const androidTvControlBlueprint: ServiceBlueprint<TvControlApi, DeviceInf
       return raw;
     }
 
-    async function read(): Promise<{ focused: TvNode | null; focusable: TvNode[] }> {
-      return collectTvNodes(await dumpHierarchy());
-    }
-
     async function pressKey(direction: TvDirection): Promise<void> {
       await adbShell(serial, `input keyevent ${KEYEVENTS[direction]}`, { timeoutMs: 10_000 });
     }
 
     const api: TvControlApi = {
       async describe(): Promise<TvDescribeResponse> {
-        const { focused, focusable } = await read();
-        const pkg = focused?.pkg || focusable.find((n) => n.pkg)?.pkg;
-        return {
-          bundleId: pkg || undefined,
-          focused: focused ? toTvElement(focused) : null,
-          focusable: focusable.map(toTvElement),
-        };
+        return tvFocusViewFromXml(await dumpHierarchy());
       },
 
       async navigate(direction: TvDirection): Promise<void> {

@@ -10,6 +10,7 @@ vi.mock("../src/tools/describe/platforms/android", () => ({
 
 import { describeTv } from "../src/tools/describe/platforms/tv";
 import type { TvControlApi, TvDescribeResponse } from "../src/blueprints/tv-control";
+import type { AndroidDevtoolsApi } from "../src/blueprints/android-devtools";
 
 // The tool touches `describe()` and `recycleAx()`; the rest is unused here.
 function makeApi(
@@ -24,10 +25,20 @@ function makeApi(
   } as unknown as TvControlApi;
 }
 
-// describeTv resolves the TvControlApi through the registry; the unit tests
-// inject it directly by stubbing resolveService.
-function makeRegistry(api: TvControlApi) {
-  return { resolveService: vi.fn(async () => api) } as never;
+// describeTv resolves the TvControlApi (and, on Android TV, the android-devtools
+// helper) through the registry; the unit tests inject both by stubbing
+// resolveService. The helper is unavailable unless a test supplies one.
+function makeRegistry(
+  api: TvControlApi,
+  devtools: Pick<AndroidDevtoolsApi, "getHierarchy"> | null = null
+) {
+  return {
+    resolveService: vi.fn(async (urn: string) => {
+      if (!urn.startsWith("AndroidDevtools:")) return api;
+      if (!devtools) throw new Error("helper unavailable");
+      return devtools;
+    }),
+  } as never;
 }
 
 // Apple TV target — platform "ios" by UDID shape, so no Android fallback fires.
@@ -144,5 +155,46 @@ describe("describe (TV) — Android skips the focus-engine retries", () => {
     // The Android uiautomator fallback supplied the rendering + its hint.
     expect(describeAndroidMock).toHaveBeenCalledTimes(1);
     expect(res.hint).toMatch(/Android TV focus engine/i);
+  });
+});
+
+describe("describe (TV) — Android reads through the android-devtools helper", () => {
+  const helperXml =
+    '<?xml version="1.0" encoding="UTF-8"?><hierarchy rotation="0">' +
+    '<node class="android.widget.FrameLayout" package="com.example.tv" focusable="false" focused="false" bounds="[0,0][1920,1080]">' +
+    '<node class="android.widget.Button" package="com.example.tv" text="Play" content-desc="" focusable="true" focused="true" bounds="[0,0][200,100]"/>' +
+    '<node class="android.widget.Button" package="com.example.tv" text="Info" content-desc="" focusable="true" focused="false" bounds="[200,0][400,100]"/>' +
+    "</node></hierarchy>";
+
+  it("renders the helper's hierarchy without a uiautomator dump", async () => {
+    // A dump beside the running helper dies `Killed`, so it must not run.
+    const describeFn = vi.fn().mockRejectedValue(new Error("Killed"));
+    const getHierarchy = vi.fn().mockResolvedValue({ xml: helperXml });
+
+    const res = await describeTv(
+      makeRegistry(makeApi(describeFn), { getHierarchy } as never),
+      ANDROID_TV_DEVICE
+    );
+
+    expect(getHierarchy).toHaveBeenCalledTimes(1);
+    expect(describeFn).not.toHaveBeenCalled();
+    expect(res.source).toBe("tv-focus");
+    expect(res.description).toBe(
+      "App: com.example.tv\nFocused: Play [button]\nFocusable (2):\n→ Play [button]\n  Info [button]"
+    );
+  });
+
+  it("falls back to the uiautomator dump when the helper read fails", async () => {
+    const describeFn = vi.fn().mockResolvedValue(populated);
+    const getHierarchy = vi.fn().mockRejectedValue(new Error("helper spawn failed"));
+
+    const res = await describeTv(
+      makeRegistry(makeApi(describeFn), { getHierarchy } as never),
+      ANDROID_TV_DEVICE
+    );
+
+    expect(getHierarchy).toHaveBeenCalledTimes(1);
+    expect(describeFn).toHaveBeenCalledTimes(1);
+    expect(res.description).toContain("Focused: Home");
   });
 });
