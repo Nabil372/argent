@@ -84,7 +84,7 @@ On `debugger-component-tree` it only appends a short per-name count of what was 
 
 ## 5. Reading Console Logs (Log Registry)
 
-Logs are written to a flat log file on disk. Use the **log-registry → grep** pattern instead of reading logs inline. To capture the network requests an app makes at launch, call `view-network-logs` once, then `restart-app`.
+Logs are written to a flat log file on disk. Use the **log-registry → grep** pattern instead of reading logs inline.
 
 ### Workflow
 
@@ -128,6 +128,7 @@ When reading from the log file:
 | Connect to CDP (Metro / Chromium) | `debugger-connect`                                           |
 | Reload JS (already connected)     | `debugger-reload-metro`                                      |
 | Relaunch app on device            | `restart-app`                                                |
+| Network requests at app launch    | `view-network-logs` before `restart-app`, then again after   |
 | Inspect component at point        | `debugger-inspect-element`                                   |
 | Full component tree               | `debugger-component-tree`                                    |
 | Console log overview              | `debugger-log-registry` (summary + log file path for `Grep`) |
