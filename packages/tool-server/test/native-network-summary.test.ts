@@ -1,9 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import {
-  MAX_NETWORK_LOG_ENTRIES,
-  type NativeDevtoolsApi,
-  type NetworkEvent,
-} from "../src/blueprints/native-devtools";
+import { type NativeDevtoolsApi, type NetworkEvent } from "../src/blueprints/native-devtools";
 import {
   nativeNetworkLogsTool,
   summarizeRequests,
@@ -105,15 +101,52 @@ describe("native-network-logs request summary", () => {
     });
   });
 
-  it("does not take the response url as url when the request event is gone", () => {
+  it("sets neither url nor finalUrl when the request event is gone", () => {
     const [row] = summarizeRequests([
       ev("Network.responseReceived", {
         requestId: "1",
         response: { url: "http://x/login", status: 200, mimeType: "text/html" },
       }),
     ]);
-    expect(row?.url).toBeUndefined();
-    expect(row?.finalUrl).toBe("http://x/login");
+    expect(row).toEqual({ requestId: "1", status: 200, mimeType: "text/html" });
+  });
+
+  it("does not treat a canonicalized url as a redirect", () => {
+    const rows = summarizeRequests([
+      ev("Network.requestWillBeSent", {
+        requestId: "1",
+        request: { method: "GET", url: "https://example.com" },
+      }),
+      ev("Network.responseReceived", {
+        requestId: "1",
+        response: { url: "https://example.com/", status: 200 },
+      }),
+      ev("Network.requestWillBeSent", {
+        requestId: "2",
+        request: { method: "GET", url: "http://LOCALHOST:8765/x" },
+      }),
+      ev("Network.responseReceived", {
+        requestId: "2",
+        response: { url: "http://localhost:8765/x", status: 200 },
+      }),
+    ]);
+    expect(rows.map((r) => r.finalUrl)).toEqual([undefined, undefined]);
+  });
+
+  it("rounds fractional dylib timestamps to whole milliseconds", () => {
+    const [row] = summarizeRequests([
+      ev("Network.requestWillBeSent", {
+        requestId: "1",
+        timestamp: 1760000000.1,
+        request: { method: "GET", url: "http://x/a" },
+      }),
+      ev("Network.loadingFinished", {
+        requestId: "1",
+        timestamp: 1760000000.35333,
+        encodedDataLength: 1,
+      }),
+    ]);
+    expect(row?.durationMs).toBe(253);
   });
 });
 
@@ -130,14 +163,19 @@ describe("native-network-logs execute", () => {
 
   const run = (
     log: NetworkEvent[],
-    params: { limit?: number; format?: "requests" | "events"; clear?: boolean } = {}
+    params: { limit?: number; format?: "requests" | "events"; clear?: boolean } = {},
+    evicted = false
   ) => {
-    const clearNetworkLog = vi.fn();
+    const stored = [...log];
+    const clearNetworkLog = vi.fn(() => {
+      stored.length = 0;
+    });
     const api = {
       isConnected: () => true,
       activateNetworkInspection: () => {},
-      getNetworkLog: () => log,
+      getNetworkLog: () => [...stored],
       clearNetworkLog,
+      networkLogEvicted: () => evicted,
     } as unknown as NativeDevtoolsApi;
     const result = nativeNetworkLogsTool.execute(
       { nativeDevtools: api },
@@ -187,15 +225,28 @@ describe("native-network-logs execute", () => {
     await kept.result;
     expect(kept.clearNetworkLog).not.toHaveBeenCalled();
     const cleared = run(log, { clear: true });
-    await cleared.result;
+    expect((await cleared.result).count).toBe(3);
     expect(cleared.clearNetworkLog).toHaveBeenCalledWith(BUNDLE);
   });
 
-  it("flags a log that reached its size limit", async () => {
-    const full = Array.from({ length: MAX_NETWORK_LOG_ENTRIES }, () =>
-      ev("Network.dataReceived", { requestId: "a", dataLength: 1 })
-    );
-    expect((await run(full).result).truncated).toBe(true);
-    expect((await run(full.slice(1)).result).truncated).toBeUndefined();
+  it("returns no rows for limit 0 but still counts them", async () => {
+    expect(await run(log, { limit: 0 }).result).toMatchObject({
+      count: 0,
+      totalRequests: 3,
+      requests: [],
+    });
+    expect((await run(log, { limit: 0, format: "events" }).result).events).toEqual([]);
+  });
+
+  it("rejects a negative or fractional limit", () => {
+    const base = { udid: UDID, bundleId: BUNDLE };
+    const schema = nativeNetworkLogsTool.zodSchema!;
+    expect(schema.safeParse({ ...base, limit: -1 }).success).toBe(false);
+    expect(schema.safeParse({ ...base, limit: 1.5 }).success).toBe(false);
+  });
+
+  it("flags a log only once it evicted events", async () => {
+    expect((await run(log, {}, true).result).truncated).toBe(true);
+    expect((await run(log, {}, false).result).truncated).toBeUndefined();
   });
 });
