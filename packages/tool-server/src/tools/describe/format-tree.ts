@@ -148,31 +148,55 @@ interface FormatDescribeOptions {
 }
 
 /**
- * Two labelled elements that partly overlap — neither inside the other — mean
- * one covers the other: a sticky footer over the last list row, a header over a
- * scrolled row, a toast or LogBox banner over buttons, a sheet over the screen
- * behind it. The AX tree has no z-order, so the tap at either one's centre may
- * land on the other. Mark both. No "clear" point is offered: a covering
- * footer's touch area can be larger than its AX frame, so the visible strip of
- * the row below it may still be dead.
+ * Two labelled elements whose frames overlap by more than a quarter of the
+ * smaller one, without one sitting inside the other, mean one covers the
+ * other: a sticky footer or tab bar over a list row that straddles its edge, a
+ * search bar over a scrolled row, a toast over a button. The flat iOS list
+ * gives no stacking order between such siblings, so the tap at either one's
+ * centre may land on the other. Mark both. No "clear" point is offered: a
+ * covering footer's touch area can be larger than its AX frame, so the visible
+ * strip of the row below it may still be dead.
+ *
+ * Not caught: an element fully (95%+) under another, a pair of passive roles
+ * (text, image, heading), and anything at least half the screen in area, such
+ * as a sheet.
  */
 const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable", "AXScrollBar"]);
 const PASSIVE_ROLES = new Set(["AXStaticText", "AXImage", "AXHeading"]);
+// ax-service reports UIKit scroll indicators as labelled AXGroups. They sit
+// over the content they scroll, alert button stacks included, and no scroll
+// can separate an indicator from its own content.
+const SCROLL_INDICATOR_LABEL = /^(vertical|horizontal) scroll bar\b/i;
+const OVERLAP_NAME_MAX = 40;
+const OVERLAP_PARTNERS_MAX = 3;
+
+function overlapName(n: DescribeNode): string {
+  // Cut by code point: a lone surrogate left by a UTF-16 slice makes strict
+  // JSON parsers reject the whole MCP message.
+  const raw = Array.from(n.label ?? n.identifier ?? n.value ?? n.role)
+    .slice(0, OVERLAP_NAME_MAX)
+    .join("");
+  return `"${escapeForLine(raw).replace(/"/g, "'")}"`;
+}
 
 function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
-  const notes = new Map<DescribeNode, string>();
   const els = root.children.filter((n) => {
     const f = n.frame;
     return (
       Boolean(n.label || n.identifier || n.value) &&
       !OVERLAP_SKIP_ROLES.has(n.role) &&
+      !SCROLL_INDICATOR_LABEL.test(n.label ?? "") &&
       f.width > 0 &&
       f.height > 0 &&
       f.width * f.height < 0.5
     );
   });
-  const name = (n: DescribeNode) =>
-    `"${(n.label ?? n.identifier ?? n.value ?? n.role).slice(0, 40).replace(/"/g, "'")}"`;
+  const partners = new Map<DescribeNode, { other: DescribeNode; ratio: number }[]>();
+  const add = (self: DescribeNode, other: DescribeNode, ratio: number) => {
+    const list = partners.get(self) ?? [];
+    list.push({ other, ratio });
+    partners.set(self, list);
+  };
   for (let i = 0; i < els.length; i++) {
     for (let j = i + 1; j < els.length; j++) {
       const a = els[i]!;
@@ -190,17 +214,21 @@ function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
       // Text over text (or an image) is a layout quirk, not a tap trap: agents
       // tap controls, and a label pair was most of the noise on dense screens.
       if (PASSIVE_ROLES.has(a.role) && PASSIVE_ROLES.has(b.role)) continue;
-      for (const [self, other] of [
-        [a, b],
-        [b, a],
-      ] as const) {
-        if (notes.has(self)) continue;
-        notes.set(
-          self,
-          `overlaps ${name(other)}: one covers the other — scroll to separate them before tapping`
-        );
-      }
+      add(a, b, ratio);
+      add(b, a, ratio);
     }
+  }
+  const notes = new Map<DescribeNode, string>();
+  for (const [self, list] of partners) {
+    // Largest overlap first, so separating the named elements clears the worst one.
+    const names = list
+      .sort((x, y) => y.ratio - x.ratio)
+      .slice(0, OVERLAP_PARTNERS_MAX)
+      .map((p) => overlapName(p.other));
+    notes.set(
+      self,
+      `overlaps ${names.join(", ")}: one covers the other — scroll to separate them before tapping`
+    );
   }
   return notes;
 }
@@ -251,8 +279,10 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
 
   // Vega's lowercase toolkit roles count as content only for its own source.
   const contentRoles = isVega ? VEGA_CONTENT_ROLES : CONTENT_ROLES;
-  // Flat iOS lists carry no z-order; mode "nested" trees nest children inside
-  // parents, where overlap is the normal case.
+  // Overlap notes run on the flat iOS simulator lists only. Nested trees
+  // (Android, Chromium, Vega, physical iOS) can have the same sibling overlap,
+  // but parent/child frames overlap there by design and the check does not
+  // tell the two apart yet.
   const body =
     mode === "flat"
       ? renderFlat(root, contentRoles, overlapNotes(root))

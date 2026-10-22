@@ -660,6 +660,86 @@ describe("formatDescribeTree — overlapping elements", () => {
     };
     expect(formatDescribeTree(nested as any, { source: "ax-service" })).not.toContain("overlaps");
   });
+
+  const render = (...children: ReturnType<typeof node>[]) =>
+    formatDescribeTree({ ...root, children } as any, { source: "ax-service" });
+  const button = (label: string, x: number, y: number) => node("AXButton", label, x, y, 0.4, 0.1);
+
+  it("ignores an overlap of a quarter or less of the smaller element", () => {
+    // 0.4 x 0.02 shared out of 0.4 x 0.1: 20%.
+    expect(render(button("Top", 0.1, 0.1), button("Bottom", 0.1, 0.18))).not.toContain("overlaps");
+  });
+
+  it("ignores elements that only touch diagonally", () => {
+    expect(render(button("A", 0.1, 0.1), button("B", 0.6, 0.3))).not.toContain("overlaps");
+    expect(
+      render(node("AXButton", "A", 0.1, 0.1, 0.2, 0.1), node("AXButton", "B", 0.4, 0.3, 0.2, 0.1))
+    ).not.toContain("overlaps");
+  });
+
+  it("measures the overlap against the smaller element", () => {
+    // Fully inside a larger button: 100% of the smaller one, 60% of the larger.
+    expect(
+      render(
+        node("AXButton", "Pay", 0.1, 0.5, 0.4, 0.1),
+        node("AXButton", "Now", 0.15, 0.51, 0.3, 0.08)
+      )
+    ).not.toContain("overlaps");
+  });
+
+  it("skips elements of half the screen or more", () => {
+    expect(
+      render(node("AXButton", "Sheet", 0, 0.3, 1, 0.7), button("Behind", 0.3, 0.25))
+    ).not.toContain("overlaps");
+  });
+
+  it("skips sliders, scroll bars and UIKit scroll indicators", () => {
+    for (const other of [
+      node("AXAdjustable", "Volume", 0.1, 0.15, 0.4, 0.1),
+      node("AXScrollBar", "Scroller", 0.1, 0.15, 0.4, 0.1),
+      node("AXGroup", "Vertical scroll bar, 1 page", 0.1, 0.15, 0.4, 0.1),
+      node("AXGroup", "Horizontal scroll bar, 2 pages", 0.1, 0.15, 0.4, 0.1),
+    ]) {
+      expect(render(button("Allow Once", 0.1, 0.1), other)).not.toContain("overlaps");
+    }
+  });
+
+  it("skips unlabelled elements", () => {
+    const blank = {
+      role: "AXButton",
+      frame: { x: 0.1, y: 0.15, width: 0.4, height: 0.1 },
+      children: [],
+    };
+    expect(render(button("Save", 0.1, 0.1), blank as any)).not.toContain("overlaps");
+  });
+
+  it("lists every partner, largest overlap first", () => {
+    const out = render(
+      node("AXButton", "Toast", 0.1, 0.8, 0.8, 0.06),
+      node("AXButton", "Continue", 0.05, 0.84, 0.9, 0.08),
+      node("AXButton", "Save", 0.1, 0.77, 0.3, 0.06)
+    );
+    expect(lineOf(out, "Toast")).toContain(`overlaps "Save", "Continue": one covers the other`);
+    expect(lineOf(out, "Save")).toContain(`overlaps "Toast":`);
+    expect(lineOf(out, "Continue")).toContain(`overlaps "Toast":`);
+  });
+
+  it("keeps the partner's name on one line and JSON-safe", () => {
+    const out = render(
+      button('Say "hi"\nthere', 0.1, 0.1),
+      button(`${"x".repeat(39)}\u{1F600}tail`, 0.1, 0.15)
+    );
+    const lines = out.split("\n").filter((l) => l.includes("overlaps"));
+    expect(lines).toHaveLength(2);
+    expect(lines.every((l) => /\(\d\.\d{3}, \d\.\d{3}, \d\.\d{3}, \d\.\d{3}\)$/.test(l))).toBe(
+      true
+    );
+    expect(out).toContain(`overlaps "Say 'hi'\\nthere"`);
+    // Cut at 40 code points: the emoji survives whole, the rest is dropped.
+    expect(out).toContain(`overlaps "${"x".repeat(39)}\u{1F600}":`);
+    expect(out).not.toContain('tail":');
+    expect(out).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+  });
 });
 
 describe("formatDescribeTree — overlap notes are iOS-flat only", () => {
