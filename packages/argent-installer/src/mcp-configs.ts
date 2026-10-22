@@ -1791,6 +1791,14 @@ export function getManagedContentTargets(
         addManagedTarget(targets.agentTargets, adapter.name, path.join(base, "agents"), root);
         break;
       }
+      case "Kiro": {
+        // Argent writes no skills here itself, but `npx skills add` links
+        // .kiro/skills/<name> into .agents/skills when it detects Kiro.
+        const kiroBase =
+          scope === "global" ? path.join(homedir(), ".kiro") : path.join(root, ".kiro");
+        addManagedTarget(targets.skillTargets, adapter.name, path.join(kiroBase, "skills"), root);
+        break;
+      }
     }
   }
 

@@ -161,7 +161,7 @@ describe("regex text selectors: parse/serialize", () => {
           executionPrerequisite: "",
           steps: [{ kind: "tap", selector }],
         })
-      ).toThrow(/cannot serialize loose flow selector.*only a loose text-only selector/i);
+      ).toThrow(/cannot serialize loose e2e test selector.*only a loose text-only selector/i);
     }
   });
 
@@ -187,7 +187,7 @@ describe("regex text selectors: parse/serialize", () => {
           executionPrerequisite: "",
           steps: [{ kind: "tap", selector } as never],
         })
-      ).toThrow(/cannot serialize flow selector: unknown key `junk` - allowed keys:/i);
+      ).toThrow(/cannot serialize e2e test selector: unknown key `junk` - allowed keys:/i);
     }
   });
 
@@ -201,7 +201,7 @@ describe("regex text selectors: parse/serialize", () => {
       { identifier: "ok", id: "other" },
     ]) {
       expect(() => selectorToYaml(selector as never)).toThrow(
-        /cannot serialize flow selector: unknown key `id`/i
+        /cannot serialize e2e test selector: unknown key `id`/i
       );
     }
   });

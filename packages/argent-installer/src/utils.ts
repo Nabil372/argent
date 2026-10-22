@@ -112,6 +112,16 @@ export function getGlobalSkillLockPath(): string {
 // entries under it count as ours even once they leave the bundled set.
 export const ARGENT_SKILL_PREFIX = "argent-";
 
+// Skills earlier argent versions shipped under names no longer bundled.
+// Init, update and uninstall remove them even when no lockfile tracks them.
+export const LEGACY_ARGENT_SKILL_NAMES: readonly string[] = [
+  "argent-create-flow",
+  "argent-qa-flows",
+  "argent-simulator-interact",
+  "argent-simulator-setup",
+  "argent-ios-profiler",
+];
+
 export function listArgentSkillsInLock(lockPath: string): string[] {
   try {
     const raw = fs.readFileSync(lockPath, "utf8");

@@ -18,6 +18,7 @@ export const PLATFORMS = [
   "android",
   "chromium",
   "vega",
+  "harmony",
   "tvos",
   "android-tv",
 ] as const;
@@ -149,7 +150,10 @@ interface InstallationCliUninstallCompleteProps extends FailureTelemetryProps {
 
 interface ToolInvokeProps extends AiTelemetryProps {
   device_provider?: string;
+  /** The tool's current id, also when it was called by a former one. */
   tool: string;
+  /** True when the tool was called by a former id (a registry alias). */
+  alias_used?: boolean;
   tool_invocation_id: string;
   platform?: Platform;
   /**
@@ -164,6 +168,7 @@ interface ToolInvokeProps extends AiTelemetryProps {
 interface ToolCompleteProps extends AiTelemetryProps {
   device_provider?: string;
   tool: string;
+  alias_used?: boolean;
   tool_invocation_id: string;
   platform?: Platform;
   device_kind?: TelemetryDeviceKind;
@@ -173,6 +178,7 @@ interface ToolCompleteProps extends AiTelemetryProps {
 interface ToolFailProps extends FailureTelemetryProps, AiTelemetryProps {
   device_provider?: string;
   tool: string;
+  alias_used?: boolean;
   tool_invocation_id?: string;
   platform?: Platform;
   device_kind?: TelemetryDeviceKind;
@@ -219,6 +225,7 @@ interface DebuggerToolOutcomeProps {
 
 interface CliRunFailProps extends FailureTelemetryProps {
   tool: string;
+  alias_used?: boolean;
   duration_ms: number;
 }
 

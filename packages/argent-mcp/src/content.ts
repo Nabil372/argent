@@ -238,6 +238,8 @@ export type FlowExecuteResult = {
    * wrote, or `{ path, error }` for one it could not write.
    */
   baselineWrites?: unknown[];
+  /** A test of the same name that this one hides. */
+  warning?: string;
 };
 
 const STATUS_GLYPH: Record<string, string> = {
@@ -298,8 +300,10 @@ export async function flowRunToMcpContent(
 
   blocks.push({
     type: "text",
-    text: `Running flow "${result.flow}"${result.device ? ` on ${result.device}` : ""} (${result.steps.length} steps)`,
+    text: `Running e2e test "${result.flow}"${result.device ? ` on ${result.device}` : ""} (${result.steps.length} steps)`,
   });
+  if (typeof result.warning === "string")
+    blocks.push({ type: "text", text: `⚠ ${result.warning}` });
 
   for (let i = 0; i < result.steps.length; i++) {
     const step = result.steps[i]!;
@@ -355,7 +359,7 @@ export async function flowRunToMcpContent(
       text: `${result.ok ? "PASS" : "FAIL"} — ${result.passed ?? 0} passed, ${result.failed ?? 0} failed, ${result.errored ?? 0} errored, ${result.skipped ?? 0} skipped${note}${durationSuffix(result.durationMs)}`,
     });
   } else {
-    blocks.push({ type: "text", text: `Flow "${result.flow}" complete.` });
+    blocks.push({ type: "text", text: `E2E test "${result.flow}" complete.` });
   }
   return blocks;
 }

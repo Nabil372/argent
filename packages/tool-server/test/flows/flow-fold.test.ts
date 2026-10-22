@@ -226,7 +226,7 @@ describe("fold: recorder", () => {
     expect(added.recorded).toBe("1. fold: open");
     // The tool RAN, with the device bound.
     expect(calls).toEqual([{ tool: "fold", args: { udid: DEVICE, posture: "open" } }]);
-    const content = await fs.readFile(path.join(tmpDir, ".argent", "flows", "rec.yaml"), "utf8");
+    const content = await fs.readFile(path.join(tmpDir, ".argent", "e2e", "rec.yaml"), "utf8");
     expect(parseFlow(content).steps).toEqual([{ kind: "fold", posture: "open" }]);
   });
 
