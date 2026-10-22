@@ -43,6 +43,11 @@ export interface LogStats {
   totalEntries: number;
   byLevel: Record<string, number>;
   fileSizeBytes: number;
+  /**
+   * Entries logged after the file stopped at MAX_ENTRIES: in no count, cluster
+   * or file line, only in tail(). Present only when non-zero.
+   */
+  droppedEntries?: number;
 }
 
 interface ClusterState {
@@ -72,6 +77,7 @@ export class LogFileWriter {
   private fd: number | null = null;
   private bytesWritten = 0;
   private entryCount = 0;
+  private droppedCount = 0;
   private levelCounts: Record<string, number> = {};
   private clusters = new Map<string, ClusterState>();
   /** The newest TAIL_MAX entries of each level, kept even past MAX_ENTRIES. */
@@ -117,6 +123,7 @@ export class LogFileWriter {
     if (ring.length > TAIL_MAX) ring.shift();
 
     if (this.entryCount >= MAX_ENTRIES) {
+      this.droppedCount++;
       return { ...entry, marker: `[L:${entry.id}]` };
     }
 
@@ -177,6 +184,7 @@ export class LogFileWriter {
       totalEntries: this.entryCount,
       byLevel: { ...this.levelCounts },
       fileSizeBytes: this.bytesWritten,
+      ...(this.droppedCount > 0 ? { droppedEntries: this.droppedCount } : {}),
     };
   }
 
@@ -209,7 +217,9 @@ export class LogFileWriter {
 
   /** The newest `limit` entries (at most TAIL_MAX), of `levels` if given, oldest first. */
   tail({ levels, limit }: { levels?: readonly string[]; limit: number }): TailEntry[] {
-    const rings = levels ? levels.map((l) => this.recent.get(l) ?? []) : [...this.recent.values()];
+    const rings = levels
+      ? [...new Set(levels)].map((l) => this.recent.get(l) ?? [])
+      : [...this.recent.values()];
     return rings
       .flat()
       .sort((a, b) => a.id - b.id)

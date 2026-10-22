@@ -185,7 +185,38 @@ describe("LogFileWriter", () => {
     for (let i = 0; i < 50_003; i++) writer.write(makeEntry(i, { message: "m" }));
 
     expect(writer.getStats().totalEntries).toBe(50_000);
+    expect(writer.getStats().droppedEntries).toBe(3);
     expect(writer.tail({ limit: 3 }).map((e) => e.id)).toEqual([50_000, 50_001, 50_002]);
+  });
+
+  it("getStats() leaves droppedEntries out while the file still takes entries", () => {
+    writer.write(makeEntry(0));
+    expect(writer.getStats()).not.toHaveProperty("droppedEntries");
+  });
+
+  it("tail() reads a level listed twice once", () => {
+    for (let i = 0; i < 6; i++) writer.write(makeEntry(i, { level: i % 2 ? "error" : "log" }));
+
+    expect(writer.tail({ levels: ["error", "error"], limit: 10 }).map((e) => e.id)).toEqual([
+      1, 3, 5,
+    ]);
+    expect(writer.tail({ levels: ["error", "log", "error"], limit: 4 }).map((e) => e.id)).toEqual([
+      2, 3, 4, 5,
+    ]);
+  });
+
+  it("tail() keeps exactly the newest TAIL_MAX entries of one level", () => {
+    for (let i = 0; i < TAIL_MAX + 7; i++) writer.write(makeEntry(i, { level: "error" }));
+
+    const ids = writer.tail({ limit: TAIL_MAX + 7 }).map((e) => e.id);
+    expect(ids).toHaveLength(TAIL_MAX);
+    expect(ids[0]).toBe(7);
+    expect(ids.at(-1)).toBe(TAIL_MAX + 6);
+  });
+
+  it("caps tail at 100 entries and 300 chars, the numbers the skills promise", () => {
+    expect(TAIL_MAX).toBe(100);
+    expect(TAIL_MESSAGE_CHARS).toBe(300);
   });
 
   it("tail() cuts long messages without splitting a surrogate pair", () => {
@@ -399,5 +430,13 @@ describe.skipIf(!CAN_MAKE_UNWRITABLE)("LogFileWriter whose log file cannot be cr
     // The entry itself is still accounted for, through the counts and clusters.
     expect(unwritableWriter.getStats().totalEntries).toBe(1);
     expect(unwritableWriter.getClusters()[0].message).toBe("unreadable line");
+  });
+
+  it("still serves the entry through tail()", () => {
+    unwritableWriter.write(makeEntry(0, { level: "error", message: "unreadable line" }));
+
+    expect(unwritableWriter.tail({ levels: ["error"], limit: 5 })).toEqual([
+      expect.objectContaining({ id: 0, message: "unreadable line" }),
+    ]);
   });
 });

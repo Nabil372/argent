@@ -459,8 +459,22 @@ describe("debugger-log-registry tail", () => {
     expect((await read({})).entries).toBeUndefined();
   });
 
+  it("filters by the error level the description uses as its example", async () => {
+    await connectWith([
+      { level: "log", message: "a" },
+      { level: "error", message: "b" },
+      { level: "warning", message: "c" },
+    ]);
+
+    const result = await read({ tail: 5, levels: ["error"] });
+
+    expect(result.entries?.map((e) => e.message)).toEqual(["b"]);
+  });
+
   it.each([
     ["an unknown level", { tail: 3, levels: ["warn"] }],
+    ["a zero tail", { tail: 0 }],
+    ["a fractional tail", { tail: 1.5 }],
     ["an empty levels list", { tail: 3, levels: [] }],
     ["levels without tail", { levels: ["warning"] }],
     ["a tail above the cap", { tail: TAIL_MAX + 1 }],
