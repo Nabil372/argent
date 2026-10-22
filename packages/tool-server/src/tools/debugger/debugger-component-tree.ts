@@ -729,7 +729,7 @@ const zodSchema = z.object({
   device_id: z
     .string()
     .describe(
-      "Device id from list-devices — the SAME id you passed to debugger-connect (iOS simulator UDID or Android serial)."
+      "Device id from list-devices: the SAME id you passed to debugger-connect (iOS simulator UDID or Android serial)."
     ),
   udid: z
     .string()
@@ -775,11 +775,11 @@ export function createDebuggerComponentTreeTool(
         `Failed to read React component tree: ${failureSignal.error_code}`,
     },
     description: `Fetch the current screen of a running React Native app as a compact component text tree.
-Only shows on-screen components with unique positions — off-screen (scrolled) content,
+Only shows on-screen components with unique positions. Off-screen (scrolled) content,
 full-screen transparent wrappers, and implementation-detail components are pruned.
 
 Each visible component is listed with its name, text content, and normalized
-tap coordinates in [0,1] space (fractions of the screen, not pixels — same space as tap/swipe/gesture).
+tap coordinates in [0,1] space (fractions of the screen, not pixels; same space as tap/swipe/gesture).
 On an iOS simulator with a landscape UI (a rotated device, or an unfolded foldable), the tap
 coordinates are on the screen's axes, which the gesture tools use. When two or more devices share
 one Metro, pass the simulator's udid too. If the result says that the orientation could not be
