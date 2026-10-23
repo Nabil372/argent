@@ -10,6 +10,7 @@ import {
   isToolsServerHealthy,
   isToolsServerProcessAlive,
   readAllToolsServerStates,
+  couldBeOurToolServer,
   readToolsServerState,
   formatToolsServerUrl,
   LINK_URL_SCHEME,
@@ -197,7 +198,8 @@ type PackageManager = "npm" | "yarn" | "pnpm" | "bun";
 export function globalPackageManagerOf(packageRoot: string): PackageManager {
   const p = packageRoot.replace(/\\/g, "/");
   if (p.includes("/.bun/")) return "bun";
-  if (/\/pnpm\//i.test(p)) return "pnpm";
+  // PNPM_HOME is often ~/Library/pnpm, but also ~/.pnpm.
+  if (/\/\.?pnpm\//i.test(p)) return "pnpm";
   if (/\/yarn\/(global|data\/global)\//i.test(p) || p.includes("/.yarn/")) return "yarn";
   return "npm";
 }
@@ -306,16 +308,18 @@ function readEnginesNode(packageRoot: string): string | null {
   }
 }
 
+/** The real path of `p`, or of its nearest existing ancestor (a config file may not exist yet). */
+function realPath(p: string): string {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    const parent = path.dirname(p);
+    return parent === p ? p : path.join(realPath(parent), path.basename(p));
+  }
+}
+
 function samePath(a: string, b: string | null | undefined): boolean {
-  if (!b) return false;
-  const real = (p: string) => {
-    try {
-      return fs.realpathSync(p);
-    } catch {
-      return path.resolve(p);
-    }
-  };
-  return real(a) === real(b);
+  return !!b && realPath(a) === realPath(b);
 }
 
 function isWorkspaceRoot(dir: string): boolean {
@@ -688,14 +692,15 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
   const { projectRoot } = ctx;
   const checks: DoctorCheck[] = [];
   // Run from ~, a project config path can be the global one: list it once.
+  // Compared by real path: HOME may be a symlink to the directory doctor runs in.
   const seenPaths = new Set<string>();
   const configured = findConfiguredAdapterScopes(ALL_ADAPTERS, projectRoot)
     .map((c) =>
-      c.scope === "project" && c.configPath === c.adapter.globalPath()
+      c.scope === "project" && samePath(c.configPath, c.adapter.globalPath())
         ? { ...c, scope: "global" as const }
         : c
     )
-    .filter((c) => !seenPaths.has(c.configPath) && seenPaths.add(c.configPath));
+    .filter((c) => !seenPaths.has(realPath(c.configPath)) && seenPaths.add(realPath(c.configPath)));
   const entryCtx = {
     projectRoot,
     cwd: ctx.cwd,
@@ -719,6 +724,10 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
   }
   const found: Found[] = [];
   const notes: DoctorCheck[] = [];
+  // Configured, but in a file the editor can't parse.
+  const unparsed = new Set<string>();
+  // A recorded .mcp.json rejection: Claude Code skips the project entry.
+  let mcpjsonRejected = false;
 
   for (const { adapter, scope, configPath } of configured) {
     if (adapter.name === "Claude Code" && !isStrictJson(configPath)) {
@@ -728,6 +737,7 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
           fix: "Fix the JSON syntax (Claude Code allows no comments or trailing commas)",
         })
       );
+      unparsed.add(adapter.name);
       continue;
     }
     let entry: McpServerEntry | null;
@@ -784,9 +794,17 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
             ...(isClaude ? { claudeScope: "local" as const } : {}),
           });
         }
+        const rejection =
+          isClaude && !finding.entry && /disabledMcpjsonServers/.test(finding.reason);
+        if (rejection) mcpjsonRejected = true;
         if (!finding.entry || (!isClaude && hasProjectEntry)) {
           notes.push(
-            check("warn", `${adapter.name}: ${finding.reason}`, { detail: finding.location })
+            check("warn", `${adapter.name}: ${finding.reason}`, {
+              detail: finding.location,
+              ...(rejection
+                ? { fix: `Remove "argent" from disabledMcpjsonServers in ${finding.location}` }
+                : {}),
+            })
           );
         }
       }
@@ -795,11 +813,24 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
     }
   }
 
+  const isRejected = (f: Found) => mcpjsonRejected && f.claudeScope === "project";
   const claudeRanks = found.flatMap((f) =>
-    f.claudeScope ? [CLAUDE_SCOPE_RANK[f.claudeScope]] : []
+    f.claudeScope && !isRejected(f) ? [CLAUDE_SCOPE_RANK[f.claudeScope]] : []
   );
   const claudeWinner = claudeRanks.length > 0 ? Math.max(...claudeRanks) : null;
   for (const f of found) {
+    if (isRejected(f)) {
+      checks.push(
+        check(
+          "info",
+          `${f.adapterName}: ${formatEntry(f.entry)} (not loaded: rejected, see below)`,
+          {
+            detail: f.location,
+          }
+        )
+      );
+      continue;
+    }
     if (f.claudeScope && CLAUDE_SCOPE_RANK[f.claudeScope] < claudeWinner!) {
       const winner = (Object.keys(CLAUDE_SCOPE_RANK) as ClaudeScope[]).find(
         (k) => CLAUDE_SCOPE_RANK[k] === claudeWinner
@@ -842,7 +873,7 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
     );
   }
 
-  const configuredNames = new Set(found.map((f) => f.adapterName));
+  const configuredNames = new Set([...found.map((f) => f.adapterName), ...unparsed]);
   if (found.length === 0 && !checks.some((c) => c.status === "error")) {
     checks.push(
       check("error", "argent is not configured in any supported editor for this project", {
@@ -988,7 +1019,10 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     const target = complete ?? fallback[0];
     if (target) ruleTargets.add(target);
   }
+  const seenRuleDirs = new Set<string>();
   for (const target of ruleTargets) {
+    if (seenRuleDirs.has(realPath(target))) continue;
+    seenRuleDirs.add(realPath(target));
     const absent = absentIn(target);
     checks.push(
       absent.length === 0
@@ -1055,6 +1089,16 @@ export function redactUrl(url: string): string {
   }
 }
 
+/** Missing counts as writable: the launcher creates it. */
+function isWritableDir(dir: string): boolean {
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
 // The tools client appends `/tools` to the URL as given, so probe the same URL.
 async function remoteStatus(url: string, token?: string): Promise<number | null> {
   try {
@@ -1100,6 +1144,15 @@ async function toolServerSection(
   }
 
   const state = await readToolsServerState(paths.bundlePath);
+  const argentDir = path.join(homedir(), ".argent");
+  if (!isWritableDir(argentDir)) {
+    checks.push(
+      check("error", "~/.argent is not writable, so no tool-server can start", {
+        detail: "a sudo run can leave it owned by root",
+        fix: `sudo chown -R "$USER" ${argentDir}`,
+      })
+    );
+  }
   if (!state) {
     checks.push(check("info", "Not running (starts on the first tool call)"));
   } else {
@@ -1140,13 +1193,21 @@ async function toolServerSection(
     }
   }
 
-  const foreign = (await readAllToolsServerStates()).filter(
-    ({ state: s }) => s.bundlePath !== paths.bundlePath && isToolsServerProcessAlive(s.pid)
+  // A reused pid (the state file outlived its server) is not a tool-server.
+  const foreignPids = new Set(
+    (await readAllToolsServerStates())
+      .filter(
+        ({ state: s }) =>
+          s.bundlePath !== paths.bundlePath &&
+          isToolsServerProcessAlive(s.pid) &&
+          couldBeOurToolServer(s.pid, s.bundlePath)
+      )
+      .map(({ state: s }) => s.pid)
   );
-  if (foreign.length > 0) {
+  if (foreignPids.size > 0) {
     checks.push(
-      check("info", `${foreign.length} tool-server(s) from other argent installs running`, {
-        detail: foreign.map(({ state: s }) => `pid ${s.pid}`).join(", "),
+      check("info", `${foreignPids.size} tool-server(s) from other argent installs running`, {
+        detail: [...foreignPids].map((pid) => `pid ${pid}`).join(", "),
       })
     );
   }
@@ -1375,6 +1436,22 @@ async function fetchLatestVersion(): Promise<string | null> {
   }
 }
 
+/** Bare `argent mcp` entries start the global install, which may lag behind this copy. */
+export function globalBehindCheck(
+  global: GlobalInstall | null,
+  running: string,
+  latest: string
+): DoctorCheck | null {
+  const version = global?.runError ? null : global?.version;
+  if (!version || version === running || !isNewerVersion(latest, version)) return null;
+  const pm = global!.root ? globalPackageManagerOf(global!.root) : "npm";
+  return check(
+    "warn",
+    `Global install v${version}, which \`argent mcp\` entries start, is behind v${latest}`,
+    { fix: formatShellCommand(globalInstallCommand(pm, `${PACKAGE_NAME}@latest`)) }
+  );
+}
+
 async function otherSection(
   ctx: DoctorContext,
   running: string,
@@ -1382,7 +1459,8 @@ async function otherSection(
   updateCmd: string
 ): Promise<DoctorSection> {
   const checks: DoctorCheck[] = [];
-  const consent = getConsentState(process.env, ctx.projectRoot);
+  // The same root `argent telemetry status` reads, which stops at package.json.
+  const consent = getConsentState(process.env, ctx.cwd);
   const source = consent.source.detail ?? consent.source.source;
   checks.push(
     check("info", `Telemetry ${consent.enabled ? "enabled" : "disabled"} (${source})`, {
@@ -1401,6 +1479,8 @@ async function otherSection(
     } else {
       checks.push(check("ok", `Up to date (latest v${latest})`));
     }
+    const behind = latest && globalBehindCheck(ctx.global, running, latest);
+    if (behind) checks.push(behind);
   }
   return { title: "Other", checks };
 }
@@ -1435,7 +1515,9 @@ function currentDir(): string {
   try {
     return process.cwd();
   } catch {
-    // The shell's directory was deleted (a removed worktree).
+    // The shell's directory was deleted (a removed worktree). Move to ~ so the
+    // installer probes that read process.cwd() don't throw either.
+    process.chdir(homedir());
     return homedir();
   }
 }

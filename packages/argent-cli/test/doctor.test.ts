@@ -11,6 +11,7 @@ import {
   depsProbeFix,
   editorsSection,
   findGlobalArgent,
+  globalBehindCheck,
   globalBinDirOf,
   globalPackageManagerOf,
   installSection,
@@ -1034,6 +1035,26 @@ describe("global install helpers", () => {
     expect(globalBinDirOf(pkg)).toBe(path.join(prefix, "bin"));
   });
 
+  it("recognises a pnpm global under ~/.pnpm", () => {
+    expect(globalPackageManagerOf("/home/me/.pnpm/global/5/node_modules/@swmansion/argent")).toBe(
+      "pnpm"
+    );
+  });
+
+  it("warns when the global install the entries start is behind npm latest", () => {
+    const global = {
+      bin: "/g/bin/argent",
+      root: "/g/lib/node_modules/@swmansion/argent",
+      version: "0.26.0",
+    };
+    expect(globalBehindCheck(global, "0.30.1", "0.30.1")).toMatchObject({
+      status: "warn",
+      fix: expect.stringContaining("@swmansion/argent@latest"),
+    });
+    expect(globalBehindCheck({ ...global, version: "0.30.1" }, "0.30.1", "0.30.1")).toBeNull();
+    expect(globalBehindCheck(null, "0.30.1", "0.30.1")).toBeNull();
+  });
+
   it("tells which package manager owns a global install", () => {
     expect(
       globalPackageManagerOf("/Users/me/.bun/install/global/node_modules/@swmansion/argent")
@@ -1159,6 +1180,48 @@ describe("editor and skill sections", () => {
     });
     const checks = editorsSection(doctorCtx()).checks;
     expect(checks.find((c) => c.label.startsWith("Kiro"))?.label).toMatch(/switched off/);
+  });
+
+  it("judges the user entry Claude Code runs when the .mcp.json one is rejected", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent } });
+    writeJson(path.join(projectRoot, ".claude", "settings.local.json"), {
+      disabledMcpjsonServers: ["argent"],
+    });
+    writeJson(path.join(home, ".claude.json"), {
+      mcpServers: { argent: { command: "/opt/gone/bin/argent", args: ["mcp"] } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.label.includes("/opt/gone/bin/argent"))?.status).toBe("error");
+    expect(
+      checks.find((c) => c.label === "Claude Code: argent mcp (not loaded: rejected, see below)")
+    ).toBeDefined();
+    expect(checks.find((c) => /disabledMcpjsonServers/.test(c.label))?.fix).toMatch(
+      /Remove "argent"/
+    );
+  });
+
+  it("does not list an editor whose config is unparseable as detected without argent", () => {
+    writeJson(path.join(home, ".claude", "settings.json"), { model: "x" });
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      '// argent\n{"mcpServers":{"argent":{"command":"argent","args":["mcp"]}}}'
+    );
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.some((c) => /Detected without argent:.*Claude Code/.test(c.label))).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("lists a config once when HOME is a symlink", () => {
+    const link = path.join(os.tmpdir(), `argent-doctor-homelink-${process.pid}`);
+    fs.rmSync(link, { force: true });
+    fs.symlinkSync(projectRoot, link);
+    try {
+      vi.stubEnv("HOME", link);
+      writeJson(path.join(projectRoot, ".cursor", "mcp.json"), { mcpServers: { argent } });
+      const checks = editorsSection(doctorCtx()).checks;
+      expect(checks.filter((c) => c.label.startsWith("Cursor")).length).toBe(1);
+    } finally {
+      fs.rmSync(link, { force: true });
+    }
   });
 
   const installSkills = (dir: string) => {
