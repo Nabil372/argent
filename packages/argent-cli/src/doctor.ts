@@ -44,6 +44,7 @@ import {
   NPM_REGISTRY,
   PACKAGE_NAME,
   RULES_DIR,
+  AGENTS_DIR,
   type McpConfigAdapter,
   type McpServerEntry,
 } from "@argent/installer";
@@ -729,6 +730,20 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
   // A recorded .mcp.json rejection: Claude Code skips the project entry.
   let mcpjsonRejected = false;
 
+  // findConfiguredAdapterScopes reads an unreadable file as "no entry".
+  for (const adapter of ALL_ADAPTERS) {
+    for (const configPath of [adapter.projectPath(projectRoot), adapter.globalPath()]) {
+      if (!configPath || !isUnreadable(configPath) || unparsed.has(adapter.name)) continue;
+      checks.push(
+        check("error", `${adapter.name}: can't read its config file`, {
+          detail: home(configPath),
+          fix: `sudo chown "$USER" ${configPath}`,
+        })
+      );
+      unparsed.add(adapter.name);
+    }
+  }
+
   for (const { adapter, scope, configPath } of configured) {
     if (adapter.name === "Claude Code" && !isStrictJson(configPath)) {
       checks.push(
@@ -883,8 +898,21 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
     );
   }
 
-  const unconfigured = detectAdapters()
-    // A local install only writes project configs: editors without one can't be added.
+  const detected = detectAdapters();
+  // A local install only writes project configs: editors without one can't be added.
+  const globalOnly = detected
+    .filter((a) => ctx.mode === "local" && a.projectPath(projectRoot) === null)
+    .map((a) => a.name)
+    .filter((name) => !configuredNames.has(name));
+  if (globalOnly.length > 0) {
+    checks.push(
+      check("warn", `${globalOnly.join(", ")}: no argent, and a local install can't add it`, {
+        detail: "these editors have only a global config, which local mode never writes",
+        fix: "npm i -g @swmansion/argent, then argent init --global (or add argent to the editor by hand)",
+      })
+    );
+  }
+  const unconfigured = detected
     .filter((a) => ctx.mode === "global" || a.projectPath(projectRoot) !== null)
     .map((a) => a.name)
     .filter((name) => !configuredNames.has(name));
@@ -1034,6 +1062,34 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     );
   }
 
+  // Subagents the rules tell the agent to run (argent-environment-inspector).
+  let agentFiles: string[] = [];
+  try {
+    agentFiles = fs.readdirSync(AGENTS_DIR).filter((f) => f.endsWith(".md"));
+  } catch {
+    // An older package without agents.
+  }
+  const agentDirs = (adapter: McpConfigAdapter, scope: "local" | "global") =>
+    getManagedContentTargets([adapter], projectRoot, scope).agentTargets.map((t) => t.targetPath);
+  const agentsAbsentIn = (dir: string) =>
+    agentFiles.filter((f) => !fs.existsSync(path.join(dir, f)));
+  const seenAgentDirs = new Set<string>();
+  for (const { adapter, scope } of configured) {
+    // Editors load agents from either scope, like Claude Code's rules.
+    const either = [...agentDirs(adapter, "local"), ...agentDirs(adapter, "global")];
+    if (either.some((d) => agentsAbsentIn(d).length === 0)) continue;
+    for (const target of agentDirs(adapter, scope)) {
+      if (seenAgentDirs.has(realPath(target))) continue;
+      seenAgentDirs.add(realPath(target));
+      checks.push(
+        check("warn", `Agents missing in ${home(target)}`, {
+          detail: agentsAbsentIn(target).join(", "),
+          fix: `${ctx.argentCmd} update`,
+        })
+      );
+    }
+  }
+
   return { title: "Skills & rules", checks };
 }
 
@@ -1086,6 +1142,15 @@ export function redactUrl(url: string): string {
     return parsed.toString();
   } catch {
     return url;
+  }
+}
+
+function isUnreadable(file: string): boolean {
+  try {
+    fs.accessSync(file, fs.constants.R_OK);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EACCES";
   }
 }
 

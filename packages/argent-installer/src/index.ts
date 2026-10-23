@@ -20,6 +20,7 @@ export {
   resolveProjectRoot,
   ARGENT_SKILL_PREFIX,
   RULES_DIR,
+  AGENTS_DIR,
 } from "./utils.js";
 // Read-only probes `argent doctor` (in @argent/cli) reports from.
 export { isTempRunnerPath, readManifestDeclaration } from "./topology.js";

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as http from "node:http";
-import { listBundledSkills, RULES_DIR } from "@argent/installer";
+import { AGENTS_DIR, listBundledSkills, RULES_DIR } from "@argent/installer";
 import {
   childFailureReason,
   classifyMcpEntry,
@@ -1412,6 +1412,31 @@ describe("editor and skill sections", () => {
     expect(checks.some((c) => /only when started from it/.test(c.label))).toBe(true);
   });
 
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "reports a config file it can't read instead of calling argent unconfigured",
+    () => {
+      const file = path.join(home, ".claude.json");
+      writeJson(file, { mcpServers: { argent } });
+      fs.chmodSync(file, 0o000);
+      try {
+        const checks = editorsSection(doctorCtx()).checks;
+        expect(checks.find((c) => c.status === "error")?.label).toMatch(/can't read/);
+        expect(checks.some((c) => /not configured/.test(c.label))).toBe(false);
+      } finally {
+        fs.chmodSync(file, 0o644);
+      }
+    }
+  );
+
+  it("says a local install can't add argent to a global-only editor", () => {
+    fs.mkdirSync(path.join(home, ".codeium", "windsurf", "memories"), { recursive: true });
+    const checks = editorsSection({ ...doctorCtx(), mode: "local" }).checks;
+    expect(checks.find((c) => c.label.startsWith("Windsurf"))).toMatchObject({
+      status: "warn",
+      label: expect.stringMatching(/local install can't add it/),
+    });
+  });
+
   it("does not add a not-configured error next to an unparseable config", () => {
     fs.writeFileSync(path.join(projectRoot, ".mcp.json"), "{,}");
     const checks = editorsSection(doctorCtx()).checks;
@@ -1422,6 +1447,18 @@ describe("editor and skill sections", () => {
     for (const skill of listBundledSkills())
       fs.mkdirSync(path.join(dir, skill), { recursive: true });
   };
+
+  it("warns when the subagent the rules call is missing", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent } });
+    const checks = () => skillsSection(doctorCtx(), "reinstall").checks;
+    expect(checks().find((c) => c.label.startsWith("Agents missing"))?.detail).toMatch(
+      /argent-environment-inspector\.md/
+    );
+    const agents = path.join(projectRoot, ".claude", "agents");
+    fs.mkdirSync(agents, { recursive: true });
+    fs.writeFileSync(path.join(agents, "argent-environment-inspector.md"), "");
+    expect(checks().some((c) => c.label.startsWith("Agents missing"))).toBe(false);
+  });
 
   it("finds skills for a Claude Code local-scope entry", () => {
     localScope({ argent });
@@ -1444,6 +1481,10 @@ describe("editor and skill sections", () => {
     fs.mkdirSync(rules, { recursive: true });
     for (const f of fs.readdirSync(RULES_DIR))
       fs.copyFileSync(path.join(RULES_DIR, f), path.join(rules, f));
+    const agents = path.join(home, ".claude", "agents");
+    fs.mkdirSync(agents, { recursive: true });
+    for (const f of fs.readdirSync(AGENTS_DIR).filter((f) => f.endsWith(".md")))
+      fs.copyFileSync(path.join(AGENTS_DIR, f), path.join(agents, f));
     const checks = skillsSection(doctorCtx(), "reinstall").checks;
     expect(checks.every((c) => c.status === "ok")).toBe(true);
   });
