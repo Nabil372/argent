@@ -12,6 +12,7 @@ import {
   isToolsServerProcessAlive,
   readAllToolsServerStates,
   couldBeOurToolServer,
+  AUTH_TOKEN_ENV,
   readToolsServerState,
   formatToolsServerUrl,
   LINK_URL_SCHEME,
@@ -30,6 +31,8 @@ import {
   isNewerVersion,
   isSwitchedOffInEditor,
   isTempRunnerPath,
+  hasCodexRules,
+  resolveInstallableUpdateTarget,
   isYarnPnp,
   listBundledSkills,
   nodeSatisfiesEngines,
@@ -42,7 +45,6 @@ import {
   resolveProjectRoot,
   ARGENT_SKILL_PREFIX,
   MCP_BINARY_NAME,
-  NPM_REGISTRY,
   PACKAGE_NAME,
   RULES_DIR,
   AGENTS_DIR,
@@ -121,7 +123,6 @@ export interface DoctorContext {
   guiPath?: string | null;
 }
 
-const UPDATE_CHECK_TIMEOUT_MS = 2_500;
 const DEPS_PROBE_TIMEOUT_MS = 30_000;
 const SHIM_PROBE_TIMEOUT_MS = 5_000;
 const GLOBAL_SHIM_FIX =
@@ -600,7 +601,13 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
         ? `Point the entry at an existing argent, or run ${reinit}`
         : `Point the entry at an existing argent, or remove it and run ${ctx.argentCmd} init`,
     });
-  const base = ctx.scope === "project" ? ctx.projectRoot : ctx.cwd;
+  const scopeBase = ctx.scope === "project" ? ctx.projectRoot : ctx.cwd;
+  // An entry's own cwd: VS Code and Cursor expand ${workspaceFolder} in it.
+  const entryCwd = entry.cwd?.replace(/\$\{workspace(Folder|Root)\}/g, ctx.projectRoot);
+  if (entryCwd?.includes("${")) {
+    return check("info", `${cmd} (runs in ${entry.cwd}, an editor variable, not verified)`);
+  }
+  const base = entryCwd ? path.resolve(scopeBase, entryCwd) : scopeBase;
   const absolute = path.isAbsolute(entry.command);
   const pathLike = absolute || /[\\/]/.test(entry.command);
   const fileName = path.basename(entry.command);
@@ -729,7 +736,17 @@ function configuredScopes(ctx: DoctorContext) {
   });
 }
 
-export function editorsSection(ctx: DoctorContext): DoctorSection {
+/** A tool-server an entry points at through its own ARGENT_TOOLS_URL. */
+interface EntryToolsUrl {
+  editor: string;
+  url: string;
+  token?: string;
+}
+
+export function editorsSection(
+  ctx: DoctorContext,
+  entryToolsUrls: EntryToolsUrl[] = []
+): DoctorSection {
   const { projectRoot } = ctx;
   const checks: DoctorCheck[] = [];
   // Run from ~, a project config path can be the global one: list it once.
@@ -917,6 +934,10 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
       label: `${f.adapterName}: ${result.label}`,
       detail: [f.location, result.detail].filter(Boolean).join(" · "),
     });
+    const url = f.entry.env?.ARGENT_TOOLS_URL;
+    if (url) {
+      entryToolsUrls.push({ editor: f.adapterName, url, token: f.entry.env?.[AUTH_TOKEN_ENV] });
+    }
   }
   checks.push(...notes);
 
@@ -1109,6 +1130,20 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     );
   }
 
+  // Codex reads argent's rules from developer_instructions in its config.toml.
+  for (const { adapter, scope } of configured) {
+    for (const target of getManagedContentTargets([adapter], rootFor(ctx, adapter), scope)
+      .codexConfigTargets) {
+      checks.push(
+        hasCodexRules(target.targetPath)
+          ? check("ok", `Rules present in ${home(target.targetPath)} (developer_instructions)`)
+          : check("warn", `Rules missing in ${home(target.targetPath)} (developer_instructions)`, {
+              fix: `${ctx.argentCmd} update`,
+            })
+      );
+    }
+  }
+
   // Subagents the rules tell the agent to run (argent-environment-inspector).
   let agentFiles: string[] = [];
   try {
@@ -1226,6 +1261,30 @@ async function remoteStatus(url: string, token?: string): Promise<number | null>
   } catch {
     return null;
   }
+}
+
+/**
+ * The MCP server reads ARGENT_TOOLS_URL from its entry's env, so an entry with
+ * one talks to that tool-server, not the local one this section describes.
+ */
+async function entryRemoteChecks(urls: EntryToolsUrl[]): Promise<DoctorCheck[]> {
+  return Promise.all(
+    urls.map(async ({ editor, url, token }) => {
+      const result = remoteCheck(await remoteStatus(url, token), url, "env");
+      return {
+        ...result,
+        label: `${editor} entry: ${result.label.replace("(ARGENT_TOOLS_URL)", "(its env ARGENT_TOOLS_URL)")}`,
+        ...(result.fix
+          ? {
+              fix: result.fix.replace(
+                "unset ARGENT_TOOLS_URL",
+                "remove ARGENT_TOOLS_URL from the entry"
+              ),
+            }
+          : {}),
+      };
+    })
+  );
 }
 
 async function toolServerSection(
@@ -1595,19 +1654,6 @@ async function platformsSection(
 
 // MARK: Other
 
-async function fetchLatestVersion(): Promise<string | null> {
-  try {
-    const res = await fetch(`${NPM_REGISTRY}/${PACKAGE_NAME}/latest`, {
-      signal: AbortSignal.timeout(UPDATE_CHECK_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    const body = (await res.json()) as { version?: unknown };
-    return typeof body.version === "string" ? body.version : null;
-  } catch {
-    return null;
-  }
-}
-
 /** Bare `argent mcp` entries start the global install, which may lag behind this copy. */
 export function globalBehindCheck(
   global: GlobalInstall | null,
@@ -1628,7 +1674,8 @@ async function otherSection(
   ctx: DoctorContext,
   running: string,
   offline: boolean,
-  updateCmd: string
+  updateCmd: string,
+  pm: PackageManager
 ): Promise<DoctorSection> {
   const checks: DoctorCheck[] = [];
   // The same root `argent telemetry status` reads, which stops at package.json.
@@ -1643,15 +1690,26 @@ async function otherSection(
   if (offline) {
     checks.push(check("info", "Update check skipped (--offline)"));
   } else {
-    const latest = await fetchLatestVersion();
-    if (!latest) {
+    // The same target `argent update` would install, minimum-release-age included.
+    const target = await resolveInstallableUpdateTarget(pm, running).catch(() => null);
+    const installable = target?.targetVersion ?? null;
+    if (!target) {
       checks.push(check("info", "Update check skipped (npm registry unreachable)"));
-    } else if (isNewerVersion(latest, running)) {
-      checks.push(check("warn", `Update available: v${running} → v${latest}`, { fix: updateCmd }));
+    } else if (installable && isNewerVersion(installable, running)) {
+      checks.push(
+        check("warn", `Update available: v${running} → v${installable}`, { fix: updateCmd })
+      );
+    } else if (isNewerVersion(target.latestVersion, running)) {
+      checks.push(
+        check(
+          "info",
+          `v${target.latestVersion} is out, but held by your minimum-release-age policy`
+        )
+      );
     } else {
-      checks.push(check("ok", `Up to date (latest v${latest})`));
+      checks.push(check("ok", `Up to date (latest v${target.latestVersion})`));
     }
-    const behind = latest && globalBehindCheck(ctx.global, running, latest);
+    const behind = installable && globalBehindCheck(ctx.global, running, installable);
     if (behind) checks.push(behind);
   }
   return { title: "Other", checks };
@@ -1783,16 +1841,20 @@ export async function collectDoctorReport(options: {
     : `Reinstall argent: ${formatShellCommand(globalInstallCommand(globalPm, PACKAGE_NAME))}`;
   const updateCmd = updateCommand(runningLocal, globalPm, ctx.argentCmd);
   const linked = await getResolvedToolsUrl();
+  const entryToolsUrls: EntryToolsUrl[] = [];
+  const editors = editorsSection(ctx, entryToolsUrls);
 
   // Sections that touch the network or spawn a process run concurrently.
-  const [toolServer, platforms, other] = await Promise.all([
+  const [toolServer, entryRemotes, platforms, other] = await Promise.all([
     toolServerSection(ctx, running, options.paths, linked),
+    entryRemoteChecks(entryToolsUrls),
     platformsSection(ctx, options.paths, linked, reinstall),
-    otherSection(ctx, running, options.offline, updateCmd),
+    otherSection(ctx, running, options.offline, updateCmd, runningLocal ? projectPm : globalPm),
   ]);
+  toolServer.checks.push(...entryRemotes);
   const sections = [
     installSection(ctx, running, options.paths),
-    editorsSection(ctx),
+    editors,
     skillsSection(ctx, reinstall),
     toolServer,
     platforms,

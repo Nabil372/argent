@@ -17,6 +17,7 @@ import {
   isSwitchedOffInEditor,
   getManagedContentTargets,
   injectCodexRules,
+  hasCodexRules,
   removeCodexRules,
 } from "../src/mcp-configs.js";
 
@@ -101,6 +102,14 @@ afterEach(() => {
 });
 
 // ── isArgentManagedEntry ──────────────────────────────────────────────────────
+
+describe("isArgentManagedEntry with a cwd", () => {
+  it("treats an entry's cwd as a customization", () => {
+    expect(isArgentManagedEntry({ command: "argent", args: ["mcp"], cwd: "apps/mobile" })).toBe(
+      false
+    );
+  });
+});
 
 describe("isArgentManagedEntry", () => {
   it("accepts every shape argent itself writes", () => {
@@ -1951,6 +1960,14 @@ describe("injectCodexRules / removeCodexRules", () => {
       path.join(rulesDir, "argent.md"),
       "---\ndescription: Test rule\nalwaysApply: true\n---\n\nUse argent tools for simulator control."
     );
+  });
+
+  it("tells whether a config carries argent's rules", () => {
+    const configPath = path.join(tmpDir, "config.toml");
+    fs.writeFileSync(configPath, 'model = "o3"\n');
+    expect(hasCodexRules(configPath)).toBe(false);
+    injectCodexRules(configPath, rulesDir);
+    expect(hasCodexRules(configPath)).toBe(true);
   });
 
   it("injects rules content with frontmatter stripped", () => {

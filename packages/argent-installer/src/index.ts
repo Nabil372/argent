@@ -25,6 +25,7 @@ export {
 // Read-only probes `argent doctor` (in @argent/cli) reports from.
 export { isTempRunnerPath, readManifestDeclaration } from "./topology.js";
 export { NPM_REGISTRY } from "./constants.js";
+export { resolveInstallableUpdateTarget } from "./update-target.js";
 export {
   ALL_ADAPTERS,
   detectAdapters,
@@ -33,6 +34,7 @@ export {
   hasCustomizingEnv,
   isArgentDisabledInClaudeProject,
   isSwitchedOffInEditor,
+  hasCodexRules,
   type McpConfigAdapter,
   type McpServerEntry,
 } from "./mcp-configs.js";

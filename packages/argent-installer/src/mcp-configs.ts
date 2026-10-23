@@ -51,6 +51,8 @@ export interface McpServerEntry {
    * Each editor honours at most one of them (McpConfigAdapter.switchOffKey).
    */
   switchedOffBy?: SwitchOffKey[];
+  /** The directory the editor starts the command in, when the entry sets one. */
+  cwd?: string;
 }
 
 type SwitchOffKey = "enabled" | "disabled";
@@ -225,6 +227,7 @@ function normalizeServerEntry(raw: unknown): McpServerEntry | null {
     const extra = {
       ...(env ? { env } : {}),
       ...(switchedOffBy.length > 0 ? { switchedOffBy } : {}),
+      ...(typeof raw.cwd === "string" && raw.cwd ? { cwd: raw.cwd } : {}),
     };
     // opencode stores the command as a single array: { command: [cmd, ...args] }.
     if (Array.isArray(raw.command) && raw.command.every((c) => typeof c === "string")) {
@@ -254,7 +257,8 @@ export function isSwitchedOffInEditor(
 // RELATIVE path into a node_modules copy of the package (everything
 // getLocalArgentBinRelPath can emit); absolute or out-of-tree is hand-tuned.
 export function isArgentManagedEntry(entry: McpServerEntry | null): boolean {
-  if (entry === null || hasCustomizingEnv(entry)) return false;
+  // argent never writes a cwd, so one is a customization too.
+  if (entry === null || hasCustomizingEnv(entry) || entry.cwd) return false;
   const { command, args } = entry;
   switch (command) {
     case MCP_BINARY_NAME:
@@ -1927,6 +1931,16 @@ export function injectCodexRules(configPath: string, rulesDir: string): string |
   config.developer_instructions = injectArgentSection(existing, rules);
   writeToml(configPath, config);
   return configPath;
+}
+
+/** Whether a Codex config.toml carries argent's rules in `developer_instructions`. */
+export function hasCodexRules(configPath: string): boolean {
+  try {
+    const existing = readToml(configPath).developer_instructions;
+    return typeof existing === "string" && existing.includes(ARGENT_RULES_START);
+  } catch {
+    return false;
+  }
 }
 
 export function removeCodexRules(configPath: string): boolean {

@@ -187,6 +187,16 @@ describe("classifyMcpEntry", () => {
     }
   });
 
+  it("resolves a relative script against the entry's own cwd", () => {
+    const rel = "node_modules/@swmansion/argent/dist/cli.js";
+    const app = path.join(projectRoot, "apps", "mobile");
+    fs.mkdirSync(path.dirname(path.join(app, rel)), { recursive: true });
+    fs.writeFileSync(path.join(app, rel), "");
+    const entry = { command: "node", args: [rel, "mcp"], cwd: "${workspaceFolder}/apps/mobile" };
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("ok");
+    expect(classifyMcpEntry({ ...entry, cwd: "${env:APP}" }, ctx()).status).toBe("info");
+  });
+
   it("does not judge a command that uses an editor variable", () => {
     const entry = { command: "${HOME}/.local/bin/argent", args: ["mcp"] };
     expect(classifyMcpEntry(entry, ctx()).status).toBe("info");
@@ -843,6 +853,26 @@ describe("collectDoctorReport", () => {
     fs.mkdirSync(path.join(home, ".claude"));
     process.chdir(app);
     expect((await collect()).projectRoot).toBe(fs.realpathSync(app));
+  });
+
+  it("checks the tool-server an entry points at through its own env", async () => {
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          argent: {
+            command: "argent",
+            args: ["mcp"],
+            env: { ARGENT_TOOLS_URL: "http://127.0.0.1:1" },
+          },
+        },
+      })
+    );
+    const checks = await toolServer();
+    expect(checks.find((c) => c.label.startsWith("Claude Code entry"))).toMatchObject({
+      status: "error",
+      label: expect.stringMatching(/unreachable/),
+    });
   });
 
   it("rejects an argent:// pairing string in ARGENT_TOOLS_URL", async () => {
@@ -1595,6 +1625,16 @@ describe("editor and skill sections", () => {
     fs.mkdirSync(agents, { recursive: true });
     fs.writeFileSync(path.join(agents, "argent-environment-inspector.md"), "");
     expect(checks().some((c) => c.label.startsWith("Agents missing"))).toBe(false);
+  });
+
+  it("warns when a Codex config lacks argent's rules", () => {
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".codex", "config.toml"),
+      '[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n'
+    );
+    const checks = skillsSection(doctorCtx(), "reinstall").checks;
+    expect(checks.find((c) => /developer_instructions/.test(c.label))?.status).toBe("warn");
   });
 
   it("finds skills for a Claude Code local-scope entry", () => {
