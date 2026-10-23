@@ -80,12 +80,29 @@ describe("classifyMcpEntry", () => {
     expect(result.fix).toContain("argent init");
   });
 
-  it("only warns when custom env may make `argent` resolve inside the editor", () => {
+  it("only warns when a version manager's env may make `argent` resolve inside the editor", () => {
     const result = classifyMcpEntry(
-      { command: "argent", args: ["mcp"], env: { PATH: "/custom/bin" } },
+      { command: "argent", args: ["mcp"], env: { MISE_NODE_VERSION: "24.14.1" } },
       ctx({ globalOnPath: false })
     );
     expect(result.status).toBe("warn");
+  });
+
+  it("does not let env that can't change the lookup soften a dead entry", () => {
+    const result = classifyMcpEntry(
+      { command: "argent", args: ["mcp"], env: { ARGENT_IOS_TEAM_ID: "ABCDE12345" } },
+      ctx({ globalOnPath: false })
+    );
+    expect(result.status).toBe("error");
+  });
+
+  it("looks the command up on the PATH the entry sets, not this shell's", () => {
+    const bin = path.join(projectRoot, "bin");
+    const entry = { command: "argent", args: ["mcp"], env: { PATH: bin } };
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("error");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "argent"), "", { mode: 0o755 });
+    expect(classifyMcpEntry(entry, ctx({ globalOnPath: false })).status).toBe("ok");
   });
 
   it("does not count the legacy ARGENT_MCP_LOG env as a customization", () => {
@@ -111,7 +128,7 @@ describe("classifyMcpEntry", () => {
       { command: "npx", args: ["--no-install", "argent", "mcp"] },
       { command: "yarn", args: ["argent", "mcp"] },
     ]) {
-      const missing = classifyMcpEntry(entry, ctx());
+      const missing = classifyMcpEntry(entry, ctx({ globalOnPath: false }));
       expect(missing).toMatchObject({ status: "error", fix: "pnpm install" });
       expect(classifyMcpEntry(entry, ctx({ localInstalled: true })).status).toBe("ok");
     }
@@ -120,6 +137,52 @@ describe("classifyMcpEntry", () => {
   it("accepts an on-demand npx entry without a local install", () => {
     const entry = { command: "npx", args: ["-y", "@swmansion/argent@latest", "mcp"] };
     expect(classifyMcpEntry(entry, ctx()).status).toBe("ok");
+  });
+
+  it("accepts the other on-demand spellings", () => {
+    for (const args of [
+      ["-y", "argent@latest", "mcp"],
+      ["argent", "mcp"],
+      ["-y", "--package=@swmansion/argent", "argent", "mcp"],
+    ]) {
+      expect(classifyMcpEntry({ command: "npx", args }, ctx()).status).toBe("ok");
+    }
+    const dlx = { command: "yarn", args: ["dlx", "@swmansion/argent", "mcp"] };
+    expect(classifyMcpEntry(dlx, ctx()).status).toBe("ok");
+  });
+
+  it("lets `npx --no-install argent` fall back to the global argent", () => {
+    const entry = { command: "npx", args: ["--no-install", "argent", "mcp"] };
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("ok");
+  });
+
+  it("resolves an npx entry the way npx does, through ancestors", () => {
+    const entry = { command: "npx", args: ["--no-install", "argent", "mcp"] };
+    const noGlobal = { globalOnPath: false };
+    expect(classifyMcpEntry(entry, ctx({ ...noGlobal, localResolvable: true })).status).toBe("ok");
+    expect(classifyMcpEntry(entry, ctx({ ...noGlobal, localResolvable: false })).status).toBe(
+      "error"
+    );
+  });
+
+  it("finds the script after node options that take a value", () => {
+    const rel = "node_modules/@swmansion/argent/dist/cli.js";
+    fs.mkdirSync(path.dirname(path.join(projectRoot, rel)), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, rel), "");
+    for (const flags of [
+      ["-r", "dotenv/config"],
+      ["--env-file", ".env"],
+      ["--import", "tsx"],
+    ]) {
+      expect(
+        classifyMcpEntry({ command: "node", args: [...flags, rel, "mcp"] }, ctx()).status
+      ).toBe("ok");
+    }
+  });
+
+  it("does not judge a command that uses an editor variable", () => {
+    const entry = { command: "${HOME}/.local/bin/argent", args: ["mcp"] };
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("info");
   });
 
   it("doesn't count a package that only contains the argent name as on-demand", () => {
