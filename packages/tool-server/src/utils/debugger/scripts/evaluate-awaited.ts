@@ -4,6 +4,11 @@
  * as `fn.toString()`, so each must be self-contained: no closures over module
  * scope, no imports, nothing the app's runtime (Hermes or V8) cannot execute.
  * Type annotations are fine; `tsc` strips them and emits the body verbatim.
+ *
+ * None of them throws: a helper that threw would come back as
+ * `exceptionDetails`, which the client could not tell from a fault in the
+ * inspector. Anything that can fail is caught and reported in the return
+ * value instead.
  */
 
 /** Where a thenable ended up; `state` moves off "pending" from its callbacks. */
@@ -13,10 +18,14 @@ export interface SettleBox {
   error?: unknown;
 }
 
-export type ThenableVerdict = { value: unknown } | { pending: true };
+/**
+ * What a remote value is to the caller: its JSON form, a thenable still to be
+ * watched, or something with no JSON form (`unserializable` names its type).
+ */
+export type RemoteVerdict = { value: unknown } | { pending: true } | { unserializable: string };
 
-/** `{ value }` when `this` is not a thenable, `{ pending: true }` when it is. */
-export function readIfNotThenable(this: unknown): ThenableVerdict {
+/** `{ pending: true }` when `this` is a thenable, else its verdict. */
+export function readIfNotThenable(this: unknown): RemoteVerdict {
   const self = this as { then?: unknown } | null;
   try {
     if (self && typeof self.then === "function") return { pending: true };
@@ -25,7 +34,9 @@ export function readIfNotThenable(this: unknown): ThenableVerdict {
     // machinery report the error as a rejection.
     return { pending: true };
   }
-  return { value: self };
+  // A function sent by value reaches the client as `null` or nothing at all.
+  if (typeof self === "function") return { unserializable: "function" };
+  return { value: typeof self === "symbol" ? String(self) : self };
 }
 
 /** Attach callbacks to the thenable `this` and return the box they write to. */
@@ -41,23 +52,38 @@ export function watchThenable(this: unknown): SettleBox {
       box.state = "fulfilled";
     }, reject);
   } catch (error) {
+    // A Promise whose own `then` throws synchronously.
     reject(error);
   }
   return box;
 }
 
-/** The fulfilled value, with a Symbol turned into its description. */
-export function readBoxValue(this: SettleBox): unknown {
-  return typeof this.value === "symbol" ? String(this.value) : this.value;
+/** The fulfilled value's verdict. */
+export function readBoxValue(this: SettleBox): RemoteVerdict {
+  const value = this.value;
+  if (typeof value === "function") return { unserializable: "function" };
+  return { value: typeof value === "symbol" ? String(value) : value };
 }
 
-/** The rejection reason as text: an Error's stack, else JSON, else `String()`. */
+/**
+ * The rejection reason as text: an Error's stack, else `name: message` (what
+ * a DOMException or an Error without a stack has), else JSON, else `String()`.
+ */
 export function readBoxError(this: SettleBox): string {
-  const error = this.error as { stack?: unknown } | null | undefined;
+  const error = this.error as
+    { stack?: unknown; name?: unknown; message?: unknown } | null | undefined;
   try {
-    if (error && typeof error.stack === "string") return error.stack;
+    if (error && typeof error.stack === "string" && error.stack) return error.stack;
   } catch {
     // A throwing `stack` getter; fall through to the other renderings.
+  }
+  try {
+    if (error && typeof error.message === "string") {
+      const name = typeof error.name === "string" && error.name ? error.name : "Error";
+      return name + ": " + error.message;
+    }
+  } catch {
+    // Throwing getters; fall through.
   }
   try {
     const json = JSON.stringify(error);
