@@ -693,10 +693,9 @@ describe("formatDescribeTree — overlapping elements", () => {
     ).not.toContain("overlaps");
   });
 
-  it("skips sliders, scroll bars and UIKit scroll indicators", () => {
+  it("skips sliders and UIKit scroll indicators", () => {
     for (const other of [
       node("AXAdjustable", "Volume", 0.1, 0.15, 0.4, 0.1),
-      node("AXScrollBar", "Scroller", 0.1, 0.15, 0.4, 0.1),
       node("AXGroup", "Vertical scroll bar, 1 page", 0.1, 0.15, 0.4, 0.1),
       node("AXGroup", "Horizontal scroll bar, 2 pages", 0.1, 0.15, 0.4, 0.1),
     ]) {
@@ -711,6 +710,13 @@ describe("formatDescribeTree — overlapping elements", () => {
       children: [],
     };
     expect(render(button("Save", 0.1, 0.1), blank as any)).not.toContain("overlaps");
+  });
+
+  it("names a partner without a label by its identifier", () => {
+    const unlabelled = { ...button("", 0.1, 0.15), identifier: "save-button" };
+    expect(lineOf(render(button("Cancel", 0.1, 0.1), unlabelled), "Cancel")).toContain(
+      `overlaps "save-button":`
+    );
   });
 
   it("lists every partner, largest overlap first", () => {

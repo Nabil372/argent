@@ -147,87 +147,103 @@ interface FormatDescribeOptions {
   source: DescribeSource;
 }
 
-/**
- * Two labelled elements whose frames overlap by more than a quarter of the
- * smaller one, without one sitting inside the other, mean one covers the
- * other: a sticky footer or tab bar over a list row that straddles its edge, a
- * search bar over a scrolled row, a toast over a button. The flat iOS list
- * gives no stacking order between such siblings, so the tap at either one's
- * centre may land on the other. Mark both. No "clear" point is offered: a
- * covering footer's touch area can be larger than its AX frame, so the visible
- * strip of the row below it may still be dead.
- *
- * Not caught: an element fully (95%+) under another, a pair of passive roles
- * (text, image, heading), and anything at least half the screen in area, such
- * as a sheet.
- */
-const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable", "AXScrollBar"]);
+const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable"]);
+// Roles an agent reads but does not tap. Text over text (or an image) is a
+// layout quirk, not a tap trap, and such pairs were most of the noise on dense
+// screens.
 const PASSIVE_ROLES = new Set(["AXStaticText", "AXImage", "AXHeading"]);
 // ax-service reports UIKit scroll indicators as labelled AXGroups. They sit
 // over the content they scroll, alert button stacks included, and no scroll
 // can separate an indicator from its own content.
 const SCROLL_INDICATOR_LABEL = /^(vertical|horizontal) scroll bar\b/i;
+// An element this large is a sheet or a background, not a tap target.
+const OVERLAP_MAX_ELEMENT_AREA = 0.5;
+// Overlap as a share of the smaller frame. At or below the minimum the frames
+// only brush; at or above the maximum one sits inside the other, like text in
+// its button.
+const OVERLAP_MIN_RATIO = 0.25;
+const OVERLAP_MAX_RATIO = 0.95;
 const OVERLAP_NAME_MAX = 40;
 const OVERLAP_PARTNERS_MAX = 3;
+
+interface OverlapPartner {
+  other: DescribeNode;
+  ratio: number;
+}
+
+function frameArea(f: DescribeFrame): number {
+  return f.width * f.height;
+}
+
+// The shared area of two frames as a share of the smaller one; 0 when they
+// do not intersect.
+function overlapRatio(a: DescribeFrame, b: DescribeFrame): number {
+  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  if (width <= 0 || height <= 0) return 0;
+  return (width * height) / Math.min(frameArea(a), frameArea(b));
+}
+
+function isOverlapCandidate(n: DescribeNode): boolean {
+  return (
+    Boolean(n.label || n.identifier || n.value) &&
+    !OVERLAP_SKIP_ROLES.has(n.role) &&
+    !SCROLL_INDICATOR_LABEL.test(n.label ?? "") &&
+    n.frame.width > 0 &&
+    n.frame.height > 0 &&
+    frameArea(n.frame) < OVERLAP_MAX_ELEMENT_AREA
+  );
+}
 
 function overlapName(n: DescribeNode): string {
   // Cut by code point: a lone surrogate left by a UTF-16 slice makes strict
   // JSON parsers reject the whole MCP message.
-  const raw = Array.from(n.label ?? n.identifier ?? n.value ?? n.role)
+  const raw = Array.from(n.label || n.identifier || n.value || n.role)
     .slice(0, OVERLAP_NAME_MAX)
     .join("");
   return `"${escapeForLine(raw).replace(/"/g, "'")}"`;
 }
 
+// Two labelled elements that partly overlap, neither inside the other, mean
+// one covers the other: a sticky footer or tab bar over a list row that
+// straddles its edge, a search bar over a scrolled row, a toast over a button.
+// The flat iOS list gives no stacking order between such siblings, so the tap
+// at either one's centre may land on the other. Mark both. No "clear" point is
+// offered: a covering footer's touch area can be larger than its AX frame, so
+// the visible strip of the row below it may still be dead.
+//
+// Not caught: an element fully (95%+) under another, a pair of passive roles,
+// and anything at least half the screen in area, such as a sheet.
 function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
-  const els = root.children.filter((n) => {
-    const f = n.frame;
-    return (
-      Boolean(n.label || n.identifier || n.value) &&
-      !OVERLAP_SKIP_ROLES.has(n.role) &&
-      !SCROLL_INDICATOR_LABEL.test(n.label ?? "") &&
-      f.width > 0 &&
-      f.height > 0 &&
-      f.width * f.height < 0.5
-    );
-  });
-  const partners = new Map<DescribeNode, { other: DescribeNode; ratio: number }[]>();
-  const add = (self: DescribeNode, other: DescribeNode, ratio: number) => {
+  const candidates = root.children.filter(isOverlapCandidate);
+  const partners = new Map<DescribeNode, OverlapPartner[]>();
+  const addPartner = (self: DescribeNode, other: DescribeNode, ratio: number) => {
     const list = partners.get(self) ?? [];
     list.push({ other, ratio });
     partners.set(self, list);
   };
-  for (let i = 0; i < els.length; i++) {
-    for (let j = i + 1; j < els.length; j++) {
-      const a = els[i]!;
-      const b = els[j]!;
-      const ix =
-        Math.min(a.frame.x + a.frame.width, b.frame.x + b.frame.width) -
-        Math.max(a.frame.x, b.frame.x);
-      const iy =
-        Math.min(a.frame.y + a.frame.height, b.frame.y + b.frame.height) -
-        Math.max(a.frame.y, b.frame.y);
-      if (ix <= 0 || iy <= 0) continue;
-      const smaller = Math.min(a.frame.width * a.frame.height, b.frame.width * b.frame.height);
-      const ratio = (ix * iy) / smaller;
-      if (ratio <= 0.25 || ratio >= 0.95) continue;
-      // Text over text (or an image) is a layout quirk, not a tap trap: agents
-      // tap controls, and a label pair was most of the noise on dense screens.
+
+  candidates.forEach((a, i) => {
+    for (const b of candidates.slice(i + 1)) {
+      const ratio = overlapRatio(a.frame, b.frame);
+      if (ratio <= OVERLAP_MIN_RATIO || ratio >= OVERLAP_MAX_RATIO) continue;
       if (PASSIVE_ROLES.has(a.role) && PASSIVE_ROLES.has(b.role)) continue;
-      add(a, b, ratio);
-      add(b, a, ratio);
+      addPartner(a, b, ratio);
+      addPartner(b, a, ratio);
     }
-  }
+  });
+
   const notes = new Map<DescribeNode, string>();
   for (const [self, list] of partners) {
     // Largest overlap first, so separating the named elements clears the worst one.
     const names = list
       .sort((x, y) => y.ratio - x.ratio)
       .slice(0, OVERLAP_PARTNERS_MAX)
-      .map((p) => overlapName(p.other));
+      .map((p) => overlapName(p.other))
+      .join(", ");
     notes.set(
       self,
-      `overlaps ${names.join(", ")}: one covers the other — scroll to separate them before tapping`
+      `overlaps ${names}: one covers the other — scroll to separate them before tapping`
     );
   }
   return notes;
