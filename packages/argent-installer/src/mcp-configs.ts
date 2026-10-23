@@ -93,7 +93,11 @@ export interface McpConfigAdapter {
   getArgentEntry(configPath: string): McpServerEntry | null;
   // Report argent state outside the projectPath/globalPath pair that can keep
   // the entry written at `writtenScope` from taking effect.
-  findShadowingConfigs?(root: string, writtenScope: "local" | "global"): ShadowingConfigFinding[];
+  findShadowingConfigs?(
+    root: string,
+    writtenScope: "local" | "global",
+    options?: ProjectKeyOptions
+  ): ShadowingConfigFinding[];
   addAllowlist?(root: string, scope: "local" | "global"): void;
   removeAllowlist?(root: string, scope: "local" | "global"): void;
 }
@@ -726,10 +730,23 @@ const cursorAdapter: McpConfigAdapter = {
 
 // MARK: Claude
 
+interface ProjectKeyOptions {
+  /**
+   * Match the ~/.claude.json project key exactly, as Claude Code reads it.
+   * init and update match loosely so they also clean up stale keys.
+   */
+  exactProjectKey?: boolean;
+}
+
 // ~/.claude.json keys its per-project entries by absolute path, so match
 // loosely: realpathSync.native canonicalizes symlinks and, on case-insensitive
 // filesystems, on-disk case.
-function claudeProjectKeysForRoot(projects: Record<string, unknown>, root: string): string[] {
+function claudeProjectKeysForRoot(
+  projects: Record<string, unknown>,
+  root: string,
+  { exactProjectKey = false }: ProjectKeyOptions = {}
+): string[] {
+  if (exactProjectKey) return root in projects ? [root] : [];
   const canonical = (value: string): string => {
     try {
       return fs.realpathSync.native(value);
@@ -745,10 +762,13 @@ function claudeProjectKeysForRoot(projects: Record<string, unknown>, root: strin
  * True when Claude Code's `/mcp` toggle has switched argent off for this
  * project (`projects[<root>].disabledMcpServers` in ~/.claude.json).
  */
-export function isArgentDisabledInClaudeProject(root: string): boolean {
+export function isArgentDisabledInClaudeProject(
+  root: string,
+  options: ProjectKeyOptions = {}
+): boolean {
   const projects = readJson(path.join(homedir(), ".claude.json")).projects;
   if (!isRecord(projects)) return false;
-  return claudeProjectKeysForRoot(projects, root).some((key) => {
+  return claudeProjectKeysForRoot(projects, root, options).some((key) => {
     const project = projects[key];
     const disabled = isRecord(project) ? project.disabledMcpServers : undefined;
     return Array.isArray(disabled) && disabled.includes(MCP_SERVER_KEY);
@@ -862,12 +882,16 @@ const claudeAdapter: McpConfigAdapter = {
   // Scans the scope outside the projectPath/globalPath pair —
   // projects["<abs path>"].mcpServers in ~/.claude.json — plus recorded
   // .mcp.json rejections (see claudeDisabledListFinding).
-  findShadowingConfigs(root: string, writtenScope: "local" | "global"): ShadowingConfigFinding[] {
+  findShadowingConfigs(
+    root: string,
+    writtenScope: "local" | "global",
+    options?: ProjectKeyOptions
+  ): ShadowingConfigFinding[] {
     const findings: ShadowingConfigFinding[] = [];
     const claudeJsonPath = path.join(homedir(), ".claude.json");
     const projects = readJson(claudeJsonPath).projects;
     if (isRecord(projects)) {
-      for (const key of claudeProjectKeysForRoot(projects, root)) {
+      for (const key of claudeProjectKeysForRoot(projects, root, options)) {
         const project = projects[key];
         if (!isRecord(project)) continue;
         const servers = project.mcpServers;

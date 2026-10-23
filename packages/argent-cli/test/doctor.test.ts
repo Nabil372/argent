@@ -3,9 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as http from "node:http";
+import { execFileSync } from "node:child_process";
 import { AGENTS_DIR, listBundledSkills, RULES_DIR } from "@argent/installer";
 import {
   childFailureReason,
+  claudeProjectKey,
   classifyMcpEntry,
   collectDoctorReport,
   depsProbeFailure,
@@ -678,6 +680,34 @@ describe("installSection", () => {
   });
 });
 
+describe("claudeProjectKey", () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+      cwd,
+      stdio: "ignore",
+    });
+
+  it("is the git root, from any subfolder", () => {
+    git(projectRoot, "init", "-q");
+    const sub = path.join(projectRoot, "packages", "app");
+    fs.mkdirSync(sub, { recursive: true });
+    expect(claudeProjectKey(sub)).toBe(fs.realpathSync(projectRoot));
+  });
+
+  it("is the main checkout for a linked worktree", () => {
+    const main = path.join(projectRoot, "repo");
+    fs.mkdirSync(main);
+    git(main, "init", "-q");
+    git(main, "commit", "-q", "--allow-empty", "-m", "init");
+    git(main, "worktree", "add", "-q", path.join(projectRoot, "wt"));
+    expect(claudeProjectKey(path.join(projectRoot, "wt"))).toBe(fs.realpathSync(main));
+  });
+
+  it("is the directory itself outside git", () => {
+    expect(claudeProjectKey(projectRoot)).toBe(fs.realpathSync(projectRoot));
+  });
+});
+
 describe("updateCommand", () => {
   it("uses the owning package manager for a non-npm global install", () => {
     expect(updateCommand(false, "pnpm", "argent")).toMatch(
@@ -726,6 +756,15 @@ describe("collectDoctorReport", () => {
   };
   const toolServer = async () =>
     (await collect()).sections.find((s) => s.title === "Tool-server")!.checks;
+
+  it("does not take ~ for the project just because ~/.claude exists", async () => {
+    fs.rmSync(path.join(projectRoot, ".git"), { recursive: true });
+    const app = path.join(home, "work", "myapp");
+    fs.mkdirSync(app, { recursive: true });
+    fs.mkdirSync(path.join(home, ".claude"));
+    process.chdir(app);
+    expect((await collect()).projectRoot).toBe(fs.realpathSync(app));
+  });
 
   it("rejects an argent:// pairing string in ARGENT_TOOLS_URL", async () => {
     vi.stubEnv("ARGENT_TOOLS_URL", "argent://pair?token=x");
@@ -1394,6 +1433,25 @@ describe("editor and skill sections", () => {
     } finally {
       fs.rmSync(link, { force: true });
     }
+  });
+
+  it("reads Claude Code's local scope under its own project key, matched exactly", () => {
+    const repo = path.join(projectRoot, "repo");
+    writeJson(path.join(home, ".claude.json"), {
+      projects: { [repo]: { mcpServers: { argent } } },
+    });
+    const inPackage = {
+      ...doctorCtx(),
+      projectRoot: path.join(repo, "packages", "app"),
+      claudeRoot: repo,
+    };
+    expect(
+      editorsSection(inPackage).checks.find((c) => c.label.startsWith("Claude Code"))?.status
+    ).toBe("ok");
+    const alias = { ...inPackage, claudeRoot: `${repo}/` };
+    expect(
+      editorsSection(alias).checks.some((c) => c.label.startsWith("Claude Code: argent"))
+    ).toBe(false);
   });
 
   it("warns about a Cursor entry switched off with `disabled: true`", () => {

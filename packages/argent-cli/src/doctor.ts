@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFile, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import pc from "picocolors";
@@ -98,6 +98,8 @@ type ResolvedToolsUrl = Awaited<ReturnType<typeof getResolvedToolsUrl>>;
 /** Facts every section shares, probed once per run. */
 export interface DoctorContext {
   projectRoot: string;
+  /** Claude Code's project (see claudeProjectKey); projectRoot when unset. */
+  claudeRoot?: string;
   /** Where doctor runs: global-scope `node <relative>` entries resolve from here. */
   cwd: string;
   mode: "global" | "local";
@@ -689,13 +691,31 @@ export function isStrictJson(configPath: string): boolean {
   }
 }
 
+/** Claude Code has its own idea of the project (claudeProjectKey); other editors use projectRoot. */
+function rootFor(ctx: DoctorContext, adapter: McpConfigAdapter | string | null): string {
+  const name = typeof adapter === "string" ? adapter : adapter?.name;
+  return name === "Claude Code" ? (ctx.claudeRoot ?? ctx.projectRoot) : ctx.projectRoot;
+}
+
+// Claude Code's .mcp.json is looked up in its own project and, when doctor's
+// root is a package inside it, in that package too (init may have written it).
+function configuredScopes(ctx: DoctorContext) {
+  return ALL_ADAPTERS.flatMap((adapter) => {
+    const roots = [...new Set([rootFor(ctx, adapter), ctx.projectRoot])];
+    const seen = new Set<string>();
+    return roots
+      .flatMap((root) => findConfiguredAdapterScopes([adapter], root))
+      .filter((c) => !seen.has(realPath(c.configPath)) && seen.add(realPath(c.configPath)));
+  });
+}
+
 export function editorsSection(ctx: DoctorContext): DoctorSection {
   const { projectRoot } = ctx;
   const checks: DoctorCheck[] = [];
   // Run from ~, a project config path can be the global one: list it once.
   // Compared by real path: HOME may be a symlink to the directory doctor runs in.
   const seenPaths = new Set<string>();
-  const configured = findConfiguredAdapterScopes(ALL_ADAPTERS, projectRoot)
+  const configured = configuredScopes(ctx)
     .map((c) =>
       c.scope === "project" && samePath(c.configPath, c.adapter.globalPath())
         ? { ...c, scope: "global" as const }
@@ -796,8 +816,9 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
     const hasProjectEntry = configured.some((c) => c.adapter === adapter && c.scope === "project");
     try {
       for (const finding of adapter.findShadowingConfigs(
-        projectRoot,
-        hasProjectEntry ? "local" : "global"
+        rootFor(ctx, adapter),
+        hasProjectEntry ? "local" : "global",
+        { exactProjectKey: true }
       )) {
         if (finding.entry) {
           found.push({
@@ -879,7 +900,10 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
   }
   checks.push(...notes);
 
-  if (claudeWinner !== null && isArgentDisabledInClaudeProject(projectRoot)) {
+  if (
+    claudeWinner !== null &&
+    isArgentDisabledInClaudeProject(rootFor(ctx, "Claude Code"), { exactProjectKey: true })
+  ) {
     checks.push(
       check("warn", "Claude Code: argent is switched off for this project", {
         detail: "~/.claude.json disabledMcpServers",
@@ -950,7 +974,9 @@ function listArgentDirs(dir: string): string[] {
 function hasClaudeLocalScopeEntry(projectRoot: string): boolean {
   const claude = ALL_ADAPTERS.find((a) => a.name === "Claude Code");
   try {
-    return (claude?.findShadowingConfigs?.(projectRoot, "global") ?? []).some((f) => f.entry);
+    return (
+      claude?.findShadowingConfigs?.(projectRoot, "global", { exactProjectKey: true }) ?? []
+    ).some((f) => f.entry);
   } catch {
     return false;
   }
@@ -959,12 +985,12 @@ function hasClaudeLocalScopeEntry(projectRoot: string): boolean {
 export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSection {
   const { projectRoot } = ctx;
   const checks: DoctorCheck[] = [];
-  const configured = findConfiguredAdapterScopes(ALL_ADAPTERS, projectRoot).map((c) => ({
+  const configured = configuredScopes(ctx).map((c) => ({
     adapter: c.adapter,
     scope: c.scope === "project" ? ("local" as const) : ("global" as const),
   }));
   const claude = ALL_ADAPTERS.find((a) => a.name === "Claude Code");
-  if (claude && hasClaudeLocalScopeEntry(projectRoot)) {
+  if (claude && hasClaudeLocalScopeEntry(rootFor(ctx, claude))) {
     configured.push({ adapter: claude, scope: "local" });
   }
   const adapters = [...new Set(configured.map((c) => c.adapter))];
@@ -973,7 +999,7 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
   // its MCP entry is in. The shared .agents/skills is not read by Claude Code.
   const skillDirs = (adapter: McpConfigAdapter | null): string[] =>
     (["local", "global"] as const).flatMap((scope) =>
-      getManagedContentTargets(adapter ? [adapter] : [], projectRoot, scope)
+      getManagedContentTargets(adapter ? [adapter] : [], rootFor(ctx, adapter), scope)
         .skillTargets.filter((t) => t.editorName !== "skills" || adapter?.name !== "Claude Code")
         .map((t) => t.targetPath)
     );
@@ -1029,7 +1055,9 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
   }
   const absentIn = (dir: string) => ruleFiles.filter((f) => !fs.existsSync(path.join(dir, f)));
   const ruleDirs = (adapter: McpConfigAdapter, scope: "local" | "global") =>
-    getManagedContentTargets([adapter], projectRoot, scope).ruleTargets.map((t) => t.targetPath);
+    getManagedContentTargets([adapter], rootFor(ctx, adapter), scope).ruleTargets.map(
+      (t) => t.targetPath
+    );
   const ruleTargets = new Set<string>();
   for (const { adapter, scope } of configured) {
     if (adapter.name !== "Claude Code") ruleDirs(adapter, scope).forEach((t) => ruleTargets.add(t));
@@ -1070,7 +1098,9 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     // An older package without agents.
   }
   const agentDirs = (adapter: McpConfigAdapter, scope: "local" | "global") =>
-    getManagedContentTargets([adapter], projectRoot, scope).agentTargets.map((t) => t.targetPath);
+    getManagedContentTargets([adapter], rootFor(ctx, adapter), scope).agentTargets.map(
+      (t) => t.targetPath
+    );
   const agentsAbsentIn = (dir: string) =>
     agentFiles.filter((f) => !fs.existsSync(path.join(dir, f)));
   const seenAgentDirs = new Set<string>();
@@ -1587,6 +1617,40 @@ export function updateCommand(runningLocal: boolean, globalPm: PackageManager, a
     : `${argentCmd} update`;
 }
 
+/**
+ * The key Claude Code files a directory's local-scope state under in
+ * ~/.claude.json, and the project whose .mcp.json it loads: the main checkout
+ * of its git repo (linked worktrees and monorepo packages share it), or the
+ * directory itself outside git.
+ */
+export function claudeProjectKey(cwd: string): string {
+  try {
+    const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+      cwd,
+      encoding: "utf8",
+      timeout: 2_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    const absolute = realPath(path.resolve(cwd, commonDir));
+    if (path.basename(absolute) === ".git") return path.dirname(absolute);
+  } catch {
+    // Not a git repo, or no git.
+  }
+  return realPath(cwd);
+}
+
+/**
+ * resolveProjectRoot counts ~/.claude, ~/.cursor and the like as project
+ * markers, so a project under ~ without markers of its own resolves to ~.
+ * Those are global config dirs: use the project's git root, or cwd.
+ */
+function doctorProjectRoot(cwd: string): string {
+  const resolved = resolveProjectRoot(cwd);
+  if (!samePath(resolved, homedir()) || samePath(cwd, homedir())) return resolved;
+  const key = claudeProjectKey(cwd);
+  return samePath(key, homedir()) ? cwd : key;
+}
+
 function localArgentCmd(projectRoot: string): string {
   return isYarnPnp(projectRoot) ? "yarn argent" : "npx argent";
 }
@@ -1607,7 +1671,7 @@ export async function collectDoctorReport(options: {
   offline: boolean;
 }): Promise<DoctorReport> {
   const cwd = currentDir();
-  const projectRoot = resolveProjectRoot(cwd);
+  const projectRoot = doctorProjectRoot(cwd);
   const mode = resolveInstallMode(projectRoot);
   const lookupPath = stripPackageBinDirs(process.env.PATH ?? "", cwd);
   const found = findGlobalArgent(lookupPath);
@@ -1618,6 +1682,7 @@ export async function collectDoctorReport(options: {
   const localCmd = localArgentCmd(projectRoot);
   const ctx: DoctorContext = {
     projectRoot,
+    claudeRoot: claudeProjectKey(cwd),
     cwd,
     mode,
     global,
