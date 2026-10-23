@@ -10,6 +10,7 @@ import {
   findConfiguredAdapterScopes,
   getMcpEntryForScope,
   isArgentManagedEntry,
+  isSwitchedOffInEditor,
   resolveLocalCommandMode,
   copyRulesAndAgents,
   type McpConfigAdapter,
@@ -698,9 +699,9 @@ export async function update(args: string[]): Promise<void> {
       // destroy the customization AND launder it into a bare shape the
       // stale-config sweep below could judge dead and delete. Everything else is
       // rewritten unconditionally; the write also REPAIRS getArgentEntry's
-      // unreadable sentinel { command: "" }. An entry switched off with
-      // `enabled: false` / `disabled: true` is left alone too: the write would
-      // drop the switch and silently turn argent back on.
+      // unreadable sentinel { command: "" }. An entry the editor has switched
+      // off (its own `enabled: false` / `disabled: true` key) is left alone too:
+      // the write would drop the switch and silently turn argent back on.
       for (const { adapter, scope, configPath } of configuredScopes) {
         const normScope = scope === "project" ? "local" : "global";
         // Allowlists and rules still refresh for this adapter either way — only
@@ -721,7 +722,7 @@ export async function update(args: string[]): Promise<void> {
           );
           continue;
         }
-        if (existing?.switchedOffBy) {
+        if (isSwitchedOffInEditor(adapter, existing)) {
           results.push(
             `${pc.yellow("!")} ${adapter.name} left a switched-off entry untouched ${pc.dim(configPath)}`
           );

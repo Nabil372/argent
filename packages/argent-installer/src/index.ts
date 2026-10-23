@@ -31,6 +31,7 @@ export {
   getManagedContentTargets,
   hasCustomizingEnv,
   isArgentDisabledInClaudeProject,
+  isSwitchedOffInEditor,
   type McpConfigAdapter,
   type McpServerEntry,
 } from "./mcp-configs.js";

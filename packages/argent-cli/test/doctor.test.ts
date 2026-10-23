@@ -137,7 +137,7 @@ describe("classifyMcpEntry", () => {
   });
 
   it("warns about an entry switched off in the editor", () => {
-    const entry = { command: "argent", args: ["mcp"], switchedOffBy: "disabled" as const };
+    const entry = { command: "argent", args: ["mcp"], switchedOffBy: ["disabled" as const] };
     expect(classifyMcpEntry(entry, ctx()).status).toBe("warn");
   });
 
@@ -550,7 +550,7 @@ describe("classifyMcpEntry argument rules", () => {
   });
 
   it("still fails a dead entry that is switched off", () => {
-    const entry = { command: "argent", args: ["mcp"], switchedOffBy: "enabled" as const };
+    const entry = { command: "argent", args: ["mcp"], switchedOffBy: ["enabled" as const] };
     expect(classifyMcpEntry(entry, ctx({ globalOnPath: false })).status).toBe("error");
   });
 
@@ -862,6 +862,22 @@ describe("editor and skill sections", () => {
     });
     const checks = editorsSection(doctorCtx()).checks;
     expect(checks.find((c) => c.label.startsWith("Claude Code"))?.status).toBe("ok");
+  });
+
+  it("warns about a Zed entry switched off with `enabled: false`", () => {
+    writeJson(path.join(projectRoot, ".zed", "settings.json"), {
+      context_servers: { argent: { source: "custom", enabled: false, ...argent } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.label.startsWith("Zed"))?.label).toMatch(/switched off/);
+  });
+
+  it("warns about a Kiro entry that carries both switch-off keys", () => {
+    writeJson(path.join(projectRoot, ".kiro", "settings", "mcp.json"), {
+      mcpServers: { argent: { ...argent, enabled: false, disabled: true } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.label.startsWith("Kiro"))?.label).toMatch(/switched off/);
   });
 
   const installSkills = (dir: string) => {

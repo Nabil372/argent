@@ -27,6 +27,7 @@ import {
   hasCustomizingEnv,
   isArgentDisabledInClaudeProject,
   isNewerVersion,
+  isSwitchedOffInEditor,
   isTempRunnerPath,
   isYarnPnp,
   listBundledSkills,
@@ -445,9 +446,9 @@ const NPX_NO_INSTALL = new Set(["--no-install", "--no"]);
 export function classifyMcpEntry(entry: McpServerEntry, ctx: EntryContext): DoctorCheck {
   const cmd = formatEntry(entry);
   const result = classifyCommand(entry, ctx);
-  if (entry.switchedOffBy && (result.status === "ok" || result.status === "info")) {
+  if (entry.switchedOffBy?.length && (result.status === "ok" || result.status === "info")) {
     return check("warn", `${cmd} — switched off in the editor`, {
-      detail: `\`${entry.switchedOffBy === "enabled" ? "enabled: false" : "disabled: true"}\``,
+      detail: `\`${entry.switchedOffBy[0] === "enabled" ? "enabled: false" : "disabled: true"}\``,
       fix: "Turn the argent server back on in the editor's MCP settings",
     });
   }
@@ -537,16 +538,6 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
   return check("info", `${cmd} (custom command, not verified)`);
 }
 
-// Which editor honours which switch-off key; the rest start the entry anyway.
-const SWITCH_OFF_KEY: Record<string, McpServerEntry["switchedOffBy"]> = {
-  Cursor: "disabled",
-  Windsurf: "disabled",
-  Kiro: "disabled",
-  Codex: "enabled",
-  Hermes: "enabled",
-  opencode: "enabled",
-};
-
 // Claude Code starts one entry per name: local scope wins over project, project over user.
 const CLAUDE_SCOPE_RANK = { local: 2, project: 1, global: 0 } as const;
 type ClaudeScope = keyof typeof CLAUDE_SCOPE_RANK;
@@ -587,6 +578,7 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
   };
 
   interface Found {
+    adapter: McpConfigAdapter;
     adapterName: string;
     entry: McpServerEntry;
     scope: "project" | "global";
@@ -614,6 +606,7 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
     }
     if (!entry) continue;
     found.push({
+      adapter,
       adapterName: adapter.name,
       entry,
       scope,
@@ -651,6 +644,7 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
       )) {
         if (finding.entry) {
           found.push({
+            adapter,
             adapterName: adapter.name,
             entry: finding.entry,
             scope: isClaude ? "project" : "global",
@@ -689,11 +683,11 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
       );
       continue;
     }
-    const honoured = SWITCH_OFF_KEY[f.adapterName];
-    const entry =
-      f.entry.switchedOffBy && f.entry.switchedOffBy !== honoured
-        ? { ...f.entry, switchedOffBy: undefined }
-        : f.entry;
+    // Only the key the editor honours switches the entry off.
+    const honoured = f.adapter.switchOffKey;
+    const entry = isSwitchedOffInEditor(f.adapter, f.entry)
+      ? { ...f.entry, switchedOffBy: [honoured!] }
+      : { ...f.entry, switchedOffBy: undefined };
     const result = classifyMcpEntry(entry, {
       ...entryCtx,
       scope: f.scope,

@@ -14,6 +14,7 @@ import {
   copyRulesAndAgents,
   findConfiguredAdapterScopes,
   isArgentDisabledInClaudeProject,
+  isSwitchedOffInEditor,
   getManagedContentTargets,
   injectCodexRules,
   removeCodexRules,
@@ -276,7 +277,7 @@ describe("disabled entries", () => {
       opencodePath,
       JSON.stringify({ mcp: { argent: { command: ["argent", "mcp"], enabled: false } } })
     );
-    expect(opencode.getArgentEntry(opencodePath)?.switchedOffBy).toBe("enabled");
+    expect(opencode.getArgentEntry(opencodePath)?.switchedOffBy).toEqual(["enabled"]);
 
     const cursor = ALL_ADAPTERS.find((a) => a.name === "Cursor")!;
     const cursorPath = path.join(tmpDir, "mcp.json");
@@ -286,7 +287,31 @@ describe("disabled entries", () => {
         mcpServers: { argent: { command: "argent", args: ["mcp"], disabled: true } },
       })
     );
-    expect(cursor.getArgentEntry(cursorPath)?.switchedOffBy).toBe("disabled");
+    expect(cursor.getArgentEntry(cursorPath)?.switchedOffBy).toEqual(["disabled"]);
+  });
+
+  it("records both keys and counts only the one the editor honours", () => {
+    const entry = (name: string, raw: Record<string, unknown>) => {
+      const adapter = ALL_ADAPTERS.find((a) => a.name === name)!;
+      const file = path.join(tmpDir, `${name}.json`);
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { argent: raw } }));
+      return { adapter, entry: adapter.getArgentEntry(file) };
+    };
+    const both = entry("Kiro", {
+      command: "argent",
+      args: ["mcp"],
+      enabled: false,
+      disabled: true,
+    });
+    expect(both.entry?.switchedOffBy).toEqual(["enabled", "disabled"]);
+    expect(isSwitchedOffInEditor(both.adapter, both.entry)).toBe(true);
+
+    const ignored = entry("Claude Code", { command: "argent", args: ["mcp"], disabled: true });
+    expect(isSwitchedOffInEditor(ignored.adapter, ignored.entry)).toBe(false);
+    const zed = ALL_ADAPTERS.find((a) => a.name === "Zed")!;
+    expect(
+      isSwitchedOffInEditor(zed, { command: "argent", args: ["mcp"], switchedOffBy: ["enabled"] })
+    ).toBe(true);
   });
 
   it("reads Claude Code's per-project /mcp toggle", () => {

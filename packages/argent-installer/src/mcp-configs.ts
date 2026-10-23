@@ -47,11 +47,13 @@ export interface McpServerEntry {
   args: string[];
   env?: Record<string, string>;
   /**
-   * The key that switches the entry off (`enabled: false` / `disabled: true`).
-   * Only some editors honour each key; callers decide.
+   * The switch-off keys the entry carries (`enabled: false` / `disabled: true`).
+   * Each editor honours at most one of them (McpConfigAdapter.switchOffKey).
    */
-  switchedOffBy?: "enabled" | "disabled";
+  switchedOffBy?: SwitchOffKey[];
 }
+
+type SwitchOffKey = "enabled" | "disabled";
 
 // Argent config or client state outside the scope init just wrote that can keep
 // that entry from taking effect. Adapters only report; init-stale-config.ts
@@ -79,6 +81,8 @@ export interface McpConfigAdapter {
   globalPath(): string | null;
   write(configPath: string, entry: McpServerEntry): void;
   remove(configPath: string): boolean;
+  /** The key this editor honours to switch the entry off; absent when it starts it regardless. */
+  switchOffKey?: SwitchOffKey;
   // Lets `update` skip adapters/scopes the user never opted into during `init`,
   // instead of re-creating configs for any editor whose dir happens to exist
   // (issue #195). Implementations must read the same key `remove()` checks.
@@ -210,11 +214,13 @@ function normalizeServerEntry(raw: unknown): McpServerEntry | null {
       rawEnv && Object.keys(rawEnv).length > 0
         ? Object.fromEntries(Object.entries(rawEnv).map(([key, value]) => [key, String(value)]))
         : undefined;
-    const switchedOffBy: McpServerEntry["switchedOffBy"] =
-      raw.enabled === false ? "enabled" : raw.disabled === true ? "disabled" : undefined;
+    const switchedOffBy = [
+      ...(raw.enabled === false ? ["enabled" as const] : []),
+      ...(raw.disabled === true ? ["disabled" as const] : []),
+    ];
     const extra = {
       ...(env ? { env } : {}),
-      ...(switchedOffBy ? { switchedOffBy } : {}),
+      ...(switchedOffBy.length > 0 ? { switchedOffBy } : {}),
     };
     // opencode stores the command as a single array: { command: [cmd, ...args] }.
     if (Array.isArray(raw.command) && raw.command.every((c) => typeof c === "string")) {
@@ -229,6 +235,14 @@ function normalizeServerEntry(raw: unknown): McpServerEntry | null {
     }
   }
   return { command: "", args: [] };
+}
+
+/** Whether the editor itself keeps this entry from starting (keys it ignores don't count). */
+export function isSwitchedOffInEditor(
+  adapter: McpConfigAdapter,
+  entry: McpServerEntry | null
+): boolean {
+  return !!adapter.switchOffKey && !!entry?.switchedOffBy?.includes(adapter.switchOffKey);
 }
 
 // A shape argent itself writes; anything else is a customization that
@@ -637,6 +651,7 @@ function codexDirLooksArgentOnly(dir: string): boolean {
 
 const cursorAdapter: McpConfigAdapter = {
   name: "Cursor",
+  switchOffKey: "disabled",
 
   detect(): boolean {
     return (
@@ -1020,6 +1035,7 @@ function vscodeUserDirs(): string[] {
 
 const windsurfAdapter: McpConfigAdapter = {
   name: "Windsurf",
+  switchOffKey: "disabled",
 
   detect(): boolean {
     return dirHasEditorEvidence(
@@ -1093,6 +1109,7 @@ const windsurfAdapter: McpConfigAdapter = {
 
 const zedAdapter: McpConfigAdapter = {
   name: "Zed",
+  switchOffKey: "enabled",
 
   detect(): boolean {
     return dirHasEditorEvidence(path.join(homedir(), ".config", "zed"), zedDirLooksArgentOnly);
@@ -1248,6 +1265,7 @@ const CODEX_FILENAME = ".codex";
 
 const codexAdapter: McpConfigAdapter = {
   name: "Codex",
+  switchOffKey: "enabled",
 
   detect(): boolean {
     return (
@@ -1353,6 +1371,7 @@ const codexAdapter: McpConfigAdapter = {
 
 const hermesAdapter: McpConfigAdapter = {
   name: "Hermes",
+  switchOffKey: "enabled",
 
   detect(): boolean {
     return dirHasEditorEvidence(path.join(homedir(), ".hermes"), hermesDirLooksArgentOnly);
@@ -1444,6 +1463,7 @@ function pickOpencodeConfig(dir: string, candidates: readonly string[]): string 
 
 const openCodeAdapter: McpConfigAdapter = {
   name: "opencode",
+  switchOffKey: "enabled",
 
   detect(): boolean {
     return hasOpenCodeBinary();
@@ -1513,6 +1533,7 @@ const KIRO_AUTO_APPROVE_ALL = ["*"];
 
 const kiroAdapter: McpConfigAdapter = {
   name: "Kiro",
+  switchOffKey: "disabled",
 
   detect(): boolean {
     return (
