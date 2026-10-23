@@ -24,7 +24,8 @@ import { detectSigningTeams } from "./ios-device/team-detect";
  */
 interface HostDepsReport {
   platform: NodeJS.Platform;
-  deps: Array<{ dep: ToolDependency; path: string | null; hint: string }>;
+  /** `runError`: the binary was found but failed to run (adb, emulator only). */
+  deps: Array<{ dep: ToolDependency; path: string | null; hint: string; runError?: string }>;
   /** Artifacts shipped inside the argent package. `error` is set when missing. */
   bundled: Array<{ name: string; path: string | null; error?: string }>;
   /** Physical iPhone runner signing. Null off macOS. */
@@ -34,7 +35,15 @@ interface HostDepsReport {
    * `/usr/bin/xcrun` is a shim present on every Mac, so its presence alone
    * says nothing about whether simulators work.
    */
-  xcode: { developerDir: string | null; simctl: boolean; fromEnv: boolean } | null;
+  xcode: {
+    developerDir: string | null;
+    simctl: boolean;
+    fromEnv: boolean;
+    /** Why `xcrun simctl list` failed (an unaccepted license exits 69). */
+    simctlError?: string;
+    /** Available simulators; 0 when no iOS runtime is installed. */
+    availableSimulators?: number;
+  } | null;
   /** CDP ports Chromium discovery probes. */
   chromiumPorts: number[];
 }
@@ -57,6 +66,57 @@ async function probeXcode(): Promise<NonNullable<HostDepsReport["xcode"]>> {
     return { developerDir: null, simctl: false, fromEnv };
   }
 }
+
+const RUN_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * Runs a found binary the way tools do. A file that exists can still fail: an
+ * unaccepted Xcode license makes simctl exit 69, an adb built for another arch
+ * can't spawn, and list-devices swallows both into an empty list.
+ */
+async function runProbe(
+  cmd: string,
+  args: string[]
+): Promise<{ stdout: string } | { error: string }> {
+  try {
+    const { stdout } = await execFileAsync(cmd, args, {
+      timeout: RUN_PROBE_TIMEOUT_MS,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return { stdout };
+  } catch (err) {
+    const { stderr, killed } = err as { stderr?: unknown; killed?: boolean };
+    if (killed) return { error: `\`${path.basename(cmd)} ${args.join(" ")}\` timed out` };
+    const line =
+      typeof stderr === "string"
+        ? stderr
+            .split("\n")
+            .map((l) => l.trim())
+            .find(Boolean)
+        : undefined;
+    return { error: line ?? (err instanceof Error ? err.message.split("\n")[0]! : String(err)) };
+  }
+}
+
+async function probeSimulators(): Promise<{ simctlError?: string; availableSimulators?: number }> {
+  const result = await runProbe("xcrun", ["simctl", "list", "devices", "--json"]);
+  if ("error" in result) return { simctlError: result.error };
+  try {
+    const { devices } = JSON.parse(result.stdout) as {
+      devices?: Record<string, Array<{ isAvailable?: boolean }>>;
+    };
+    const all = Object.values(devices ?? {}).flat();
+    return { availableSimulators: all.filter((d) => d.isAvailable).length };
+  } catch {
+    return { simctlError: "`xcrun simctl list devices --json` printed unreadable output" };
+  }
+}
+
+// Only these are run: their version flags touch no daemon or device.
+const RUN_ARGS: Partial<Record<ToolDependency, string[]>> = {
+  adb: ["version"],
+  emulator: ["-version"],
+};
 
 // sim-remote is only for radon-cloud users, so doctor does not report it.
 const REPORTED_DEPS: readonly ToolDependency[] = ["xcrun", "adb", "emulator", "vega"];
@@ -91,11 +151,17 @@ function bundledArtifact(
 
 export async function collectHostDepsReport(): Promise<HostDepsReport> {
   const deps = await Promise.all(
-    REPORTED_DEPS.map(async (dep) => ({
-      dep,
-      path: await resolveDep(dep),
-      hint: INSTALL_HINTS[dep],
-    }))
+    REPORTED_DEPS.map(async (dep) => {
+      const found = await resolveDep(dep);
+      const args = RUN_ARGS[dep];
+      const run = found && args ? await runProbe(found, args) : null;
+      return {
+        dep,
+        path: found,
+        hint: INSTALL_HINTS[dep],
+        ...(run && "error" in run ? { runError: run.error } : {}),
+      };
+    })
   );
 
   const isMac = process.platform === "darwin";
@@ -113,6 +179,8 @@ export async function collectHostDepsReport(): Promise<HostDepsReport> {
   let xcode: HostDepsReport["xcode"] = null;
   if (isMac) {
     xcode = await probeXcode();
+    // Only with full Xcode selected: a bare `xcrun` can pop the install dialog.
+    if (xcode.simctl) xcode = { ...xcode, ...(await probeSimulators()) };
     const teamIdEnv = process.env.ARGENT_IOS_TEAM_ID?.trim() || null;
     // The env var wins over the keychain, so skip the `security` call when set.
     const detectedTeams = teamIdEnv ? 0 : (await detectSigningTeams()).length;

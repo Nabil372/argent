@@ -23,6 +23,7 @@ import {
   probeProjectInstall,
   redactUrl,
   remoteCheck,
+  sdkRootCheck,
   renderDoctorReport,
   runGlobalShim,
   skillsSection,
@@ -272,6 +273,46 @@ function hostDeps(overrides: Partial<HostDeps> = {}): HostDeps {
 }
 
 describe("platformChecks", () => {
+  const xcode = { developerDir: "/Applications/Xcode.app/Contents/Developer", simctl: true };
+
+  it("fails the iOS simulator when simctl can't run, pointing at the license", () => {
+    const checks = platformChecks(
+      hostDeps({
+        xcode: { ...xcode, simctlError: "You have not agreed to the Xcode license agreements." },
+      }),
+      "reinstall"
+    );
+    expect(checks.find((c) => c.label.startsWith("iOS simulator"))).toMatchObject({
+      status: "error",
+      fix: "sudo xcodebuild -license accept",
+    });
+  });
+
+  it("warns when Xcode has no available simulators", () => {
+    const checks = platformChecks(hostDeps({ xcode: { ...xcode, availableSimulators: 0 } }), "r");
+    expect(checks.find((c) => c.label.startsWith("iOS simulator"))?.label).toMatch(/no available/);
+  });
+
+  it("fails Android when adb is found but can't run", () => {
+    const checks = platformChecks(
+      hostDeps({
+        deps: [
+          { dep: "xcrun", path: "/usr/bin/xcrun", hint: "install xcode" },
+          {
+            dep: "adb",
+            path: "/sdk/adb",
+            hint: "install adb",
+            runError: "spawn Unknown system error -86",
+          },
+          { dep: "emulator", path: "/sdk/emulator", hint: "x", runError: "bad CPU type" },
+          { dep: "vega", path: null, hint: "install vega" },
+        ],
+      }),
+      "reinstall"
+    );
+    expect(checks.find((c) => c.label.startsWith("Android:"))?.status).toBe("error");
+  });
+
   it("names the team from ARGENT_IOS_TEAM_ID", () => {
     const checks = platformChecks(
       hostDeps({ signing: { teamIdEnv: "ABCDE12345", detectedTeams: 0 } }),
@@ -643,6 +684,23 @@ describe("installSection", () => {
     expect(section.checks.find((c) => c.label.includes("cli.json"))?.status).toBe("info");
   });
 
+  it("notes when the global install is not on the PATH apps started from the Dock get", () => {
+    vi.stubEnv("HOME", projectRoot);
+    const global = { bin: "/Users/me/.nvm/bin/argent", root: null, version: "1.0.0" };
+    const off = installSection(
+      localCtx({ mode: "global", global, guiPath: "/usr/bin:/bin" }),
+      "1.0.0",
+      pkgPaths()
+    );
+    expect(off.checks.some((c) => /Dock/.test(c.label))).toBe(true);
+    const on = installSection(
+      localCtx({ mode: "global", global, guiPath: "/Users/me/.nvm/bin:/usr/bin" }),
+      "1.0.0",
+      pkgPaths()
+    );
+    expect(on.checks.some((c) => /Dock/.test(c.label))).toBe(false);
+  });
+
   it("names a global install whose bin dir is not on PATH", () => {
     vi.stubEnv("HOME", projectRoot);
     const section = installSection(
@@ -705,6 +763,27 @@ describe("claudeProjectKey", () => {
 
   it("is the directory itself outside git", () => {
     expect(claudeProjectKey(projectRoot)).toBe(fs.realpathSync(projectRoot));
+  });
+});
+
+describe("sdkRootCheck", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("warns about an android.sdkRoot the shared tool-server may not see", () => {
+    const home = path.join(projectRoot, "home");
+    fs.mkdirSync(home);
+    vi.stubEnv("HOME", home);
+    const app = path.join(projectRoot, "app");
+    fs.mkdirSync(path.join(app, ".argent"), { recursive: true });
+    fs.mkdirSync(path.join(app, ".git"));
+    expect(sdkRootCheck(app, "argent")).toBeNull();
+    fs.writeFileSync(
+      path.join(app, ".argent", "config.json"),
+      JSON.stringify({ android: { sdkRoot: "/opt/sdk" } })
+    );
+    expect(sdkRootCheck(app, "argent")?.fix).toBe(
+      "argent config set android.sdkRoot /opt/sdk --scope global"
+    );
   });
 });
 

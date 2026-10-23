@@ -4,6 +4,7 @@ import { execFile, execFileSync, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import pc from "picocolors";
+import { getConfigValueAtScope } from "@argent/configuration-core";
 import { getConsentState } from "@argent/telemetry";
 import {
   getResolvedToolsUrl,
@@ -85,11 +86,17 @@ export interface DoctorReport {
 // Mirrors `tool-server --check-deps` (tool-server/src/utils/host-deps-report.ts).
 interface HostDepsReport {
   platform: NodeJS.Platform;
-  deps: Array<{ dep: string; path: string | null; hint: string }>;
+  deps: Array<{ dep: string; path: string | null; hint: string; runError?: string }>;
   bundled: Array<{ name: string; path: string | null; error?: string }>;
   signing: { teamIdEnv: string | null; detectedTeams: number } | null;
   /** Absent from reports of builds that predate the field. */
-  xcode?: { developerDir: string | null; simctl: boolean; fromEnv?: boolean } | null;
+  xcode?: {
+    developerDir: string | null;
+    simctl: boolean;
+    fromEnv?: boolean;
+    simctlError?: string;
+    availableSimulators?: number;
+  } | null;
   chromiumPorts?: number[];
 }
 
@@ -110,6 +117,8 @@ export interface DoctorContext {
   installCmd: string;
   /** Bin dir of the running global install when it is not on PATH. */
   offPathGlobalBin: string | null;
+  /** macOS: the PATH launchd gives apps started from the Dock. */
+  guiPath?: string | null;
 }
 
 const UPDATE_CHECK_TIMEOUT_MS = 2_500;
@@ -381,6 +390,17 @@ export function installSection(
       detail: home(packageRoot),
     })
   );
+
+  // Editors started from the Dock get launchd's PATH unless they load the shell's.
+  const globalDir = ctx.global && !ctx.global.runError ? path.dirname(ctx.global.bin) : null;
+  if (globalDir && ctx.guiPath && !ctx.guiPath.split(path.delimiter).includes(globalDir)) {
+    checks.push(
+      check("info", "Apps started from the Dock don't get this shell's PATH", {
+        detail: `${home(globalDir)} is not on launchd's PATH (${ctx.guiPath})`,
+        fix: `If an editor started outside a terminal can't start argent, put ${home(ctx.global!.bin)} in its entry instead of argent`,
+      })
+    );
+  }
 
   const engines = readEnginesNode(packageRoot);
   const satisfied = engines ? nodeSatisfiesEngines(process.versions.node, engines) : null;
@@ -1397,6 +1417,23 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
             : "Install Xcode, then sudo xcode-select -s /Applications/Xcode.app",
         })
       );
+    } else if (xcrun?.path && report.xcode?.simctlError) {
+      const license = /license/i.test(report.xcode.simctlError);
+      checks.push(
+        check("error", "iOS simulator: simctl fails to run", {
+          detail: report.xcode.simctlError,
+          fix: license
+            ? "sudo xcodebuild -license accept"
+            : "Open Xcode once to finish its setup (or run xcodebuild -runFirstLaunch)",
+        })
+      );
+    } else if (xcrun?.path && report.xcode?.availableSimulators === 0) {
+      checks.push(
+        check("warn", "iOS simulator: no available simulators (no iOS runtime installed?)", {
+          detail: report.xcode.developerDir ?? undefined,
+          fix: "Install an iOS runtime: Xcode > Settings > Components, or xcodebuild -downloadPlatform iOS",
+        })
+      );
     } else if (xcrun?.path && bundleOk(["simulator-server", "ax-service"])) {
       usable++;
       checks.push(
@@ -1444,12 +1481,26 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   const adb = dep("adb");
   const emulator = dep("emulator");
   // Android device tools drive the emulator through simulator-server too.
-  if (adb?.path && !bundleOk(["simulator-server"])) {
+  if (adb?.path && adb.runError) {
+    checks.push(
+      check("error", "Android: adb fails to run", {
+        detail: `${home(adb.path)}: ${adb.runError}`,
+        fix: "Reinstall Android SDK platform-tools for this machine's architecture",
+      })
+    );
+  } else if (adb?.path && !bundleOk(["simulator-server"])) {
     checks.push(check("info", "Android: unavailable until the bundled simulator-server works"));
   } else if (adb?.path) {
     usable++;
     checks.push(check("ok", "Android", { detail: `adb at ${home(adb.path)}` }));
-    if (!emulator?.path) {
+    if (emulator?.path && emulator.runError) {
+      checks.push(
+        check("warn", "Android emulator binary fails to run (can't boot AVDs)", {
+          detail: `${home(emulator.path)}: ${emulator.runError}`,
+          fix: "Reinstall the Android Emulator from Android Studio's SDK Manager",
+        })
+      );
+    } else if (!emulator?.path) {
       checks.push(
         check("info", "Android emulator binary not found (can't boot AVDs)", {
           fix: emulator?.hint,
@@ -1497,7 +1548,22 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   return checks;
 }
 
+/**
+ * The shared tool-server reads config from the directory it was started in, so
+ * a project-only android.sdkRoot is invisible to a server started elsewhere.
+ */
+export function sdkRootCheck(cwd: string, argentCmd: string): DoctorCheck | null {
+  const projectValue = getConfigValueAtScope("android.sdkRoot", "project", { cwd });
+  const globalValue = getConfigValueAtScope("android.sdkRoot", "global", { cwd });
+  if (typeof projectValue !== "string" || projectValue === globalValue) return null;
+  return check("warn", "android.sdkRoot is set only for this project", {
+    detail: "the tool-server is shared, and one started from another directory won't see it",
+    fix: `${argentCmd} config set android.sdkRoot ${projectValue} --scope global`,
+  });
+}
+
 async function platformsSection(
+  ctx: DoctorContext,
   paths: ToolsServerPaths,
   linked: ResolvedToolsUrl,
   reinstall: string
@@ -1520,7 +1586,11 @@ async function platformsSection(
       ],
     };
   }
-  return { title: "Platforms", checks: platformChecks(report, reinstall) };
+  const sdkRoot = sdkRootCheck(ctx.cwd, ctx.argentCmd);
+  return {
+    title: "Platforms",
+    checks: [...platformChecks(report, reinstall), ...(sdkRoot ? [sdkRoot] : [])],
+  };
 }
 
 // MARK: Other
@@ -1650,6 +1720,17 @@ function doctorProjectRoot(cwd: string): string {
   return samePath(key, homedir()) ? cwd : key;
 }
 
+/** The PATH launchd hands apps started from the Dock (its default when unset). */
+async function launchdPath(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  try {
+    const { stdout } = await execFileAsync("launchctl", ["getenv", "PATH"], { timeout: 2_000 });
+    return stdout.trim() || "/usr/bin:/bin:/usr/sbin:/sbin";
+  } catch {
+    return null;
+  }
+}
+
 function localArgentCmd(projectRoot: string): string {
   return isYarnPnp(projectRoot) ? "yarn argent" : "npx argent";
 }
@@ -1689,6 +1770,7 @@ export async function collectDoctorReport(options: {
       global && !global.runError ? "argent" : mode === "local" ? localCmd : "npx @swmansion/argent",
     installCmd: formatShellCommand(projectInstallCommand(projectPm)),
     offPathGlobalBin: !global && !runningLocal ? globalBinDirOf(packageRoot) : null,
+    guiPath: await launchdPath(),
   };
   const running = options.paths.version ?? getInstalledVersion() ?? "unknown";
   const globalPm = globalPackageManagerOf(packageRoot);
@@ -1705,7 +1787,7 @@ export async function collectDoctorReport(options: {
   // Sections that touch the network or spawn a process run concurrently.
   const [toolServer, platforms, other] = await Promise.all([
     toolServerSection(ctx, running, options.paths, linked),
-    platformsSection(options.paths, linked, reinstall),
+    platformsSection(ctx, options.paths, linked, reinstall),
     otherSection(ctx, running, options.offline, updateCmd),
   ]);
   const sections = [
