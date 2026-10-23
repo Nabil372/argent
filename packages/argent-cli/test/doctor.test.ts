@@ -6,11 +6,13 @@ import { listBundledSkills, RULES_DIR } from "@argent/installer";
 import {
   childFailureReason,
   classifyMcpEntry,
+  collectDoctorReport,
   depsProbeFailure,
   editorsSection,
   findGlobalArgent,
   globalBinDirOf,
   globalPackageManagerOf,
+  installSection,
   isStrictJson,
   platformChecks,
   probeProjectInstall,
@@ -371,40 +373,182 @@ describe.skipIf(process.platform === "win32")("runGlobalShim", () => {
     fs.writeFileSync(bin, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
     return bin;
   };
+  const run = (bin: string, pathValue = "/usr/bin:/bin", timeoutMs?: number) =>
+    runGlobalShim({ bin, root: null, version: null }, projectRoot, pathValue, timeoutMs);
 
   it("reads a script shim's version by running it", async () => {
     const bin = shim("echo 1.2.3");
-    expect(await runGlobalShim({ bin, root: null, version: null }, projectRoot)).toEqual({
-      bin,
-      root: null,
-      version: "1.2.3",
-    });
+    expect(await run(bin)).toEqual({ bin, root: null, version: "1.2.3" });
   });
 
   it("reports a version-manager shim that fails in this project", async () => {
     const bin = shim('echo "mise ERROR No version is set for shim: argent" >&2; exit 1');
-    expect(await runGlobalShim({ bin, root: null, version: null }, projectRoot)).toMatchObject({
+    expect(await run(bin)).toMatchObject({
       runError: "mise ERROR No version is set for shim: argent",
     });
+  });
+
+  it("picks mise's error line over its progress banner", async () => {
+    const bin = shim(
+      'echo "mise by @jdx – installing 1 tool" >&2; echo "mise ERROR failed to install node" >&2; exit 1'
+    );
+    expect((await run(bin)).runError).toBe("mise ERROR failed to install node");
+  });
+
+  it("runs the shim from the project, as an editor does", async () => {
+    const bin = shim(`[ "$(pwd -P)" = "${fs.realpathSync(projectRoot)}" ] && echo 1.0.0 || exit 3`);
+    expect((await run(bin)).version).toBe("1.0.0");
+  });
+
+  it("turns off mise's auto-install, so doctor installs nothing", async () => {
+    const bin = shim('[ "$MISE_AUTO_INSTALL" = false ] && echo 1.0.0 || exit 4');
+    expect((await run(bin)).version).toBe("1.0.0");
+  });
+
+  it("runs the shim on the PATH it was found on", async () => {
+    const bin = shim('echo "$PATH" >&2; exit 1');
+    expect((await run(bin, "/stripped/bin:/usr/bin:/bin")).runError).toBe(
+      "/stripped/bin:/usr/bin:/bin"
+    );
+  });
+
+  it("kills the shim and its children on timeout", async () => {
+    // sleep inherits stdout: killing only the shim would leave the pipe open.
+    const bin = shim("sleep 30");
+    const started = Date.now();
+    expect((await run(bin, undefined, 200)).runError).toMatch(/timed out/);
+    expect(Date.now() - started).toBeLessThan(5_000);
   });
 
   it("does not run an install whose package root is known", async () => {
     const bin = shim("exit 1");
     const global = { bin, root: projectRoot, version: "1.0.0" };
-    expect(await runGlobalShim(global, projectRoot)).toBe(global);
+    expect(await runGlobalShim(global, projectRoot, "")).toBe(global);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("collectDoctorReport with a failing shim", () => {
+  let home: string;
+  let originalCwd: string;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "argent-doctor-home-"));
+    originalCwd = process.cwd();
+    const shims = path.join(home, "shims");
+    fs.mkdirSync(shims);
+    fs.writeFileSync(
+      path.join(shims, "argent"),
+      '#!/bin/sh\necho "mise ERROR No version is set for shim: argent" >&2\nexit 1\n',
+      { mode: 0o755 }
+    );
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("PATH", `${shims}:/usr/bin:/bin`);
+    fs.mkdirSync(path.join(projectRoot, ".git"));
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      JSON.stringify({ mcpServers: { argent: { command: "argent", args: ["mcp"] } } })
+    );
+    process.chdir(projectRoot);
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("fails the install and the entry, and never offers the failing `argent` as a fix", async () => {
+    const pkg = path.join(home, "pkg");
+    const report = await collectDoctorReport({
+      paths: {
+        bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
+        simulatorServerDir: path.join(pkg, "bin"),
+        nativeDevtoolsDir: path.join(pkg, "dylibs"),
+        version: "1.0.0",
+      },
+      offline: true,
+    });
+    const checks = (title: string) => report.sections.find((s) => s.title === title)!.checks;
+    expect(checks("Install").find((c) => /fails to run/.test(c.label))?.status).toBe("error");
+    const entry = checks("Editors (MCP config)").find((c) => c.label.startsWith("Claude Code"));
+    expect(entry?.status).toBe("error");
+    expect(entry?.detail).toContain("mise ERROR No version is set for shim: argent");
+    const fixes = report.sections.flatMap((s) => s.checks.map((c) => c.fix ?? ""));
+    expect(fixes.filter((f) => /^argent /.test(f))).toEqual([]);
+  });
+});
+
+describe("installSection", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("only warns about a failing global shim in local mode, which doesn't use it", () => {
+    vi.stubEnv("HOME", projectRoot);
+    const pkg = path.join(projectRoot, "pkg");
+    const section = installSection(
+      {
+        projectRoot,
+        cwd: projectRoot,
+        mode: "local",
+        global: { bin: "/shims/argent", root: null, version: null, runError: "mise ERROR" },
+        argentCmd: "npx argent",
+        installCmd: "npm install",
+        offPathGlobalBin: null,
+      },
+      "1.0.0",
+      {
+        bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
+        simulatorServerDir: pkg,
+        nativeDevtoolsDir: pkg,
+      }
+    );
+    expect(section.checks.find((c) => /fails to run/.test(c.label))?.status).toBe("warn");
+  });
+});
+
+describe("childFailureReason error lines", () => {
+  it("picks V8's FATAL ERROR out of an out-of-memory dump", () => {
+    const stderr = [
+      "<--- Last few GCs --->",
+      "[123:0x1] 10 ms: Mark-Compact 15.8 (16.5) -> 15.7 (17.0) MB",
+      "<--- JS stacktrace --->",
+      "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory",
+    ].join("\n");
+    expect(childFailureReason(stderr, "fallback")).toMatch(/^FATAL ERROR: Reached heap limit/);
   });
 });
 
 describe("classifyMcpEntry with a failing shim", () => {
-  it("fails a bare `argent mcp` entry, but not one with a path", () => {
-    const failing = ctx({ globalOnPath: false, globalRunError: "mise ERROR No version is set" });
-    expect(classifyMcpEntry({ command: "argent", args: ["mcp"] }, failing)).toMatchObject({
-      status: "error",
-      detail: "mise ERROR No version is set",
-    });
-    const bin = path.join(projectRoot, "argent");
+  const shimBin = () => {
+    const bin = path.join(projectRoot, "shims", "argent");
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
     fs.writeFileSync(bin, "");
-    expect(classifyMcpEntry({ command: bin, args: ["mcp"] }, failing).status).toBe("ok");
+    return bin;
+  };
+  const failing = (bin: string) =>
+    ctx({ globalOnPath: false, globalRunError: "mise ERROR No version is set", globalBin: bin });
+
+  it("fails a bare `argent mcp` entry", () => {
+    expect(
+      classifyMcpEntry({ command: "argent", args: ["mcp"] }, failing(shimBin()))
+    ).toMatchObject({ status: "error", detail: "mise ERROR No version is set" });
+  });
+
+  it("fails an entry that names the same shim by its path", () => {
+    const bin = shimBin();
+    expect(classifyMcpEntry({ command: bin, args: ["mcp"] }, failing(bin)).status).toBe("error");
+  });
+
+  it("passes an entry that names another argent by its path", () => {
+    const other = path.join(projectRoot, "argent");
+    fs.writeFileSync(other, "");
+    expect(classifyMcpEntry({ command: other, args: ["mcp"] }, failing(shimBin())).status).toBe(
+      "ok"
+    );
+  });
+
+  it("only warns when the entry's own env may make the shim work", () => {
+    const entry = { command: "argent", args: ["mcp"], env: { MISE_NODE_VERSION: "24.14.1" } };
+    expect(classifyMcpEntry(entry, failing(shimBin())).status).toBe("warn");
   });
 });
 
@@ -433,6 +577,32 @@ describe("probeProjectInstall", () => {
   it("does not count a stray copy in an ancestor's node_modules", () => {
     installAt(projectRoot);
     expect(probeProjectInstall(app())).toMatchObject({ installed: false });
+  });
+
+  it("does not count a stray `npm i` in ~, which writes a package.json there", () => {
+    fs.writeFileSync(
+      path.join(projectRoot, "package.json"),
+      JSON.stringify({ dependencies: { "@swmansion/argent": "^1.0.0" } })
+    );
+    installAt(projectRoot);
+    expect(probeProjectInstall(app())).toMatchObject({ installed: false });
+  });
+
+  it("accepts a copy hoisted to a pnpm workspace root", () => {
+    fs.writeFileSync(path.join(projectRoot, "pnpm-workspace.yaml"), "packages: [app]\n");
+    installAt(projectRoot);
+    expect(probeProjectInstall(app())).toMatchObject({ installed: true });
+  });
+
+  it("goes by the manifest under Yarn PnP, even with a stray copy above", () => {
+    installAt(projectRoot);
+    const dir = app();
+    fs.writeFileSync(path.join(dir, ".pnp.cjs"), "");
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ name: "app", devDependencies: { "@swmansion/argent": "0.30.0" } })
+    );
+    expect(probeProjectInstall(dir)).toEqual({ installed: true, version: "0.30.0" });
   });
 
   it("accepts a copy hoisted to a workspace root", () => {

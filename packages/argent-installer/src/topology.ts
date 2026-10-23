@@ -111,7 +111,7 @@ interface ManifestDeps {
   optionalDependencies?: Record<string, string>;
 }
 
-function readManifestDeclaration(projectRoot: string): string | null {
+export function readManifestDeclaration(projectRoot: string): string | null {
   try {
     const pkg = JSON.parse(
       fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")

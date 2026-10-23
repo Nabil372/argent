@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import pc from "picocolors";
@@ -34,6 +34,7 @@ import {
   nodeSatisfiesEngines,
   probeLocalInstall,
   projectInstallCommand,
+  readManifestDeclaration,
   readCliRecord,
   readInstallRecord,
   resolveInstallMode,
@@ -238,31 +239,59 @@ export function findGlobalArgent(pathValue: string | undefined): GlobalInstall |
 }
 
 /**
- * A script shim hides its version, and a version manager's shim (mise, asdf)
- * fails outright in a project that pins a Node without argent. Running it from
- * the project, where an editor starts it, is the only way to tell. Windows
- * shims are .cmd files execFile can't run, so they stay unverified.
+ * A script shim hides its version, and a version manager's shim (mise, asdf,
+ * nodenv) fails outright in a project that pins a Node without argent. Running
+ * it from the project, where an editor starts it, is the only way to tell.
+ * Doctor must change nothing, so mise's auto-install is off, and the timeout
+ * kills the whole process group. `pathValue` is the PATH the shim was found
+ * on: with the project's node_modules/.bin still there, a mise shim falls
+ * through to the local copy. Windows shims are .cmd files execFile can't run,
+ * so they stay unverified.
  */
 export async function runGlobalShim(
   global: GlobalInstall,
-  projectRoot: string
+  projectRoot: string,
+  pathValue: string,
+  timeoutMs = SHIM_PROBE_TIMEOUT_MS
 ): Promise<GlobalInstall> {
   if (global.root || process.platform === "win32") return global;
-  try {
-    const { stdout } = await execFileAsync(global.bin, ["--version"], {
+  return new Promise((resolve) => {
+    let timedOut = false;
+    let stdout = "";
+    let stderr = "";
+    const child = spawn(global.bin, ["--version"], {
       cwd: projectRoot,
-      timeout: SHIM_PROBE_TIMEOUT_MS,
-      windowsHide: true,
+      env: { ...process.env, PATH: pathValue, MISE_AUTO_INSTALL: "false" },
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    return { ...global, version: /\d+\.\d+\.\d+\S*/.exec(stdout)?.[0] ?? null };
-  } catch (err) {
-    const { stderr, killed } = err as { stderr?: unknown; killed?: boolean };
-    const fallback = err instanceof Error ? err.message.split("\n")[0]! : String(err);
-    const runError = killed
-      ? `\`argent --version\` timed out after ${SHIM_PROBE_TIMEOUT_MS / 1000}s`
-      : childFailureReason(typeof stderr === "string" ? stderr : "", fallback);
-    return { ...global, runError };
-  }
+    child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
+    child.stderr.on("data", (chunk: Buffer) => (stderr += chunk));
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill(-child.pid!, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, timeoutMs);
+    const finish = (code: number | null, err?: Error) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        resolve({
+          ...global,
+          runError: `\`argent --version\` timed out after ${timeoutMs / 1000}s`,
+        });
+      } else if (code === 0) {
+        resolve({ ...global, version: /\d+\.\d+\.\d+\S*/.exec(stdout)?.[0] ?? null });
+      } else {
+        const fallback = err?.message ?? `exited with code ${code}`;
+        resolve({ ...global, runError: childFailureReason(stderr, fallback) });
+      }
+    };
+    child.on("error", (err) => finish(null, err));
+    child.on("close", (code) => finish(code));
+  });
 }
 
 // MARK: Install
@@ -276,6 +305,18 @@ function readEnginesNode(packageRoot: string): string | null {
   } catch {
     return null;
   }
+}
+
+function samePath(a: string, b: string | null | undefined): boolean {
+  if (!b) return false;
+  const real = (p: string) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  return real(a) === real(b);
 }
 
 function isWorkspaceRoot(dir: string): boolean {
@@ -300,6 +341,15 @@ export function probeProjectInstall(projectRoot: string): {
   installed: boolean;
   version: string | null;
 } {
+  // PnP has no node_modules, and without its loader Node resolution would find
+  // only strays, so the manifest declaration decides.
+  if (isYarnPnp(projectRoot)) {
+    const spec = readManifestDeclaration(projectRoot);
+    return {
+      installed: spec !== null,
+      version: spec && /^\d+\.\d+\.\d+$/.test(spec) ? spec : null,
+    };
+  }
   const probe = probeLocalInstall(projectRoot);
   if (!probe.packageDir) return probe;
   const notInstalled = { installed: false, version: null };
@@ -312,7 +362,7 @@ export function probeProjectInstall(projectRoot: string): {
   return dir === projectRoot || isWorkspaceRoot(dir) ? probe : notInstalled;
 }
 
-function installSection(
+export function installSection(
   ctx: DoctorContext,
   running: string,
   paths: ToolsServerPaths
@@ -341,10 +391,14 @@ function installSection(
   const global = ctx.global;
   checks.push(
     global?.runError
-      ? check("error", "`argent` on PATH fails to run in this project", {
-          detail: `${home(global.bin)}: ${global.runError}`,
-          fix: GLOBAL_SHIM_FIX,
-        })
+      ? check(
+          ctx.mode === "local" ? "warn" : "error",
+          "`argent` on PATH fails to run in this project",
+          {
+            detail: `${home(global.bin)}: ${global.runError}`,
+            fix: GLOBAL_SHIM_FIX,
+          }
+        )
       : !global && ctx.offPathGlobalBin
         ? check("warn", "Installed globally, but its bin dir is not on PATH", {
             detail: home(ctx.offPathGlobalBin),
@@ -418,6 +472,8 @@ export interface EntryContext {
   globalOnPath: boolean;
   /** Why the `argent` on PATH fails to run from the project, when it does. */
   globalRunError?: string | null;
+  /** That `argent`'s path, so an entry naming the same shim gets the same verdict. */
+  globalBin?: string | null;
   localInstalled: boolean;
   argentCmd: string;
   installCmd: string;
@@ -484,9 +540,17 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
   }
   if (bare === MCP_BINARY_NAME) {
     if (entry.args[0] !== "mcp") return badArgs();
-    if (!pathLike && ctx.globalRunError) {
-      return check("error", `${cmd} — \`argent\` on PATH fails to run here`, {
-        detail: ctx.globalRunError,
+    const runsFailingShim =
+      !!ctx.globalRunError &&
+      (!pathLike || samePath(path.resolve(base, entry.command), ctx.globalBin));
+    if (runsFailingShim && hasCustomizingEnv(entry)) {
+      return check("warn", `${cmd} — \`argent\` fails to run here without this entry's env`, {
+        detail: ctx.globalRunError!,
+      });
+    }
+    if (runsFailingShim) {
+      return check("error", `${cmd} — \`argent\` fails to run here`, {
+        detail: ctx.globalRunError!,
         fix: GLOBAL_SHIM_FIX,
       });
     }
@@ -571,6 +635,7 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
     cwd: ctx.cwd,
     globalOnPath: ctx.global !== null && !ctx.global.runError,
     globalRunError: ctx.global?.runError ?? null,
+    globalBin: ctx.global?.bin ?? null,
     localInstalled: probeProjectInstall(projectRoot).installed,
     argentCmd: ctx.argentCmd,
     installCmd: ctx.installCmd,
@@ -1038,7 +1103,8 @@ export function childFailureReason(stderr: string, fallback: string): string {
     .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
-  return lines.find((l) => /^[\w.]*Error\b/.test(l)) ?? lines[0] ?? fallback;
+  // `TypeError: …`, but also V8's `FATAL ERROR: …` and mise's `mise ERROR …`.
+  return lines.find((l) => /^[\w.]*Error\b|\bERROR\b/.test(l)) ?? lines[0] ?? fallback;
 }
 
 export function platformChecks(report: HostDepsReport, reinstall: string): DoctorCheck[] {
@@ -1266,15 +1332,16 @@ function currentDir(): string {
   }
 }
 
-async function collectDoctorReport(options: {
+export async function collectDoctorReport(options: {
   paths: ToolsServerPaths;
   offline: boolean;
 }): Promise<DoctorReport> {
   const cwd = currentDir();
   const projectRoot = resolveProjectRoot(cwd);
   const mode = resolveInstallMode(projectRoot);
-  const found = findGlobalArgent(stripPackageBinDirs(process.env.PATH ?? "", cwd));
-  const global = found && (await runGlobalShim(found, projectRoot));
+  const lookupPath = stripPackageBinDirs(process.env.PATH ?? "", cwd);
+  const found = findGlobalArgent(lookupPath);
+  const global = found && (await runGlobalShim(found, projectRoot, lookupPath));
   const packageRoot = path.dirname(path.dirname(options.paths.bundlePath));
   const runningLocal = options.paths.installKind === "local";
   const projectPm = detectProjectPackageManager(projectRoot);
