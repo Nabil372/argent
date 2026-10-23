@@ -1310,7 +1310,11 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
           detail: report.xcode?.developerDir ?? `xcrun at ${xcrun.path}`,
         })
       );
-    } else if (!xcrun?.path) {
+    } else if (xcrun?.path) {
+      checks.push(
+        check("info", "iOS simulator: unavailable until the bundled binaries above work")
+      );
+    } else {
       checks.push(
         check("info", "iOS simulator: Xcode command-line tools not found", { fix: xcrun?.hint })
       );
@@ -1345,7 +1349,10 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
 
   const adb = dep("adb");
   const emulator = dep("emulator");
-  if (adb?.path) {
+  // Android device tools drive the emulator through simulator-server too.
+  if (adb?.path && !bundleOk(["simulator-server"])) {
+    checks.push(check("info", "Android: unavailable until the bundled simulator-server works"));
+  } else if (adb?.path) {
     usable++;
     checks.push(check("ok", "Android", { detail: `adb at ${home(adb.path)}` }));
     if (!emulator?.path) {
@@ -1381,8 +1388,9 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
     })
   );
 
-  // Chromium / Electron need nothing installed, so this is not a failure.
-  if (usable === 0) {
+  // Chromium / Electron need nothing installed, so this is not a failure. A
+  // broken bundle is reported above with its own fix.
+  if (usable === 0 && brokenBundle.length === 0) {
     checks.unshift(
       check("warn", "No mobile platform toolchain found: only Chromium / Electron apps work", {
         fix:
@@ -1507,6 +1515,13 @@ export function stripPackageBinDirs(pathValue: string, cwd: string): string {
     .join(path.delimiter);
 }
 
+/** `argent update` installs through npm unless launched by another package manager. */
+export function updateCommand(runningLocal: boolean, globalPm: PackageManager, argentCmd: string) {
+  return !runningLocal && globalPm !== "npm"
+    ? formatShellCommand(globalInstallCommand(globalPm, `${PACKAGE_NAME}@latest`))
+    : `${argentCmd} update`;
+}
+
 function localArgentCmd(projectRoot: string): string {
   return isYarnPnp(projectRoot) ? "yarn argent" : "npx argent";
 }
@@ -1555,11 +1570,7 @@ export async function collectDoctorReport(options: {
       ? "Reinstall argent: pnpm install --force"
       : `Reinstall argent: delete ${home(packageRoot)}, then ${ctx.installCmd}`
     : `Reinstall argent: ${formatShellCommand(globalInstallCommand(globalPm, PACKAGE_NAME))}`;
-  // `argent update` installs through npm unless launched by another package manager.
-  const updateCmd =
-    !runningLocal && globalPm !== "npm"
-      ? formatShellCommand(globalInstallCommand(globalPm, `${PACKAGE_NAME}@latest`))
-      : `${ctx.argentCmd} update`;
+  const updateCmd = updateCommand(runningLocal, globalPm, ctx.argentCmd);
   const linked = await getResolvedToolsUrl();
 
   // Sections that touch the network or spawn a process run concurrently.

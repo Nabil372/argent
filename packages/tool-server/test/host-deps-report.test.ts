@@ -111,4 +111,31 @@ describe("collectHostDepsReport", () => {
     expect(report.bundled.find((b) => b.name === "ax-service")?.error).toMatch(/not executable/);
     expect(report.bundled.find((b) => b.name === "android helper apk")?.error).toBeUndefined();
   });
+
+  it("needs the exec bit on simulator-server, but not on the dylibs", async () => {
+    fs.chmodSync(paths.simulatorServer, 0o644);
+    try {
+      const report = await reportOn("darwin");
+      expect(report.bundled.find((b) => b.name === "simulator-server")?.error).toMatch(
+        /not executable/
+      );
+      for (const name of ["native devtools dylib", "injection bootstrap dylib"]) {
+        expect(report.bundled.find((b) => b.name === name)?.error).toBeUndefined();
+      }
+    } finally {
+      fs.chmodSync(paths.simulatorServer, 0o755);
+    }
+  });
+
+  it("reports a bundled artifact that is gone", async () => {
+    fs.renameSync(paths.apk, `${paths.apk}.bak`);
+    try {
+      const report = await reportOn("linux");
+      expect(report.bundled.find((b) => b.name === "android helper apk")?.error).toMatch(
+        /not found/
+      );
+    } finally {
+      fs.renameSync(`${paths.apk}.bak`, paths.apk);
+    }
+  });
 });

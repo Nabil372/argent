@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as http from "node:http";
 import { listBundledSkills, RULES_DIR } from "@argent/installer";
 import {
   childFailureReason,
@@ -24,6 +25,7 @@ import {
   runGlobalShim,
   skillsSection,
   stripPackageBinDirs,
+  updateCommand,
   type DoctorContext,
   type DoctorReport,
   type EntryContext,
@@ -268,6 +270,39 @@ function hostDeps(overrides: Partial<HostDeps> = {}): HostDeps {
 }
 
 describe("platformChecks", () => {
+  it("names the team from ARGENT_IOS_TEAM_ID", () => {
+    const checks = platformChecks(
+      hostDeps({ signing: { teamIdEnv: "ABCDE12345", detectedTeams: 0 } }),
+      "reinstall"
+    );
+    expect(checks.find((c) => c.label.startsWith("Physical iPhone"))?.label).toMatch(/ABCDE12345/);
+  });
+
+  it("does not pass the iOS simulator without ax-service", () => {
+    const checks = platformChecks(
+      hostDeps({
+        bundled: [
+          { name: "simulator-server", path: "/pkg/bin/darwin/simulator-server" },
+          { name: "ax-service", path: null, error: "not found: /pkg/bin/darwin/ax-service" },
+        ],
+      }),
+      "reinstall"
+    );
+    expect(checks.some((c) => c.label === "iOS simulator")).toBe(false);
+  });
+
+  it("keeps iOS and Android rows, without an install-Xcode summary, when simulator-server is broken", () => {
+    const checks = platformChecks(
+      hostDeps({
+        bundled: [{ name: "simulator-server", path: null, error: "not executable: /pkg/s" }],
+      }),
+      "reinstall"
+    );
+    expect(checks.find((c) => c.label.startsWith("iOS simulator"))?.label).toMatch(/unavailable/);
+    expect(checks.find((c) => c.label.startsWith("Android"))?.label).toMatch(/unavailable/);
+    expect(checks.some((c) => /No mobile platform toolchain/.test(c.label))).toBe(false);
+  });
+
   it("reports a missing optional toolchain as info with its install hint", () => {
     const vega = platformChecks(hostDeps(), "reinstall").find((c) => c.label.startsWith("Vega"));
     expect(vega).toMatchObject({ status: "info", fix: "install vega" });
@@ -388,6 +423,12 @@ describe("stripPackageBinDirs", () => {
       "/usr/bin",
     ].join(d);
     expect(stripPackageBinDirs(input, "/app/pkg")).toBe(["/opt/homebrew/bin", "/usr/bin"].join(d));
+  });
+
+  it("drops a Windows-style node_modules\\.bin", () => {
+    // No drive letter: its colon is POSIX's PATH delimiter.
+    const input = ["\\proj\\node_modules\\.bin", "/usr/bin"].join(d);
+    expect(stripPackageBinDirs(input, "\\proj")).toBe("/usr/bin");
   });
 
   it("keeps a global bin that happens to be a node_modules/.bin (Yarn classic)", () => {
@@ -574,6 +615,45 @@ describe("installSection", () => {
     );
   });
 
+  const pkgPaths = () => {
+    const pkg = path.join(projectRoot, "pkg");
+    return {
+      bundlePath: path.join(pkg, "dist", "t.cjs"),
+      simulatorServerDir: pkg,
+      nativeDevtoolsDir: pkg,
+    };
+  };
+  const localCtx = (overrides: Partial<DoctorContext> = {}): DoctorContext => ({
+    projectRoot,
+    cwd: projectRoot,
+    mode: "local",
+    global: null,
+    argentCmd: "npx argent",
+    installCmd: "npm install",
+    offPathGlobalBin: null,
+    ...overrides,
+  });
+
+  it("does not ask for ~/.argent/cli.json under Yarn PnP, which never writes it", () => {
+    vi.stubEnv("HOME", projectRoot);
+    fs.writeFileSync(path.join(projectRoot, ".pnp.cjs"), "");
+    const section = installSection(localCtx(), "1.0.0", pkgPaths());
+    expect(section.checks.find((c) => c.label.includes("cli.json"))?.status).toBe("info");
+  });
+
+  it("names a global install whose bin dir is not on PATH", () => {
+    vi.stubEnv("HOME", projectRoot);
+    const section = installSection(
+      localCtx({ mode: "global", offPathGlobalBin: "/opt/argent/bin" }),
+      "1.0.0",
+      pkgPaths()
+    );
+    expect(section.checks.find((c) => /not on PATH/.test(c.label))).toMatchObject({
+      status: "warn",
+      fix: "Add /opt/argent/bin to PATH",
+    });
+  });
+
   it("only warns about a failing global shim in local mode, which doesn't use it", () => {
     vi.stubEnv("HOME", projectRoot);
     const pkg = path.join(projectRoot, "pkg");
@@ -595,6 +675,81 @@ describe("installSection", () => {
       }
     );
     expect(section.checks.find((c) => /fails to run/.test(c.label))?.status).toBe("warn");
+  });
+});
+
+describe("updateCommand", () => {
+  it("uses the owning package manager for a non-npm global install", () => {
+    expect(updateCommand(false, "pnpm", "argent")).toMatch(
+      /^pnpm add -g @swmansion\/argent@latest/
+    );
+    expect(updateCommand(false, "npm", "argent")).toBe("argent update");
+    expect(updateCommand(true, "pnpm", "npx argent")).toBe("npx argent update");
+  });
+});
+
+describe("collectDoctorReport", () => {
+  let home: string;
+  let originalCwd: string;
+  let server: http.Server | null = null;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "argent-doctor-home-"));
+    originalCwd = process.cwd();
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("PATH", "/usr/bin:/bin");
+    vi.stubEnv("ARGENT_TOOLS_URL", "");
+    fs.mkdirSync(path.join(projectRoot, ".git"));
+    process.chdir(projectRoot);
+  });
+
+  afterEach(() => {
+    server?.close();
+    server = null;
+    process.chdir(originalCwd);
+    vi.unstubAllEnvs();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  const collect = (installKind?: "local" | "global") => {
+    const pkg = path.join(home, "pkg");
+    return collectDoctorReport({
+      paths: {
+        bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
+        simulatorServerDir: path.join(pkg, "bin"),
+        nativeDevtoolsDir: path.join(pkg, "dylibs"),
+        version: "1.0.0",
+        installKind,
+      },
+      offline: true,
+    });
+  };
+  const toolServer = async () =>
+    (await collect()).sections.find((s) => s.title === "Tool-server")!.checks;
+
+  it("rejects an argent:// pairing string in ARGENT_TOOLS_URL", async () => {
+    vi.stubEnv("ARGENT_TOOLS_URL", "argent://pair?token=x");
+    expect((await toolServer())[0]?.label).toMatch(/pairing string/);
+  });
+
+  it("probes a linked URL as given, trailing slash included, like the tools client", async () => {
+    server = http.createServer((req, res) => {
+      res.statusCode = req.url === "//tools" ? 200 : 404;
+      res.end("[]");
+    });
+    await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    vi.stubEnv("ARGENT_TOOLS_URL", `http://127.0.0.1:${port}/`);
+    expect((await toolServer())[0]?.status).toBe("ok");
+  });
+
+  it("offers pnpm's forced reinstall for a broken local install in a pnpm project", async () => {
+    fs.writeFileSync(path.join(projectRoot, "pnpm-lock.yaml"), "");
+    const report = await collect("local");
+    const failed = report.sections
+      .find((s) => s.title === "Platforms")!
+      .checks.find((c) => /dependency check/.test(c.label));
+    expect(failed?.fix).toBe("Reinstall argent: pnpm install --force");
   });
 });
 
@@ -770,6 +925,23 @@ describe("childFailureReason", () => {
 });
 
 describe("classifyMcpEntry argument rules", () => {
+  it("accepts arguments after a node entry's `mcp`, and nothing between script and `mcp`", () => {
+    const rel = "node_modules/@swmansion/argent/dist/cli.js";
+    fs.mkdirSync(path.dirname(path.join(projectRoot, rel)), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, rel), "");
+    expect(classifyMcpEntry({ command: "node", args: [rel, "mcp", "--x"] }, ctx()).status).toBe(
+      "ok"
+    );
+    expect(classifyMcpEntry({ command: "node", args: [rel, "x", "mcp"] }, ctx()).status).toBe(
+      "error"
+    );
+  });
+
+  it("needs `mcp` right after the package in an npx entry", () => {
+    const entry = { command: "npx", args: ["-y", "@swmansion/argent", "foo", "mcp"] };
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("error");
+  });
+
   it("accepts arguments after `mcp`, which the CLI ignores", () => {
     expect(classifyMcpEntry({ command: "argent", args: ["mcp", "--stdio"] }, ctx()).status).toBe(
       "ok"
@@ -1222,6 +1394,28 @@ describe("editor and skill sections", () => {
     } finally {
       fs.rmSync(link, { force: true });
     }
+  });
+
+  it("warns about a Cursor entry switched off with `disabled: true`", () => {
+    writeJson(path.join(projectRoot, ".cursor", "mcp.json"), {
+      mcpServers: { argent: { ...argent, disabled: true } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.label.startsWith("Cursor"))?.label).toMatch(/switched off/);
+  });
+
+  it("warns that Gemini reads a project entry only when started from the project", () => {
+    writeJson(path.join(projectRoot, ".gemini", "settings.json"), { mcpServers: { argent } });
+    const sub = path.join(projectRoot, "sub");
+    fs.mkdirSync(sub);
+    const checks = editorsSection({ ...doctorCtx(), cwd: sub }).checks;
+    expect(checks.some((c) => /only when started from it/.test(c.label))).toBe(true);
+  });
+
+  it("does not add a not-configured error next to an unparseable config", () => {
+    fs.writeFileSync(path.join(projectRoot, ".mcp.json"), "{,}");
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.filter((c) => c.status === "error")).toHaveLength(1);
   });
 
   const installSkills = (dir: string) => {
