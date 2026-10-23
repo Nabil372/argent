@@ -3,6 +3,7 @@ import type { Registry, ToolDependency } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../../contract";
 import { adbExecOutBinary, isAndroidTv } from "../../../../utils/adb";
 import { resolveDevice } from "../../../../utils/device-info";
+import { withKeyedLock } from "../../../../utils/keyed-lock";
 import {
   getAndroidScreenSize,
   orientScreenSize,
@@ -99,26 +100,12 @@ async function awaitWebViewPublished(
   return tree;
 }
 
-/**
- * A second `uiautomator dump` started while one is running on the same device
- * gets killed, so dumps on one serial run one at a time. A wait tool that hits
- * its deadline abandons its dump without cancelling it, and the describe that
- * follows would otherwise start on top of it.
- */
-const dumpQueues = new Map<string, Promise<void>>();
+// A dump started while another runs on the same device kills it, so dumps on
+// one serial are serialized.
+const dumpLocks = new Map<string, Promise<unknown>>();
 
 function uiautomatorDump(serial: string): Promise<string> {
-  const previous = dumpQueues.get(serial) ?? Promise.resolve();
-  const dump = previous.then(() => runUiautomatorDump(serial));
-  const done = dump.then(
-    () => undefined,
-    () => undefined
-  );
-  dumpQueues.set(serial, done);
-  void done.then(() => {
-    if (dumpQueues.get(serial) === done) dumpQueues.delete(serial);
-  });
-  return dump;
+  return withKeyedLock(dumpLocks, serial, () => runUiautomatorDump(serial));
 }
 
 async function runUiautomatorDump(serial: string): Promise<string> {
