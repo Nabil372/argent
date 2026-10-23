@@ -11,18 +11,18 @@ import { isYarnPnp } from "./preflight.js";
 // and local (project dependency, the committable "team-share" flow).
 // update/uninstall probe and handle each independently.
 
-// `which argent` also matches temp package runners (npx / pnpm dlx / bunx /
-// yarn dlx), which prepend their cache .bin/ dir to PATH. pnpm 8 used
-// `dlx-<pid>` dirs, current pnpm `<cache>/pnpm/dlx/<hash>/`; a versioned
-// `bunx pkg@spec` installs into `$TMPDIR/bunx-<uid>-<spec>/`.
+// `which argent` also matches copies no global install owns: temp package
+// runners (npx / pnpm dlx / bunx / yarn dlx) prepend their cache's
+// `node_modules/.bin` to PATH, and so does `npx`/`npm exec` for the cwd and
+// every ancestor. A global prefix never links its bin into a `.bin` dir. The
+// `_npx`, `dlx-` and bun-cache markers catch older layouts whose bin sits
+// directly in a `bin/` dir.
 const TEMP_RUNNER_MARKERS = [
+  "node_modules/.bin",
+  "node_modules\\.bin",
   "_npx",
   "/dlx-",
   "\\dlx-",
-  "/pnpm/dlx/",
-  "\\pnpm\\dlx\\",
-  "/bunx-",
-  "\\bunx-",
   "bun/install/cache",
   ".bun\\install\\cache",
 ];
@@ -31,31 +31,30 @@ function isTempRunnerPath(binaryPath: string): boolean {
   return TEMP_RUNNER_MARKERS.some((marker) => binaryPath.includes(marker));
 }
 
+/** Every `name` on PATH, in PATH order (`which -a` / `where`). */
+function whichAll(name: string): string[] {
+  try {
+    const [cmd, args] = process.platform === "win32" ? ["where", [name]] : ["which", ["-a", name]];
+    const output = execFileSync(cmd, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Path of the globally-installed argent binary, or null when argent is not
  * permanently on PATH. Checks every match so a concurrent temp-runner
  * invocation does not mask a real global install.
  */
 function getGlobalBinaryPath(): string | null {
-  try {
-    const [cmd, args] =
-      process.platform === "win32"
-        ? ["where", [MCP_BINARY_NAME]]
-        : ["which", ["-a", MCP_BINARY_NAME]];
-    const output = execFileSync(cmd, args, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    return (
-      output
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .find((line) => !isTempRunnerPath(line)) ?? null
-    );
-  } catch {
-    return null;
-  }
+  return whichAll(MCP_BINARY_NAME).find((line) => !isTempRunnerPath(line)) ?? null;
 }
 
 /** True iff argent is permanently on PATH, not run from an npx / dlx cache. */
@@ -105,23 +104,33 @@ export function cliEntryOf(packageRoot: string | null): string | null {
 
 /**
  * Absolute paths that launch the global install without PATH: its CLI
- * entrypoint (`<root>/dist/cli.js`) and the `node` beside its bin link, when
- * there is one. That `node` is the prefix's stable name (nvm's binary, or
- * Homebrew's symlink, which survives `brew upgrade` where the Cellar path a
- * resolved execPath names does not). Null when there is no global install or
- * its layout can't be resolved.
+ * entrypoint (`<root>/dist/cli.js`) and a `node` binary, preferring the one
+ * beside its bin link (the version that installed it), else the first on
+ * PATH. Both are the bin dir's name, not the binary's realpath: Homebrew's
+ * `bin/node` link survives `brew upgrade` where the Cellar path a resolved
+ * execPath names does not. The bin dir itself IS resolved, so an fnm
+ * multishell link (per-shell, gone at logout) yields the version dir behind
+ * it. Null when there is no global install or its layout can't be resolved.
  */
 export function getGloballyInstalledLaunchPaths(): { cli: string; node: string | null } | null {
   const binaryPath = getGlobalBinaryPath();
   const cli = cliEntryOf(packageRootOfBinary(binaryPath));
   if (!binaryPath || !cli) return null;
   // `which -a` echoes relative PATH entries as-is; the editor would resolve a
-  // relative `node` against its own cwd, so anchor it to this one.
-  const node = path.join(
-    path.dirname(path.resolve(binaryPath)),
-    process.platform === "win32" ? "node.exe" : "node"
-  );
-  return { cli, node: fs.existsSync(node) ? node : null };
+  // relative `node` against its own cwd, so anchor them to this one.
+  const binDirs = [binaryPath, ...whichAll("node")].map((bin) => path.dirname(path.resolve(bin)));
+  return { cli, node: binDirs.map(nodeBeside).find((node) => node !== null) ?? null };
+}
+
+function nodeBeside(binDir: string): string | null {
+  let realDir = binDir;
+  try {
+    realDir = fs.realpathSync(binDir);
+  } catch {
+    // keep the unresolved dir
+  }
+  const node = path.join(realDir, process.platform === "win32" ? "node.exe" : "node");
+  return fs.existsSync(node) ? node : null;
 }
 
 /**

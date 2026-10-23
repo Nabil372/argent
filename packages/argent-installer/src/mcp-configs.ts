@@ -147,17 +147,15 @@ export function resolveLocalCommandMode(root: string): McpCommandMode {
   return { kind: "local-npx" };
 }
 
-// Pairs the global install's cli.js with the node beside its bin link, else
-// the node running `init`/`update` — one that demonstrably runs argent here,
-// like cli-record.ts. Not under bun or another runtime, whose execPath is no
-// node.
+// Pins the global install's cli.js with a node that launches it (see
+// getGloballyInstalledLaunchPaths). Gated by isGlobalNodeEntry so argent only
+// writes a shape it will recognise as its own in update/cleanup: an `npm link`
+// checkout outside node_modules, or no node at all (bunx init), stays bare.
 export function resolveGlobalCommandMode(): McpCommandMode {
   const launch = getGloballyInstalledLaunchPaths();
-  const node = launch?.node ?? process.execPath;
-  if (!launch || !path.isAbsolute(node) || !/^node(\.exe)?$/i.test(path.basename(node))) {
-    return { kind: "global" };
-  }
-  return { kind: "global-node", node, cli: launch.cli };
+  if (!launch?.node) return { kind: "global" };
+  const mode: McpCommandMode = { kind: "global-node", node: launch.node, cli: launch.cli };
+  return isGlobalNodeEntry(getMcpEntry(mode)) ? mode : { kind: "global" };
 }
 
 // Shared by `init` and `update`: only a local-mode PROJECT-scope entry runs the

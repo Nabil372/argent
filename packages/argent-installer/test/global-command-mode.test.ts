@@ -62,31 +62,64 @@ function linkPrefixNode(): string {
   return node;
 }
 
+// A `node` in a dir of its own, first on PATH — the user's shell node (nvm's
+// version dir, Homebrew's bin/).
+function linkPathNode(): string {
+  const dir = path.join(tmp, "shell-node", "bin");
+  fs.mkdirSync(dir, { recursive: true });
+  const node = path.join(dir, "node");
+  fs.symlinkSync(process.execPath, node);
+  prependPath(dir);
+  return node;
+}
+
 describe.skipIf(process.platform === "win32")("resolveGlobalCommandMode", () => {
-  it("falls back to the running node when the prefix has none (a custom npm prefix)", () => {
-    expect(resolveGlobalCommandMode()).toEqual({
-      kind: "global-node",
-      node: process.execPath,
-      cli,
-    });
+  it("falls back to the first node on PATH when the prefix has none (a custom npm prefix)", () => {
+    const node = linkPathNode();
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
   });
 
-  it("prefers the node beside the bin link over a resolved (Homebrew Cellar) execPath", () => {
+  it("prefers the node beside the bin link over the shell's node", () => {
+    linkPathNode();
     const node = linkPrefixNode();
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
   });
 
-  it("writes bare argent rather than pinning a non-node runtime (bunx init)", () => {
-    vi.spyOn(process, "execPath", "get").mockReturnValue("/opt/bun/bin/bun");
+  it("pins the version dir behind a per-shell bin symlink (fnm multishell)", () => {
+    const node = linkPrefixNode();
+    const multishell = path.join(tmp, "fnm_multishells", "1214_1791814454867");
+    fs.mkdirSync(multishell, { recursive: true });
+    fs.symlinkSync(path.join(prefix, "bin"), path.join(multishell, "bin"));
+    vi.stubEnv("PATH", `${path.join(multishell, "bin")}${path.delimiter}${process.env.PATH}`);
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
+  });
+
+  it("writes bare argent when no node is on PATH (bunx init)", () => {
+    fs.rmSync(path.join(prefix, "bin", "argent"));
+    const which = path.join(tmp, "which-only");
+    fs.mkdirSync(which);
+    fs.symlinkSync("/usr/bin/which", path.join(which, "which"));
+    fs.symlinkSync(cli, path.join(which, "argent"));
+    vi.stubEnv("PATH", which);
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
+  });
+
+  it("writes bare argent for a checkout outside node_modules (npm link)", () => {
+    linkPrefixNode();
+    const checkout = path.join(tmp, "checkout");
+    fs.renameSync(pkg, checkout);
+    fs.symlinkSync(checkout, pkg);
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
   });
 
   it("writes bare argent when the package has no bin entry", () => {
+    linkPrefixNode();
     fs.writeFileSync(path.join(pkg, "package.json"), JSON.stringify({ name: "@swmansion/argent" }));
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
   });
 
   it("writes bare argent when the bin's target is missing (no dist/)", () => {
+    linkPrefixNode();
     fs.writeFileSync(
       path.join(pkg, "package.json"),
       JSON.stringify({ name: "@swmansion/argent", bin: { argent: "dist/other.js" } })
@@ -97,6 +130,7 @@ describe.skipIf(process.platform === "win32")("resolveGlobalCommandMode", () => 
   it.each([
     ["pnpm dlx", ["home", ".cache", "pnpm", "dlx", "abc123", "node_modules", ".bin"]],
     ["versioned bunx", ["T", "bunx-501-@swmansion+argent@latest", "node_modules", ".bin"]],
+    ["project devDependency (npx from the project)", ["proj", "node_modules", ".bin"]],
   ])("skips a %s copy ahead of the global install on PATH", (_runner, segments) => {
     const runnerBin = path.join(tmp, ...segments);
     fs.mkdirSync(runnerBin, { recursive: true });
