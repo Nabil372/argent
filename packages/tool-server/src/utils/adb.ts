@@ -365,6 +365,11 @@ async function listAndroidSerials(
 // at one ENRICH_TIMEOUT_MS rather than a multiple of it.
 export const ENRICH_TIMEOUT_MS = 5_000;
 
+/** One enrichment shell read, bounded by ENRICH_TIMEOUT_MS; "" when it fails or times out. */
+function readEnrichment(serial: string, shellCommand: string): Promise<string> {
+  return adbShell(serial, shellCommand, { timeoutMs: ENRICH_TIMEOUT_MS }).catch(() => "");
+}
+
 /**
  * Resolve the AVD name of a running emulator. The property moved from
  * `ro.kernel.qemu.avd_name` to `ro.boot.qemu.avd_name` on newer emulator
@@ -375,12 +380,8 @@ export const ENRICH_TIMEOUT_MS = 5_000;
  */
 async function readAvdName(serial: string): Promise<string | null> {
   const [modern, legacy] = await Promise.all([
-    adbShell(serial, "getprop ro.boot.qemu.avd_name", { timeoutMs: ENRICH_TIMEOUT_MS }).catch(
-      () => ""
-    ),
-    adbShell(serial, "getprop ro.kernel.qemu.avd_name", { timeoutMs: ENRICH_TIMEOUT_MS }).catch(
-      () => ""
-    ),
+    readEnrichment(serial, "getprop ro.boot.qemu.avd_name"),
+    readEnrichment(serial, "getprop ro.kernel.qemu.avd_name"),
   ]);
   return modern.trim() || legacy.trim() || null;
 }
@@ -405,10 +406,8 @@ async function readRuntimeKind(serial: string): Promise<"mobile" | "tv" | undefi
   // Both run concurrently so a device that answers neither costs one
   // ENRICH_TIMEOUT_MS, not two.
   const [features, characteristics] = await Promise.all([
-    adbShell(serial, "pm list features", { timeoutMs: ENRICH_TIMEOUT_MS }).catch(() => ""),
-    adbShell(serial, "getprop ro.build.characteristics", { timeoutMs: ENRICH_TIMEOUT_MS }).catch(
-      () => ""
-    ),
+    readEnrichment(serial, "pm list features"),
+    readEnrichment(serial, "getprop ro.build.characteristics"),
   ]);
   if (/feature:android\.(software\.leanback|hardware\.type\.television)\b/.test(features)) {
     return "tv";
@@ -449,9 +448,7 @@ export function __resetAndroidRuntimeKindCacheForTesting(): void {
 /**
  * Probe (or return the cached) runtime kind for a serial, keyed by its current
  * avdName so a reclaimed emulator slot can't inherit the prior AVD's verdict.
- * Indeterminate probes are not cached. Used by `getAndroidRuntimeKind`;
- * `listAndroidDevices` goes through {@linkcode resolveRuntimeKindAlongside},
- * which reads and writes the same cache.
+ * Indeterminate probes are not cached. Used by `getAndroidRuntimeKind`.
  */
 async function resolveRuntimeKindCached(
   serial: string,
@@ -466,13 +463,12 @@ async function resolveRuntimeKindCached(
 }
 
 /**
- * Runtime kind for `listAndroidDevices`, from the same cache as
- * {@linkcode resolveRuntimeKindCached}, with two differences:
- * - on a cache miss the feature probe starts without waiting for the avd read,
- *   so a wedged device costs one ENRICH_TIMEOUT_MS window for the whole
- *   enrichment;
- * - a cached emulator whose avd read comes back empty gets undefined without a
- *   probe, where {@linkcode resolveRuntimeKindCached} re-probes it.
+ * `listAndroidDevices` variant of {@linkcode resolveRuntimeKindCached}, sharing
+ * its cache. On a cache miss the probe starts without waiting for the avd read,
+ * so a wedged device costs one ENRICH_TIMEOUT_MS for the whole enrichment. A
+ * cached device whose avd read fails gets undefined instead of a re-probe: it
+ * may be a new AVD on a reused slot, and a fresh probe would cost a second
+ * window on a device that isn't answering. A new AVD that does answer re-probes.
  */
 async function resolveRuntimeKindAlongside(
   serial: string,
@@ -482,9 +478,6 @@ async function resolveRuntimeKindAlongside(
   const probe = cached ? undefined : readRuntimeKind(serial);
   const avdName = await avdPromise;
   if (cached && cached.avdName === avdName) return cached.kind;
-  // An emulator that doesn't answer the avd read may be a new AVD on a reused
-  // slot, so the cached verdict can't be trusted, and a fresh probe would cost
-  // a second window on a device that isn't answering.
   if (cached && avdName === null) return undefined;
   const kind = await (probe ?? readRuntimeKind(serial));
   if (kind === undefined) return undefined;
@@ -577,19 +570,10 @@ export async function listAndroidDevices(
       }
       const avdPromise = readAvdName(d.serial);
       const [model, sdk, avd, runtimeKind] = await Promise.all([
-        adbShell(d.serial, "getprop ro.product.model", { timeoutMs: ENRICH_TIMEOUT_MS }).catch(
-          () => ""
-        ),
-        adbShell(d.serial, "getprop ro.build.version.sdk", { timeoutMs: ENRICH_TIMEOUT_MS }).catch(
-          () => ""
-        ),
+        readEnrichment(d.serial, "getprop ro.product.model"),
+        readEnrichment(d.serial, "getprop ro.build.version.sdk"),
         avdPromise,
-        // Through the shared cache (serial+avdName) so a re-list of a known
-        // device skips the feature probe and a reclaimed emulator slot
-        // re-probes.
-        opts.runtimeKind
-          ? resolveRuntimeKindAlongside(d.serial, avdPromise)
-          : Promise.resolve(undefined),
+        opts.runtimeKind ? resolveRuntimeKindAlongside(d.serial, avdPromise) : undefined,
       ]);
       const sdkLevel = parseInt(sdk.trim(), 10);
       return {

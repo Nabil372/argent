@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const execFileMock = vi.fn();
+type ExecResult = { stdout: string; stderr: string } | Error | undefined;
+const execFileMock = vi.fn<(cmd: string, args: string[]) => ExecResult | Promise<ExecResult>>();
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -13,17 +14,12 @@ vi.mock("node:child_process", async () => {
       cb?: (err: Error | null, out: { stdout: string; stderr: string }) => void
     ) => {
       const callback = typeof opts === "function" ? opts : cb!;
-      const options = typeof opts === "function" ? undefined : opts;
-      const deliver = (result: unknown) => {
+      const deliver = (result: ExecResult) => {
         if (result instanceof Error) callback(result, { stdout: "", stderr: "" });
-        else
-          callback(
-            null,
-            (result as { stdout: string; stderr: string }) ?? { stdout: "", stderr: "" }
-          );
+        else callback(null, result ?? { stdout: "", stderr: "" });
       };
-      const result = execFileMock(cmd, args, options);
-      if (typeof result?.then === "function") void result.then(deliver);
+      const result = execFileMock(cmd, [...args]);
+      if (result instanceof Promise) void result.then(deliver);
       else deliver(result);
     },
   };
@@ -308,7 +304,10 @@ const shellCalls = (shell: string) =>
 
 // One emulator whose shells are answered by `answer`; returning an Error is an
 // unanswered (timed out) read.
-function mockEmulator(serial: string, answer: (shell: string) => unknown): void {
+function mockEmulator(
+  serial: string,
+  answer: (shell: string) => ExecResult | Promise<ExecResult>
+): void {
   execFileMock.mockImplementation((cmd: string, args: string[]) => {
     if (cmd === "adb" && args[0] === "devices" && args.length === 1) {
       return { stdout: `List of devices attached\n${serial}\tdevice\n`, stderr: "" };
