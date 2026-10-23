@@ -18,7 +18,9 @@ afterEach(() => {
   delete (globalThis as Record<string, unknown>).__wrs;
 });
 
-function v8Client(hooks?: { beforeSend?: (method: string, params: any) => Promise<void> }) {
+function v8Client(hooks?: {
+  beforeSend?: (method: string, params: any, timeout?: number) => Promise<void>;
+}) {
   const session = new Session();
   session.connect();
   sessions.push(session);
@@ -28,7 +30,7 @@ function v8Client(hooks?: { beforeSend?: (method: string, params: any) => Promis
   (client as any).send = async (method: string, params: any = {}, timeout?: number) => {
     calls.push(method);
     if (timeout !== undefined) timeouts.push(timeout);
-    await hooks?.beforeSend?.(method, params);
+    await hooks?.beforeSend?.(method, params, timeout);
     try {
       return await session.post(method as any, params);
     } catch (err) {
@@ -269,6 +271,36 @@ describe("CDPClient.evaluateAwaited", () => {
     const { err, signal } = await signalOf(() => client.evaluateAwaited("new Promise(()=>{})"));
     expect(err.message).toBe("timed out");
     expect(signal?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT);
+  });
+
+  it("reports 'did not settle', not a frozen runtime, when the last poll runs out of budget", async () => {
+    // Like the real send(): a request whose timeout is shorter than the round
+    // trip rejects with the generic "may be frozen" guidance. The final poll
+    // before the deadline is always such a request, so without the deadline
+    // check it is the message the agent would read.
+    const LATENCY_MS = 20;
+    const { client } = v8Client({
+      beforeSend: async (_method, _params, timeout) => {
+        await new Promise((r) => setTimeout(r, LATENCY_MS));
+        if (timeout !== undefined && timeout < LATENCY_MS) {
+          throw new FailureError("CDP request timed out — the runtime may be frozen", {
+            error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
+            failure_stage: "debugger_cdp_send",
+            failure_area: "tool_server",
+            error_kind: "timeout",
+          });
+        }
+      },
+    });
+    for (const timeout of [300, 317, 334]) {
+      const { err, signal } = await signalOf(() =>
+        client.evaluateAwaited("new Promise(()=>{})", { timeout })
+      );
+      expect(err.message).toBe(
+        `The expression returned a Promise that did not settle within ${timeout}ms.`
+      );
+      expect(signal?.error_kind).toBe("timeout");
+    }
   });
 });
 

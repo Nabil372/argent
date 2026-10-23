@@ -10,6 +10,14 @@ import {
 } from "@argent/registry";
 import * as crypto from "node:crypto";
 import { sleep } from "../timing";
+import {
+  readBoxError,
+  readBoxValue,
+  readIfNotThenable,
+  watchThenable,
+  type SettleBox,
+  type ThenableVerdict,
+} from "./scripts/evaluate-awaited";
 
 export interface ScriptInfo {
   scriptId: string;
@@ -136,49 +144,6 @@ interface RemoteResult {
   result?: RemoteObjectLike;
   exceptionDetails?: CDPExceptionDetails;
 }
-
-// Functions run inside the app with `this` bound to a remote object. They are
-// plain ES5 because Hermes compiles them at call time.
-
-/** `{ value }` when `this` is not a thenable, `{ pending: true }` when it is. */
-const READ_IF_NOT_THENABLE = `function () {
-  "use strict";
-  try {
-    if (!this || typeof this.then !== "function") {
-      return { value: typeof this === "symbol" ? String(this) : this };
-    }
-  } catch (_) {}
-  return { pending: true };
-}`;
-
-/** Returns a box whose `state` the thenable's callbacks move off "pending". */
-const WATCH_THENABLE = `function () {
-  var box = { state: "pending" };
-  function reject(error) { box.error = error; box.state = "rejected"; }
-  try {
-    Promise.resolve(this).then(function (value) {
-      box.value = value;
-      box.state = "fulfilled";
-    }, reject);
-  } catch (error) {
-    reject(error);
-  }
-  return box;
-}`;
-
-const READ_BOX_VALUE = `function () {
-  var value = this.value;
-  return typeof value === "symbol" ? String(value) : value;
-}`;
-
-const READ_BOX_ERROR = `function () {
-  var error = this.error;
-  try { if (error && typeof error.stack === "string") return error.stack; } catch (_) {}
-  try { var json = JSON.stringify(error); if (json !== undefined) return json; } catch (_) {}
-  try { return String(error); } catch (_) { return Object.prototype.toString.call(error); }
-}`;
-
-type BoxState = "pending" | "fulfilled" | "rejected";
 
 const PROMISE_POLL_INTERVAL_MS = 50;
 
@@ -525,8 +490,8 @@ export class CDPClient {
 
   /**
    * Resolve a remote object to its value. A non-thenable is returned as is; a
-   * thenable is watched through a box object that is polled until the
-   * thenable settles or `deadline` passes.
+   * thenable is watched through a box object (see `scripts/evaluate-awaited`)
+   * that is polled until it settles or `deadline` passes.
    */
   private async settleRemote(
     objectId: string,
@@ -536,12 +501,11 @@ export class CDPClient {
   ): Promise<unknown> {
     const timeLeft = () => Math.max(1, deadline - Date.now());
 
-    const direct = (
-      await this.callOn(objectId, objectGroup, READ_IF_NOT_THENABLE, true, timeLeft())
-    ).value as { value?: unknown; pending?: true } | undefined;
-    if (!direct?.pending) return direct?.value;
+    const verdict = (await this.callOn(objectId, objectGroup, readIfNotThenable, true, timeLeft()))
+      .value as ThenableVerdict | undefined;
+    if (!verdict || !("pending" in verdict)) return verdict?.value;
 
-    const box = (await this.callOn(objectId, objectGroup, WATCH_THENABLE, false, timeLeft()))
+    const box = (await this.callOn(objectId, objectGroup, watchThenable, false, timeLeft()))
       .objectId;
     if (!box) {
       throw evaluateError(
@@ -550,23 +514,16 @@ export class CDPClient {
       );
     }
 
-    let state = await this.readBoxState(box, timeLeft());
+    let state = await this.readBoxState(box, deadline, timeout);
     while (state === "pending") {
-      if (Date.now() >= deadline) {
-        throw evaluateError(
-          `The expression returned a Promise that did not settle within ${timeout}ms.`,
-          FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
-          "timeout"
-        );
-      }
-      await sleep(PROMISE_POLL_INTERVAL_MS);
-      state = await this.readBoxState(box, timeLeft());
+      await sleep(Math.min(PROMISE_POLL_INTERVAL_MS, timeLeft()));
+      state = await this.readBoxState(box, deadline, timeout);
     }
 
     if (state === "fulfilled") {
-      return (await this.callOn(box, objectGroup, READ_BOX_VALUE, true, timeLeft())).value;
+      return (await this.callOn(box, objectGroup, readBoxValue, true, timeLeft())).value;
     }
-    const reason = (await this.callOn(box, objectGroup, READ_BOX_ERROR, true, timeLeft())).value;
+    const reason = (await this.callOn(box, objectGroup, readBoxError, true, timeLeft())).value;
     throw evaluateError(
       `Promise rejected: ${String(reason)}`,
       FAILURE_CODES.DEBUGGER_CDP_RUNTIME_EXCEPTION
@@ -575,44 +532,64 @@ export class CDPClient {
 
   /**
    * Read the box's `state` with `Runtime.getProperties`, which runs no script
-   * in the app. A paused runtime would never run the callbacks, so it fails
-   * fast instead of waiting out the deadline.
+   * in the app. Fails fast when the runtime is paused (the callbacks would
+   * never run) and reports the deadline as "did not settle" rather than as a
+   * frozen runtime, which is what a request starved of budget looks like.
    */
-  private async readBoxState(box: string, timeout: number): Promise<BoxState> {
+  private async readBoxState(
+    box: string,
+    deadline: number,
+    timeout: number
+  ): Promise<SettleBox["state"]> {
     if (this.paused) throw this.pausedError("the Promise's callbacks");
+    const unsettled = () =>
+      evaluateError(
+        `The expression returned a Promise that did not settle within ${timeout}ms.`,
+        FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
+        "timeout"
+      );
+    if (Date.now() >= deadline) throw unsettled();
+
     let props: { result?: { name: string; value?: RemoteObjectLike }[] };
     try {
       props = (await this.send(
         "Runtime.getProperties",
         { objectId: box, ownProperties: true },
-        timeout
+        Math.max(1, deadline - Date.now())
       )) as typeof props;
     } catch (err) {
-      const boxGone =
-        err instanceof Error &&
-        getFailureSignal(err)?.error_code === FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR;
-      if (!boxGone) throw err;
+      const code = err instanceof Error ? getFailureSignal(err)?.error_code : undefined;
+      if (code === FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT && Date.now() >= deadline) {
+        throw unsettled();
+      }
+      if (code !== FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR) throw err;
       throw evaluateError(
         "Lost the Promise while waiting for it: the JS context was reloaded or replaced.",
         FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR,
         "unknown",
-        err
+        err as Error
       );
     }
     const state = props.result?.find((p) => p.name === "state")?.value?.value;
-    return (state ?? "pending") as BoxState;
+    if (state === "fulfilled" || state === "rejected") return state;
+    return "pending";
   }
 
+  /**
+   * Run one of the `scripts/evaluate-awaited` functions in the app with `this`
+   * bound to `objectId`. The function's source is what ships, so it must not
+   * close over anything (see that module's header).
+   */
   private async callOn(
     objectId: string,
     objectGroup: string,
-    functionDeclaration: string,
+    fn: (this: any) => unknown,
     returnByValue: boolean,
     timeout: number
   ): Promise<RemoteObjectLike> {
     const res = (await this.send(
       "Runtime.callFunctionOn",
-      { objectId, objectGroup, functionDeclaration, returnByValue },
+      { objectId, objectGroup, functionDeclaration: fn.toString(), returnByValue },
       timeout
     )) as RemoteResult;
     if (res.exceptionDetails) throw runtimeException(res.exceptionDetails);
