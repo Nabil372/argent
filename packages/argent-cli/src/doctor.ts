@@ -983,7 +983,6 @@ function hasClaudeLocalScopeEntry(projectRoot: string): boolean {
 }
 
 export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSection {
-  const { projectRoot } = ctx;
   const checks: DoctorCheck[] = [];
   const configured = configuredScopes(ctx).map((c) => ({
     adapter: c.adapter,
