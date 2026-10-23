@@ -698,8 +698,9 @@ export async function update(args: string[]): Promise<void> {
       // destroy the customization AND launder it into a bare shape the
       // stale-config sweep below could judge dead and delete. Everything else is
       // rewritten unconditionally; the write also REPAIRS getArgentEntry's
-      // unreadable sentinel { command: "" } and drops an `enabled: false` /
-      // `disabled: true` switch.
+      // unreadable sentinel { command: "" }. An entry switched off with
+      // `enabled: false` / `disabled: true` is left alone too: the write would
+      // drop the switch and silently turn argent back on.
       for (const { adapter, scope, configPath } of configuredScopes) {
         const normScope = scope === "project" ? "local" : "global";
         // Allowlists and rules still refresh for this adapter either way — only
@@ -717,6 +718,12 @@ export async function update(args: string[]): Promise<void> {
         if (existing !== null && !isUnreadableSentinel && !isArgentManagedEntry(existing)) {
           results.push(
             `${pc.yellow("!")} ${adapter.name} left a customized entry untouched ${pc.dim(configPath)}`
+          );
+          continue;
+        }
+        if (existing?.switchedOffBy) {
+          results.push(
+            `${pc.yellow("!")} ${adapter.name} left a switched-off entry untouched ${pc.dim(configPath)}`
           );
           continue;
         }

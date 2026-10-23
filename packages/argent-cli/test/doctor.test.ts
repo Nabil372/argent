@@ -13,9 +13,11 @@ import {
   globalPackageManagerOf,
   isStrictJson,
   platformChecks,
+  probeProjectInstall,
   redactUrl,
   remoteCheck,
   renderDoctorReport,
+  runGlobalShim,
   skillsSection,
   stripPackageBinDirs,
   type DoctorContext,
@@ -359,6 +361,87 @@ describe("findGlobalArgent", () => {
     const npx = writeBin(path.join(projectRoot, "_npx", "abc", "node_modules", ".bin"), "");
     const dirs = [path.join(projectRoot, "nope"), path.dirname(npx)].join(path.delimiter);
     expect(findGlobalArgent(dirs)).toBeNull();
+  });
+});
+
+describe.skipIf(process.platform === "win32")("runGlobalShim", () => {
+  const shim = (body: string): string => {
+    const bin = path.join(projectRoot, "shims", "argent");
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.writeFileSync(bin, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return bin;
+  };
+
+  it("reads a script shim's version by running it", async () => {
+    const bin = shim("echo 1.2.3");
+    expect(await runGlobalShim({ bin, root: null, version: null }, projectRoot)).toEqual({
+      bin,
+      root: null,
+      version: "1.2.3",
+    });
+  });
+
+  it("reports a version-manager shim that fails in this project", async () => {
+    const bin = shim('echo "mise ERROR No version is set for shim: argent" >&2; exit 1');
+    expect(await runGlobalShim({ bin, root: null, version: null }, projectRoot)).toMatchObject({
+      runError: "mise ERROR No version is set for shim: argent",
+    });
+  });
+
+  it("does not run an install whose package root is known", async () => {
+    const bin = shim("exit 1");
+    const global = { bin, root: projectRoot, version: "1.0.0" };
+    expect(await runGlobalShim(global, projectRoot)).toBe(global);
+  });
+});
+
+describe("classifyMcpEntry with a failing shim", () => {
+  it("fails a bare `argent mcp` entry, but not one with a path", () => {
+    const failing = ctx({ globalOnPath: false, globalRunError: "mise ERROR No version is set" });
+    expect(classifyMcpEntry({ command: "argent", args: ["mcp"] }, failing)).toMatchObject({
+      status: "error",
+      detail: "mise ERROR No version is set",
+    });
+    const bin = path.join(projectRoot, "argent");
+    fs.writeFileSync(bin, "");
+    expect(classifyMcpEntry({ command: bin, args: ["mcp"] }, failing).status).toBe("ok");
+  });
+});
+
+describe("probeProjectInstall", () => {
+  const installAt = (dir: string): void => {
+    const pkg = path.join(dir, "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version: "1.0.0" })
+    );
+  };
+  const app = (): string => {
+    const dir = path.join(projectRoot, "app");
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "app" }));
+    return dir;
+  };
+
+  it("accepts the project's own node_modules", () => {
+    const dir = app();
+    installAt(dir);
+    expect(probeProjectInstall(dir)).toMatchObject({ installed: true, version: "1.0.0" });
+  });
+
+  it("does not count a stray copy in an ancestor's node_modules", () => {
+    installAt(projectRoot);
+    expect(probeProjectInstall(app())).toMatchObject({ installed: false });
+  });
+
+  it("accepts a copy hoisted to a workspace root", () => {
+    fs.writeFileSync(
+      path.join(projectRoot, "package.json"),
+      JSON.stringify({ name: "ws", workspaces: ["app"] })
+    );
+    installAt(projectRoot);
+    expect(probeProjectInstall(app())).toMatchObject({ installed: true });
   });
 });
 

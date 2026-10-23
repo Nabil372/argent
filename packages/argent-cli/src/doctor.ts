@@ -109,6 +109,10 @@ export interface DoctorContext {
 
 const UPDATE_CHECK_TIMEOUT_MS = 2_500;
 const DEPS_PROBE_TIMEOUT_MS = 30_000;
+const SHIM_PROBE_TIMEOUT_MS = 5_000;
+const GLOBAL_SHIM_FIX =
+  "Install argent for the Node version this project uses (npm i -g @swmansion/argent), " +
+  "or put a working argent first on PATH";
 
 function check(
   status: CheckStatus,
@@ -131,6 +135,8 @@ interface GlobalInstall {
   /** Package root, when the bin links into one (npm). Null for script shims (pnpm, Yarn). */
   root: string | null;
   version: string | null;
+  /** Why the shim failed to run from the project, when it did (see runGlobalShim). */
+  runError?: string;
 }
 
 function isExecutableFile(p: string): boolean {
@@ -230,6 +236,34 @@ export function findGlobalArgent(pathValue: string | undefined): GlobalInstall |
   return null;
 }
 
+/**
+ * A script shim hides its version, and a version manager's shim (mise, asdf)
+ * fails outright in a project that pins a Node without argent. Running it from
+ * the project, where an editor starts it, is the only way to tell. Windows
+ * shims are .cmd files execFile can't run, so they stay unverified.
+ */
+export async function runGlobalShim(
+  global: GlobalInstall,
+  projectRoot: string
+): Promise<GlobalInstall> {
+  if (global.root || process.platform === "win32") return global;
+  try {
+    const { stdout } = await execFileAsync(global.bin, ["--version"], {
+      cwd: projectRoot,
+      timeout: SHIM_PROBE_TIMEOUT_MS,
+      windowsHide: true,
+    });
+    return { ...global, version: /\d+\.\d+\.\d+\S*/.exec(stdout)?.[0] ?? null };
+  } catch (err) {
+    const { stderr, killed } = err as { stderr?: unknown; killed?: boolean };
+    const fallback = err instanceof Error ? err.message.split("\n")[0]! : String(err);
+    const runError = killed
+      ? `\`argent --version\` timed out after ${SHIM_PROBE_TIMEOUT_MS / 1000}s`
+      : childFailureReason(typeof stderr === "string" ? stderr : "", fallback);
+    return { ...global, runError };
+  }
+}
+
 // MARK: Install
 
 function readEnginesNode(packageRoot: string): string | null {
@@ -241,6 +275,40 @@ function readEnginesNode(packageRoot: string): string | null {
   } catch {
     return null;
   }
+}
+
+function isWorkspaceRoot(dir: string): boolean {
+  if (fs.existsSync(path.join(dir, "pnpm-workspace.yaml"))) return true;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as {
+      workspaces?: unknown;
+    };
+    return pkg.workspaces !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * probeLocalInstall goes through Node resolution, which also searches every
+ * ancestor's node_modules and NODE_PATH, so a stray `npm i` in ~ would pass for
+ * the project's install. Here only the project's own node_modules counts, or
+ * that of a workspace root that hoists it.
+ */
+export function probeProjectInstall(projectRoot: string): {
+  installed: boolean;
+  version: string | null;
+} {
+  const probe = probeLocalInstall(projectRoot);
+  if (!probe.packageDir) return probe;
+  const notInstalled = { installed: false, version: null };
+  let dir = projectRoot;
+  while (!fs.existsSync(path.join(dir, "node_modules", PACKAGE_NAME, "package.json"))) {
+    const parent = path.dirname(dir);
+    if (parent === dir) return notInstalled;
+    dir = parent;
+  }
+  return dir === projectRoot || isWorkspaceRoot(dir) ? probe : notInstalled;
 }
 
 function installSection(
@@ -271,24 +339,33 @@ function installSection(
 
   const global = ctx.global;
   checks.push(
-    !global && ctx.offPathGlobalBin
-      ? check("warn", "Installed globally, but its bin dir is not on PATH", {
-          detail: home(ctx.offPathGlobalBin),
-          fix: `Add ${home(ctx.offPathGlobalBin)} to PATH`,
+    global?.runError
+      ? check("error", "`argent` on PATH fails to run in this project", {
+          detail: `${home(global.bin)}: ${global.runError}`,
+          fix: GLOBAL_SHIM_FIX,
         })
-      : !global
-        ? check("info", "No global install on PATH")
-        : global.root
-          ? check("ok", `Global install v${global.version ?? "?"} on PATH`, {
-              detail: home(global.root),
-            })
-          : check("ok", "Global install on PATH", {
-              detail: `${home(global.bin)} (a script shim, so its version can't be read)`,
-            })
+      : !global && ctx.offPathGlobalBin
+        ? check("warn", "Installed globally, but its bin dir is not on PATH", {
+            detail: home(ctx.offPathGlobalBin),
+            fix: `Add ${home(ctx.offPathGlobalBin)} to PATH`,
+          })
+        : !global
+          ? check("info", "No global install on PATH")
+          : global.root
+            ? check("ok", `Global install v${global.version ?? "?"} on PATH`, {
+                detail: home(global.root),
+              })
+            : global.version
+              ? check("ok", `Global install v${global.version} on PATH`, {
+                  detail: `${home(global.bin)} (a script shim)`,
+                })
+              : check("ok", "Global install on PATH", {
+                  detail: `${home(global.bin)} (a script shim, so its version can't be read)`,
+                })
   );
 
   if (ctx.mode === "local") {
-    const local = probeLocalInstall(projectRoot);
+    const local = probeProjectInstall(projectRoot);
     const source = readInstallRecord(projectRoot) ? ".argent/install.json" : "package.json";
     if (!local.installed) {
       checks.push(
@@ -338,6 +415,8 @@ export interface EntryContext {
   projectRoot: string;
   cwd: string;
   globalOnPath: boolean;
+  /** Why the `argent` on PATH fails to run from the project, when it does. */
+  globalRunError?: string | null;
   localInstalled: boolean;
   argentCmd: string;
   installCmd: string;
@@ -404,6 +483,12 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
   }
   if (bare === MCP_BINARY_NAME) {
     if (entry.args[0] !== "mcp") return badArgs();
+    if (!pathLike && ctx.globalRunError) {
+      return check("error", `${cmd} — \`argent\` on PATH fails to run here`, {
+        detail: ctx.globalRunError,
+        fix: GLOBAL_SHIM_FIX,
+      });
+    }
     if (pathLike || ctx.globalOnPath) return check("ok", cmd);
     if (hasCustomizingEnv(entry)) {
       return check("warn", `${cmd} — \`argent\` is not on this shell's PATH`, {
@@ -493,8 +578,9 @@ export function editorsSection(ctx: DoctorContext): DoctorSection {
   const entryCtx = {
     projectRoot,
     cwd: ctx.cwd,
-    globalOnPath: ctx.global !== null,
-    localInstalled: probeLocalInstall(projectRoot).installed,
+    globalOnPath: ctx.global !== null && !ctx.global.runError,
+    globalRunError: ctx.global?.runError ?? null,
+    localInstalled: probeProjectInstall(projectRoot).installed,
     argentCmd: ctx.argentCmd,
     installCmd: ctx.installCmd,
     offPathGlobalBin: ctx.offPathGlobalBin,
@@ -1193,7 +1279,8 @@ async function collectDoctorReport(options: {
   const cwd = currentDir();
   const projectRoot = resolveProjectRoot(cwd);
   const mode = resolveInstallMode(projectRoot);
-  const global = findGlobalArgent(stripPackageBinDirs(process.env.PATH ?? "", cwd));
+  const found = findGlobalArgent(stripPackageBinDirs(process.env.PATH ?? "", cwd));
+  const global = found && (await runGlobalShim(found, projectRoot));
   const packageRoot = path.dirname(path.dirname(options.paths.bundlePath));
   const runningLocal = options.paths.installKind === "local";
   const projectPm = detectProjectPackageManager(projectRoot);
@@ -1203,7 +1290,8 @@ async function collectDoctorReport(options: {
     cwd,
     mode,
     global,
-    argentCmd: global ? "argent" : mode === "local" ? localCmd : "npx @swmansion/argent",
+    argentCmd:
+      global && !global.runError ? "argent" : mode === "local" ? localCmd : "npx @swmansion/argent",
     installCmd: formatShellCommand(projectInstallCommand(projectPm)),
     offPathGlobalBin: !global && !runningLocal ? globalBinDirOf(packageRoot) : null,
   };
