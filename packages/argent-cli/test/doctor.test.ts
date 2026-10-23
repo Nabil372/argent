@@ -8,6 +8,7 @@ import {
   classifyMcpEntry,
   collectDoctorReport,
   depsProbeFailure,
+  depsProbeFix,
   editorsSection,
   findGlobalArgent,
   globalBinDirOf,
@@ -317,7 +318,7 @@ describe("platformChecks", () => {
     const withoutAdb = platformChecks(vegaOnly(null), "reinstall");
     expect(withoutAdb.find((c) => c.label.startsWith("Vega"))).toMatchObject({
       status: "warn",
-      fix: "install adb",
+      fix: expect.stringMatching(/platform-tools/),
     });
     expect(withoutAdb[0]?.label).toMatch(/No mobile platform toolchain/);
     const withAdb = platformChecks(vegaOnly("/sdk/adb"), "reinstall");
@@ -544,6 +545,34 @@ describe.skipIf(process.platform === "win32")("collectDoctorReport with a failin
 describe("installSection", () => {
   afterEach(() => vi.unstubAllEnvs());
 
+  it("does not offer an install for a leftover install record with no dependency", () => {
+    vi.stubEnv("HOME", projectRoot);
+    fs.mkdirSync(path.join(projectRoot, ".argent"));
+    fs.writeFileSync(path.join(projectRoot, ".argent", "install.json"), '{"mode":"local"}');
+    fs.writeFileSync(path.join(projectRoot, "package.json"), '{"name":"app"}');
+    const pkg = path.join(projectRoot, "pkg");
+    const section = installSection(
+      {
+        projectRoot,
+        cwd: projectRoot,
+        mode: "local",
+        global: null,
+        argentCmd: "npx argent",
+        installCmd: "npm install",
+        offPathGlobalBin: null,
+      },
+      "1.0.0",
+      {
+        bundlePath: path.join(pkg, "dist", "t.cjs"),
+        simulatorServerDir: pkg,
+        nativeDevtoolsDir: pkg,
+      }
+    );
+    expect(section.checks.find((c) => /not installed/.test(c.label))?.fix).toMatch(
+      /delete .argent\/install.json/
+    );
+  });
+
   it("only warns about a failing global shim in local mode, which doesn't use it", () => {
     vi.stubEnv("HOME", projectRoot);
     const pkg = path.join(projectRoot, "pkg");
@@ -565,6 +594,14 @@ describe("installSection", () => {
       }
     );
     expect(section.checks.find((c) => /fails to run/.test(c.label))?.status).toBe("warn");
+  });
+});
+
+describe("depsProbeFix", () => {
+  it("does not offer a reinstall for a hang or a signal", () => {
+    expect(depsProbeFix("timed out after 30s (SIGTERM)", "reinstall")).toMatch(/Run doctor again/);
+    expect(depsProbeFix("killed by SIGABRT: FATAL ERROR", "reinstall")).toMatch(/Run doctor again/);
+    expect(depsProbeFix("Error: Cannot find module", "reinstall")).toBe("reinstall");
   });
 });
 
@@ -683,6 +720,17 @@ describe("remoteCheck", () => {
     expect(remoteCheck(200, "http://h:1", "link").status).toBe("ok");
     expect(remoteCheck(401, "http://h:1", "link").label).toMatch(/rejects the token/);
     expect(remoteCheck(null, "http://h:1", "link").label).toMatch(/unreachable/);
+  });
+
+  it("blames the host name, not the token, for a 403", () => {
+    const result = remoteCheck(403, "http://h:1", "link");
+    expect(result.label).toMatch(/refuses this host name/);
+    expect(result.fix).toMatch(/ARGENT_HOST/);
+  });
+
+  it("spells fix commands the way this install runs argent", () => {
+    expect(remoteCheck(null, "http://h:1", "link", "npx argent").fix).toMatch(/npx argent unlink/);
+    expect(remoteCheck(401, "http://h:1", "link", "npx argent").fix).toMatch(/npx argent link/);
   });
 
   it("doesn't suggest argent unlink when the URL comes from ARGENT_TOOLS_URL", () => {

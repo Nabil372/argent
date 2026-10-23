@@ -422,9 +422,13 @@ export function installSection(
     const local = probeProjectInstall(projectRoot);
     const source = readInstallRecord(projectRoot) ? ".argent/install.json" : "package.json";
     if (!local.installed) {
+      // A leftover install record with no dependency behind it: installing changes nothing.
+      const declared = readManifestDeclaration(projectRoot) !== null;
       checks.push(
         check("error", `Project uses a local install (${source}) but it is not installed`, {
-          fix: ctx.installCmd,
+          fix: declared
+            ? ctx.installCmd
+            : "Add @swmansion/argent to devDependencies and install it, or delete .argent/install.json to use a global install",
         })
       );
     } else if (local.version && isNewerVersion(running, local.version)) {
@@ -1005,18 +1009,25 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
 export function remoteCheck(
   status: number | null,
   url: string,
-  source: ResolvedToolsUrl["source"]
+  source: ResolvedToolsUrl["source"],
+  argentCmd = "argent"
 ): DoctorCheck {
   const where = `${redactUrl(url)} (${source === "env" ? "ARGENT_TOOLS_URL" : "~/.argent/link.json"})`;
   if (status !== null && status >= 200 && status < 300) {
     return check("ok", `Linked to ${where}, reachable`);
   }
-  if (status === 401 || status === 403) {
-    return check("error", `Linked to ${where}, which rejects the token (HTTP ${status})`, {
+  if (status === 401) {
+    return check("error", `Linked to ${where}, which rejects the token (HTTP 401)`, {
       fix:
         source === "env"
           ? "Set ARGENT_AUTH_TOKEN to the token the remote server printed"
-          : "Pair again: argent link <the argent:// string argent server start printed>",
+          : `Pair again: ${argentCmd} link <the argent:// string argent server start printed>`,
+    });
+  }
+  // The tool-server answers 403 only from its Host guard.
+  if (status === 403) {
+    return check("error", `Linked to ${where}, which refuses this host name (HTTP 403)`, {
+      fix: "Use the host the server was started with (its ARGENT_HOST), or restart it with ARGENT_HOST set to the name you connect with",
     });
   }
   return check(
@@ -1026,7 +1037,7 @@ export function remoteCheck(
       fix:
         source === "env"
           ? "Start the remote server, or unset ARGENT_TOOLS_URL"
-          : "Start the remote server, or run argent unlink",
+          : `Start the remote server, or run ${argentCmd} unlink`,
     }
   );
 }
@@ -1071,14 +1082,19 @@ async function toolServerSection(
     checks.push(
       check("error", "ARGENT_TOOLS_URL holds an argent:// pairing string, not a server URL", {
         detail: redactUrl(linked.url),
-        fix: "Unset ARGENT_TOOLS_URL and run argent link <the argent:// string>",
+        fix: `Unset ARGENT_TOOLS_URL and run ${ctx.argentCmd} link <the argent:// string>`,
       })
     );
     return { title: "Tool-server", checks };
   }
   if (linked.url) {
     checks.push(
-      remoteCheck(await remoteStatus(linked.url, linked.token), linked.url, linked.source)
+      remoteCheck(
+        await remoteStatus(linked.url, linked.token),
+        linked.url,
+        linked.source,
+        ctx.argentCmd
+      )
     );
     return { title: "Tool-server", checks };
   }
@@ -1091,14 +1107,29 @@ async function toolServerSection(
     const url = formatToolsServerUrl(host, state.port);
     const alive = isToolsServerProcessAlive(state.pid);
     const healthy = alive && (await isToolsServerHealthy(state.port, host, 2_000, state.token));
+    // `argent server stop` only reaches the server of the install it runs from.
+    const stopCmd = paths.installKind === "local" ? localArgentCmd(ctx.projectRoot) : ctx.argentCmd;
+    const argentHost = process.env.ARGENT_HOST;
     if (healthy) {
       const stale = state.version && state.version !== running;
       checks.push(
         stale
           ? check("warn", `Running ${url} (pid ${state.pid}) from v${state.version}`, {
-              fix: `${ctx.argentCmd} server stop (the next tool call starts the current version)`,
+              fix: `${stopCmd} server stop (the next tool call starts the current version)`,
             })
           : check("ok", `Running ${url} (pid ${state.pid})`)
+      );
+    } else if (argentHost && argentHost !== host) {
+      // #852: the spawned server binds to ARGENT_HOST, clients dial the recorded host.
+      checks.push(
+        check(
+          "warn",
+          `Stale state file (pid ${state.pid}) while ARGENT_HOST=${argentHost} is set`,
+          {
+            detail: `servers spawned here listen on ${argentHost} but are reached at ${host}, so every tool call respawns one`,
+            fix: "Unset ARGENT_HOST; it is meant for argent server start on a remote host",
+          }
+        )
       );
     } else {
       checks.push(
@@ -1139,6 +1170,13 @@ async function probeHostDeps(paths: ToolsServerPaths): Promise<HostDepsReport | 
   } catch (err) {
     return depsProbeFailure(err);
   }
+}
+
+/** A hang or a crash on a signal is not a broken install, so reinstalling won't help. */
+export function depsProbeFix(failure: string, reinstall: string): string {
+  return /^(timed out|killed by)/.test(failure)
+    ? "Run doctor again; if it keeps failing, report it at https://github.com/software-mansion/argent/issues with this line"
+    : reinstall;
 }
 
 /** Why `--check-deps` failed. Only execFile's own timeout kill sets `killed`. */
@@ -1226,7 +1264,10 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
       );
     } else if (signing?.teamIdEnv) {
       checks.push(
-        check("ok", `Physical iPhone: signing team ${signing.teamIdEnv} (ARGENT_IOS_TEAM_ID)`)
+        check("ok", `Physical iPhone: signing team ${signing.teamIdEnv} (ARGENT_IOS_TEAM_ID)`, {
+          detail:
+            "read from this shell; a running tool-server keeps the environment it started with, so restart it after changing the variable",
+        })
       );
     } else if (signing && signing.detectedTeams > 0) {
       checks.push(
@@ -1265,7 +1306,7 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
     // The Vega SDK does not ship adb, and most Vega tools need it.
     checks.push(
       check("warn", "Vega (Fire TV): adb not found, which Vega tools need too", {
-        fix: adb?.hint,
+        fix: "Install Android SDK platform-tools so adb is on PATH (or set ANDROID_HOME)",
       })
     );
   } else {
@@ -1311,7 +1352,7 @@ async function platformsSection(
       checks: [
         check("error", "Could not run the bundled tool-server's dependency check", {
           detail: report,
-          fix: reinstall,
+          fix: depsProbeFix(report, reinstall),
         }),
       ],
     };
@@ -1345,7 +1386,7 @@ async function otherSection(
   const source = consent.source.detail ?? consent.source.source;
   checks.push(
     check("info", `Telemetry ${consent.enabled ? "enabled" : "disabled"} (${source})`, {
-      detail: consent.enabled ? "argent telemetry disable to opt out" : undefined,
+      detail: consent.enabled ? `${ctx.argentCmd} telemetry disable to opt out` : undefined,
     })
   );
 
@@ -1386,6 +1427,10 @@ export function stripPackageBinDirs(pathValue: string, cwd: string): string {
     .join(path.delimiter);
 }
 
+function localArgentCmd(projectRoot: string): string {
+  return isYarnPnp(projectRoot) ? "yarn argent" : "npx argent";
+}
+
 function currentDir(): string {
   try {
     return process.cwd();
@@ -1408,7 +1453,7 @@ export async function collectDoctorReport(options: {
   const packageRoot = path.dirname(path.dirname(options.paths.bundlePath));
   const runningLocal = options.paths.installKind === "local";
   const projectPm = detectProjectPackageManager(projectRoot);
-  const localCmd = isYarnPnp(projectRoot) ? "yarn argent" : "npx argent";
+  const localCmd = localArgentCmd(projectRoot);
   const ctx: DoctorContext = {
     projectRoot,
     cwd,
