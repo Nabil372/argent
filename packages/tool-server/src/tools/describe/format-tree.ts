@@ -148,19 +148,13 @@ interface FormatDescribeOptions {
 }
 
 const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable"]);
-// Roles an agent reads but does not tap. Text over text (or an image) is a
-// layout quirk, not a tap trap, and such pairs were most of the noise on dense
-// screens.
+// Text over text is a layout quirk, not a tap trap.
 const PASSIVE_ROLES = new Set(["AXStaticText", "AXImage", "AXHeading"]);
 // ax-service reports UIKit scroll indicators as labelled AXGroups. They sit
 // over the content they scroll, alert button stacks included, and no scroll
 // can separate an indicator from its own content.
 const SCROLL_INDICATOR_LABEL = /^(vertical|horizontal) scroll bar\b/i;
-// An element this large is a sheet or a background, not a tap target.
 const OVERLAP_MAX_ELEMENT_AREA = 0.5;
-// Overlap as a share of the smaller frame. At or below the minimum the frames
-// only brush; at or above the maximum one sits inside the other, like text in
-// its button.
 const OVERLAP_MIN_RATIO = 0.25;
 const OVERLAP_MAX_RATIO = 0.95;
 const OVERLAP_NAME_MAX = 40;
@@ -175,8 +169,6 @@ function frameArea(f: DescribeFrame): number {
   return f.width * f.height;
 }
 
-// The shared area of two frames as a share of the smaller one; 0 when they
-// do not intersect.
 function overlapRatio(a: DescribeFrame, b: DescribeFrame): number {
   const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
   const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
@@ -204,16 +196,8 @@ function overlapName(n: DescribeNode): string {
   return `"${escapeForLine(raw).replace(/"/g, "'")}"`;
 }
 
-// Two labelled elements that partly overlap, neither inside the other, mean
-// one covers the other: a sticky footer or tab bar over a list row that
-// straddles its edge, a search bar over a scrolled row, a toast over a button.
-// The flat iOS list gives no stacking order between such siblings, so the tap
-// at either one's centre may land on the other. Mark both. No "clear" point is
-// offered: a covering footer's touch area can be larger than its AX frame, so
-// the visible strip of the row below it may still be dead.
-//
-// Not caught: an element fully (95%+) under another, a pair of passive roles,
-// and anything at least half the screen in area, such as a sheet.
+// Partly overlapping elements (a tab bar over a list row) have no stacking
+// order in the flat iOS list, so a tap at either centre may hit the other.
 function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
   const candidates = root.children.filter(isOverlapCandidate);
   const partners = new Map<DescribeNode, OverlapPartner[]>();
