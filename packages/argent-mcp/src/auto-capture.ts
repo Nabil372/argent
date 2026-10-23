@@ -94,13 +94,12 @@ export function autoDescribeEnabled(options?: FlagsPathOptions): boolean {
 /** Header line that introduces the element tree appended after an action. */
 export const AUTO_DESCRIBE_HEADER = "--- Elements after action (describe) ---";
 
-/**
- * describe's preamble on touch screens: five lines that restate the
- * coordinate contract. An agent sees the tree after nearly every action, and
- * these lines are about a tenth of a typical one; the explicit `describe`
- * call, its tool description and the argent rule carry them in full, so the
- * appended tree gets a one-line legend instead.
- */
+/** Legend that replaces describe's coordinate preamble in the appended tree. */
+export const AUTO_DESCRIBE_LEGEND = "(frames: normalized x, y, width, height; tap the centre)";
+
+// The five lines describe prints before a touch-screen tree. They repeat the
+// coordinate contract that the describe tool description and the argent rule
+// already carry, so the tree appended after an action gets the legend instead.
 const DESCRIBE_PREAMBLE = [
   /^Source: \S+$/,
   /^Mode: (flat|nested)$/,
@@ -109,17 +108,15 @@ const DESCRIBE_PREAMBLE = [
   /^To tap an element, use its centre: /,
 ];
 
-const COMPACT_LEGEND = "(frames: normalized x, y, width, height; tap the centre)";
-
 /**
- * Swap the full preamble for the legend. Anything else (hints, the Vega
- * D-pad note, physical iOS's no-pinch note) is returned unchanged.
+ * Output without the preamble (hints, Vega's D-pad note, physical iOS's
+ * no-pinch note) is returned unchanged.
  */
 export function compactAutoDescribe(description: string): string {
   const lines = description.split("\n");
-  const matches = DESCRIBE_PREAMBLE.every((re, i) => re.test(lines[i] ?? ""));
-  if (!matches) return description;
-  return [COMPACT_LEGEND, ...lines.slice(DESCRIBE_PREAMBLE.length)].join("\n");
+  const hasPreamble = DESCRIBE_PREAMBLE.every((re, i) => re.test(lines[i] ?? ""));
+  if (!hasPreamble) return description;
+  return [AUTO_DESCRIBE_LEGEND, ...lines.slice(DESCRIBE_PREAMBLE.length)].join("\n");
 }
 
 export function shouldAutoDescribe(toolName: string): boolean {

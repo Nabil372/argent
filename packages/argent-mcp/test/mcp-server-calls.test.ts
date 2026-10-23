@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { ToolsServerPaths } from "@argent/tools-client";
+import { AUTO_DESCRIBE_HEADER, AUTO_DESCRIBE_LEGEND } from "../src/auto-capture.js";
 
 // Drives the real adapter (`startMcpServer`) over the SDK's in-memory transport
 // against a stub tool-server, so the adapter's own call handling is exercised:
@@ -75,12 +76,15 @@ const LISTING = {
   ],
 };
 
-const FULL_DESCRIBE = [
+// describe's full header, which the adapter swaps for AUTO_DESCRIBE_LEGEND.
+const DESCRIBE_PREAMBLE = [
   "Source: ax-service",
   "Mode: flat",
   "Coordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels.",
   "Pass them straight to gesture-tap / gesture-swipe / gesture-pinch, which expect this same space.",
   "To tap an element, use its centre: tap_x = frame.x + frame.width / 2, tap_y = frame.y + frame.height / 2.",
+].join("\n");
+const DESCRIBE_TREE = [
   "",
   "ROOT  AXGroup (0.000, 0.000, 1.000, 1.000)",
   "",
@@ -143,7 +147,7 @@ async function startStub(token?: string): Promise<Stub> {
         return json(422, { error: "no screen" });
       }
       if (req.method === "POST" && reqUrl === "/tools/describe") {
-        return json(200, { data: { description: FULL_DESCRIBE } });
+        return json(200, { data: { description: `${DESCRIBE_PREAMBLE}\n${DESCRIBE_TREE}` } });
       }
       json(404, { error: "not found" });
     });
@@ -285,24 +289,15 @@ describe("startMcpServer tool calls", () => {
 
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text?: string }>;
-    const tree = [
-      "--- Elements after action (describe) ---",
-      "(frames: normalized x, y, width, height; tap the centre)",
-      "",
-      "ROOT  AXGroup (0.000, 0.000, 1.000, 1.000)",
-      "",
-      '  AXButton "General"  (0.040, 0.300, 0.920, 0.050)',
-      "",
-    ].join("\n");
-    expect(content.at(-1)).toEqual({ type: "text", text: tree });
+    const tree = `${AUTO_DESCRIBE_LEGEND}\n${DESCRIBE_TREE}`;
+    expect(content.at(-1)).toEqual({ type: "text", text: `${AUTO_DESCRIBE_HEADER}\n${tree}` });
+
     const logged = readFileSync(join(TEST_HOME, "mcp-calls.log"), "utf8")
       .trim()
       .split("\n")
       .map((line) => JSON.parse(line) as { event: string; chars?: number })
-      .filter((e) => e.event === "auto_describe");
-    expect(logged.at(-1)?.chars).toBe(
-      tree.length - "--- Elements after action (describe) ---\n".length
-    );
+      .filter((entry) => entry.event === "auto_describe");
+    expect(logged.at(-1)?.chars).toBe(tree.length);
   });
 
   it("puts the tool-server's note before the result", async () => {
