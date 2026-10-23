@@ -1,8 +1,7 @@
 /**
  * Hermes replays its buffered console messages to a new client before it
- * answers `Runtime.enable`, which is how a debugger that connects after the app
- * started still sees the startup logs. Drives the real Registry →
- * JsRuntimeDebugger path against a mock Metro.
+ * answers `Runtime.enable`. Drives the real Registry → JsRuntimeDebugger path
+ * against a mock Metro.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
