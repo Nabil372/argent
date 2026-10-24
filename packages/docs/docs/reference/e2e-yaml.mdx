@@ -244,18 +244,26 @@ The `text` comparators:
 
 Argent reads text from these empty fields, so `'^$'` never passes on them:
 
-| Platform | Empty field                                                                       | Text that Argent reads       |
-| -------- | --------------------------------------------------------------------------------- | ---------------------------- |
-| Android  | A password field                                                                  | `[password]`                 |
-| Android  | A field with a hint                                                               | The hint                     |
-| Android  | A field with a content description                                                | The content description      |
-| Chromium | A password `input`                                                                | `[password]`                 |
-| Chromium | An `input` or `textarea` with an `aria-label`, `aria-labelledby` or `placeholder` | The label or the placeholder |
-| Chromium | An `input` or `textarea` with a `title`                                           | The title                    |
+| Platform | Empty field                                          | Text that Argent reads  |
+| -------- | ---------------------------------------------------- | ----------------------- |
+| Android  | A password field                                     | `[password]`            |
+| Android  | A field with a hint                                  | The hint                |
+| Android  | A field with a content description                   | The content description |
+| Chromium | A password `input`                                   | `[password]`            |
+| Chromium | An element with an `aria-label` or `aria-labelledby` | The label               |
+| Chromium | An `input` or `textarea` with a `placeholder`        | The placeholder         |
+| Chromium | An element with a `title`                            | The title               |
+| Chromium | A `textarea` with default text                       | The default text        |
 
 An iOS text field never reads as empty. On a simulator, Argent cannot read the typed text of an iOS text field.
 
-A password field on Android or Chromium reads `[password]` also when it holds text. On Chromium, an `input` or `textarea` with an `aria-label`, `aria-labelledby` or `placeholder` reads that text also when it holds text. A `text` condition cannot check the typed text of these fields.
+A field that holds text can also hide that text:
+
+- A password field on Android or Chromium reads `[password]`.
+- On Chromium, an `input` or `textarea` with an `aria-label`, `aria-labelledby` or `placeholder` reads that label or placeholder.
+- On Android, a field with a content description reads the description before the typed text.
+
+A Chromium `textarea` also reads its default text, which is the text between its tags. The default text does not change when the user types. In React, a `textarea` with a `value` prop is different: React sets its default text to the typed text.
 
 A negative condition passes before the element appears, for a typo, and on the wrong screen. First prove the screen and the same selector with `visible`. Then perform the action and check `hidden`.
 
