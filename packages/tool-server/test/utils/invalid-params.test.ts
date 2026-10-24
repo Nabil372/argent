@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
 import { z } from "zod";
+import type { ZodIssueCode } from "@argent/telemetry";
 import { deriveInvalidParams, deriveInvalidParamIssues } from "../../src/utils/invalid-params";
 
 function issuesFor(schema: z.ZodType, input: unknown): z.ZodError {
@@ -124,6 +125,10 @@ describe("deriveInvalidParamIssues", () => {
     const out = deriveInvalidParamIssues(err);
     expect(out).toEqual(["unrecognized_keys"]);
     expect(JSON.stringify(out)).not.toMatch(/ssn|123-45/);
+  });
+
+  it("knows exactly the issue codes the installed zod can raise", () => {
+    expectTypeOf<ZodIssueCode>().toEqualTypeOf<z.core.$ZodIssueCode>();
   });
 
   it("drops a code outside zod's vocabulary rather than voiding the whole array", () => {

@@ -81,7 +81,7 @@ When you use the Argent Lens design-review flow (previewing and choosing between
 
 To be explicit, Argent telemetry never includes:
 
-- tool input or argument values (for a rejected call we record only which schema-declared parameter names failed validation, as described under Diagnostics — never their values, and never key names that are not part of Argent's own schemas);
+- tool input or argument values (for a rejected call we record only which schema-declared parameter names failed validation and which of the schema library's fixed rule codes were broken, as described under Diagnostics — never their values, and never key names that are not part of Argent's own schemas);
 - file paths or file names;
 - source code or its contents;
 - application data;
