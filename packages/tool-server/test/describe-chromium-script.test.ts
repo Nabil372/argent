@@ -11,7 +11,8 @@ import { DESCRIBE_DOM_SCRIPT } from "../src/tools/describe/platforms/chromium";
  *
  * The mock implements only the DOM surface the script reads: getBoundingClientRect,
  * getComputedStyle (display / visibility / opacity / overflow{,X,Y}), children,
- * childNodes (text, and <br> / comment nodes), getAttribute/hasAttribute, open shadowRoot, iframe contentDocument,
+ * childNodes (text, and <br> / comment nodes), localName/namespaceURI, getAttribute/hasAttribute,
+ * open shadowRoot, iframe contentDocument,
  * and a Range whose rect unions the element's own painted content with the still-laid-out
  * boxes of its descendants (everything but display:none) — so it reproduces the real
  * behaviour where a box-less wrapper's Range is non-zero purely from a visibility:hidden /
@@ -48,6 +49,8 @@ function defineNative(proto: object, prop: string, field: string): void {
 defineNative(MockNode.prototype, "childNodes", "__childNodes");
 defineNative(MockNode.prototype, "textContent", "__textContent");
 defineNative(MockElement.prototype, "tagName", "__tagName");
+defineNative(MockElement.prototype, "localName", "__localName");
+defineNative(MockElement.prototype, "namespaceURI", "__namespaceURI");
 defineNative(MockElement.prototype, "children", "__children");
 defineNative(MockElement.prototype, "shadowRoot", "__shadowRoot");
 // Scroll-dimension getters live on Element.prototype too; the script captures their
@@ -94,6 +97,8 @@ function el(opts: Opts = {}): MockElement {
   const node = new MockElement() as MockElement & Record<string, unknown>;
   const rect = opts.rect ?? { x: 0, y: 0, w: 100, h: 20 };
   node.tagName = (opts.tag ?? "div").toUpperCase();
+  node.localName = opts.tag ?? "div";
+  node.namespaceURI = "http://www.w3.org/1999/xhtml";
   // Backing fields read by the Element.prototype getAttribute/hasAttribute/
   // getBoundingClientRect methods defined above (the script reads them via the prototype).
   node.__attrs = opts.attrs ?? {};
@@ -574,6 +579,25 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     expect(findById(tree, "btn")!.label).toBe("Save draft");
   });
 
+  it("walks an aria-labelledby target shared by many controls only once", () => {
+    const childNodesReads = (buttons: number) => {
+      const label = el({ tag: "span", text: "Shared", rect: BOX, attrs: { id: "lbl" } });
+      let reads = 0;
+      const kids = (label as MockElement & Record<string, unknown>).__childNodes;
+      Object.defineProperty(label, "__childNodes", {
+        get: () => (reads++, kids),
+        configurable: true,
+      });
+      const controls = Array.from({ length: buttons }, (_, i) =>
+        el({ tag: "button", rect: BOX, attrs: { "id": `b${i}`, "aria-labelledby": "lbl" } })
+      );
+      const { tree } = run([...controls, label]);
+      expect(findById(tree, `b${buttons - 1}`)!.label).toBe("Shared");
+      return reads;
+    };
+    expect(childNodesReads(5)).toBe(childNodesReads(1));
+  });
+
   it("leaves an ordinary visible element unchanged", () => {
     const { tree } = run([el({ text: "NORMAL", rect: BOX })]);
     expect(valuesOf(tree)).toContain("NORMAL");
@@ -846,6 +870,29 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     ];
     const { tree } = run([div]);
     expect(findById(tree, "nl")!.value).toBe("alphabeta");
+  });
+
+  it("reads a non-HTML br element as nothing, since it renders inline", () => {
+    // An SVG-namespace <br>, or createElementNS(XHTML, "BR") (localName "BR"), is not a
+    // line break even though its tagName lowercases to "br".
+    for (const [localName, namespaceURI] of [
+      ["br", "http://www.w3.org/2000/svg"],
+      ["BR", "http://www.w3.org/1999/xhtml"],
+    ]) {
+      const div = el({ rect: BOX, attrs: { id: "nl" } }) as MockElement & Record<string, unknown>;
+      const br = Object.assign(el({ tag: "br", rect: ZERO }), {
+        nodeType: 1,
+        localName,
+        namespaceURI,
+      });
+      div.childNodes = [
+        { nodeType: 3, nodeValue: "alpha" },
+        br,
+        { nodeType: 3, nodeValue: "beta" },
+      ];
+      const { tree } = run([div]);
+      expect(findById(tree, "nl")!.value).toBe("alphabeta");
+    }
   });
 
   it("reads a display:none <br> as nothing, since the words around it stay joined", () => {

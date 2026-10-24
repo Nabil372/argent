@@ -62,6 +62,8 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   const getNodeType = protoGetter(Node.prototype, "nodeType");
   const getNodeValue = protoGetter(Node.prototype, "nodeValue");
   const getTagName = protoGetter(Element.prototype, "tagName");
+  const getLocalName = protoGetter(Element.prototype, "localName");
+  const getNamespaceURI = protoGetter(Element.prototype, "namespaceURI");
   const getChildrenEls = protoGetter(Element.prototype, "children");
   const getShadowRoot = protoGetter(Element.prototype, "shadowRoot");
   const getScrollHeight = protoGetter(Element.prototype, "scrollHeight");
@@ -119,11 +121,13 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
 
   // A <br> separates the words around it unless it is display:none (what a
   // display:contents <br> computes to), which leaves them joined on screen.
-  // The nodeType check comes first: the tagName getter throws on a Comment.
+  // The nodeType check comes first: the Element getters throw on a Comment. The
+  // namespace check excludes an SVG or createElementNS "BR", which renders inline.
   function isRenderedBr(node) {
     return (
       getNodeType.call(node) === 1 &&
-      getTagName.call(node).toLowerCase() === "br" &&
+      getLocalName.call(node) === "br" &&
+      getNamespaceURI.call(node) === "http://www.w3.org/1999/xhtml" &&
       window.getComputedStyle(node).display !== "none"
     );
   }
@@ -144,8 +148,11 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
 
   // An aria-labelledby target's textContent (text and CDATA), reading a rendered <br>
   // as a space like ownText. Iterative: the target's depth has no MAX_DEPTH bound, so
-  // recursion could overflow the stack.
+  // recursion could overflow the stack. Memoized, as many controls can share one target.
+  const labelTexts = new Map();
   function labelText(root) {
+    const cached = labelTexts.get(root);
+    if (cached !== undefined) return cached;
     let s = "";
     const stack = [];
     const pushChildren = (node) => {
@@ -160,6 +167,7 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
       else if (isRenderedBr(node)) s += " ";
       else if (type === 1) pushChildren(node);
     }
+    labelTexts.set(root, s);
     return s;
   }
 
