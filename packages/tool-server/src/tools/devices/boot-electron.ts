@@ -181,6 +181,25 @@ function killChildEscalating(child: ChildProcess): void {
  */
 const liveChildren = new Map<number, ChildProcess>();
 
+export interface ElectronLaunchSpec {
+  appPath: string;
+  extraArgs: string[];
+  /** Group leader of the most recent boot; see {@link killChromiumByPort}. */
+  pid: number;
+}
+
+/**
+ * How the app on each CDP port was last booted. Unlike {@link liveChildren}
+ * an entry outlives the app's exit, so a crashed app can still be relaunched;
+ * a later boot on the same port replaces it.
+ */
+const launchSpecs = new Map<number, ElectronLaunchSpec>();
+
+/** The launch spec of the app this tool-server last booted on `port`, if any. */
+export function electronLaunchSpec(port: number): ElectronLaunchSpec | undefined {
+  return launchSpecs.get(port);
+}
+
 /**
  * Terminate a Chromium/Electron app this tool-server booted on `port`, via the
  * retained handle ({@link liveChildren}) when there is one, else best-effort
@@ -448,6 +467,9 @@ export async function bootElectronApp(options: BootElectronOptions): Promise<Ele
     if (liveChildren.get(port) === child) liveChildren.delete(port);
   });
 
+  const appPath = path.resolve(options.appPath);
+  launchSpecs.set(port, { appPath, extraArgs: extra, pid: child.pid });
+
   trackChromiumPort(port);
 
   return {
@@ -455,7 +477,7 @@ export async function bootElectronApp(options: BootElectronOptions): Promise<Ele
     id: chromiumIdFromPort(port),
     port,
     pid: child.pid,
-    appPath: path.resolve(options.appPath),
+    appPath,
     booted: true,
   };
 }

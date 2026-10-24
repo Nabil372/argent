@@ -64,17 +64,17 @@ On iOS, only `restart-app` guarantees an instrumented launch. `launch-app` can f
 
 **The app sets the window size; no boot argument overrides it.** Electron ignores `--window-size`: the size comes from the app's own `BrowserWindow` options, and Argent never resizes the window. Boot a fresh target with `boot-device` and `electronAppPath`, then take one `screenshot` and record its pixel dimensions: that capture size is the snapshot device class ([E2E YAML: Snapshots](e2e-yaml.md#snapshots-and-cli-runs)) and must match when CI replays. If the app sizes its window from host or session state, say so in the report.
 
-After boot, start the recorder before the first in-app action. Record the first-screen wait. `restart-app` has no Chromium support, so the call errors and records nothing, and a recorded Chromium test is always a fragment: its launch is written in during polish rather than captured, and any `executionPrerequisite` the recording declared must go with it. A launch-first test must not carry one. During polish, add the matching launch:
+After boot, start the recorder and record `restart-app` on the booted id as the first step, then the first-screen wait. `restart-app` relaunches the app on the same id, and the recorder captures it as a launch with the app's absolute path and the boot's arguments:
 
 ```yaml
 steps:
   - launch:
       chromium:
-        path: ../../app
+        path: /Users/me/app
         args: ["--enable-feature-flag"]
 ```
 
-The path is relative to `.argent/e2e/`. Copy the live boot arguments verbatim, and omit `args` when the boot passed none. This packaging exception represents the boot already exercised live. It does not permit a rehearsed UI path.
+During polish, make `path` relative to `.argent/e2e/` (here `../../app`) so the test replays on other machines.
 
 ### Fragments
 
