@@ -73,6 +73,12 @@ const CASES = {
       summary: "1. tool: key\\nboard {}",
       target: undefined,
     },
+    {
+      // parseFlow does not type-check `tool:`, so a hand-edited `tool: 123` arrives as a number.
+      step: { kind: "tool", name: 123 as unknown as string, args: {} },
+      summary: "1. tool: 123 {}",
+      target: undefined,
+    },
   ],
   "echo": [
     {
@@ -93,6 +99,11 @@ const CASES = {
       target: undefined,
     },
     {
+      step: { kind: "launch", app: "com.example\napp" },
+      summary: "1. launch: com.example\\napp",
+      target: undefined,
+    },
+    {
       step: { kind: "launch", app: { ios: "com.example.ios", android: "com.example.android" } },
       summary: '1. launch: {"ios":"com.example.ios","android":"com.example.android"}',
       target: undefined,
@@ -103,6 +114,12 @@ const CASES = {
       step: { kind: "run", flow: "../shared/login.yaml" },
       summary: "1. run: ../shared/login.yaml",
       target: "../shared/login.yaml",
+    },
+    {
+      // Only the basename is pattern-checked, so a directory can carry a line break.
+      step: { kind: "run", flow: "sub\ndir/login.yaml" },
+      summary: "1. run: sub\\ndir/login.yaml",
+      target: "sub\\ndir/login.yaml",
     },
   ],
   "when": [
@@ -282,6 +299,18 @@ const CASES = {
       summary: '1. assert: text {"id":"status"} matches /Done/',
       target: "id=status matches /Done/",
     },
+    {
+      // A block scalar (`matches: |`) ends the pattern in a newline.
+      step: {
+        kind: "assert",
+        condition: "text",
+        selector: { identifier: "status" },
+        expectedText: "^Done\\d\n",
+        textMatch: "matches",
+      },
+      summary: '1. assert: text {"id":"status"} matches /^Done\\d\\n/',
+      target: "id=status matches /^Done\\d\\n/",
+    },
   ],
   // Summarized under `await`, the key the flow file spells it with, not under
   // its kind; its tuning fields are not part of either rendering.
@@ -394,6 +423,11 @@ const CASES = {
       step: { kind: "script", path: "scripts/seed.mjs" },
       summary: "1. script: scripts/seed.mjs",
       target: "scripts/seed.mjs",
+    },
+    {
+      step: { kind: "script", path: "sub\ndir/seed.mjs" },
+      summary: "1. script: sub\\ndir/seed.mjs",
+      target: "sub\\ndir/seed.mjs",
     },
     {
       // `timeout` changes what replays, so it rides the summary — the report
@@ -551,5 +585,15 @@ describe("flow step definitions", () => {
         selector: { textMatches: "^Row\n\\d+$" },
       })
     ).toBe("visible text=/^Row\\n\\d+$/");
+    // And on a text condition's `matches` pattern.
+    expect(
+      describeWhenCondition({
+        kind: "ui",
+        condition: "text",
+        selector: { identifier: "total" },
+        expectedText: "^\\$\\d+$\n",
+        textMatch: "matches",
+      })
+    ).toBe('id="total" matches /^\\$\\d+$\\n/');
   });
 });
