@@ -454,7 +454,7 @@ Failed e2e tests (2)
 FAIL — 4 e2e tests: 2 passed, 2 failed, 0 skipped (10.2s)
 ```
 
-When a single e2e test run fails its steps, Argent prints the first step that failed or errored, and its reason, again above the last line.
+When a single e2e test run fails its steps, Argent prints the first step that failed or errored, and its reason, again above the last line. When the only failure is a baseline that the CLI could not write, Argent prints `baselines not written` and the path and the reason of each such baseline there instead.
 
 `--json` and `--json-stream` print no header, no outcome line, no `Failed e2e tests` section and no summary.
 
@@ -528,7 +528,7 @@ For an e2e test with `snapshot:` steps, the CLI also uploads baselines from the 
 
 When a run that compares and a run that updates use the same directory, the CLI uploads the content of each baseline that the run that compares reads. It uploads the name of each other baseline.
 
-When a run updates baselines, the tool-server returns each new baseline in the result, also the baselines of nested runs. The CLI writes each one into the directory of its run after the run, and into no other directory. When the CLI cannot write a baseline, it prints the path and the reason. The run then fails with exit code 1. When the connection closes before the result, the CLI writes no baseline.
+When a run updates baselines, the tool-server returns each new baseline in the result, also the baselines of nested runs. The CLI writes each one into the directory of its run after the run, and into no other directory. When the CLI cannot write a baseline, it prints the path and the reason. The run then fails: the summary line says `FAIL`, the report holds `"ok": false`, and the exit code is 1. When the connection closes before the result, the CLI writes no baseline.
 
 The CLI does not upload a baseline that links out of the directories above, or a `.png` name that links to a file that is not a PNG file. A `snapshot:` step that reads or writes such a baseline reports `error`. When the `__baselines__/<test>/` directory itself links out of these directories, the CLI uploads no baseline and writes none.
 
