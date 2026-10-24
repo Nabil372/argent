@@ -19,8 +19,12 @@ const { home, originalHome, originalUserProfile } = await vi.hoisted(async () =>
 const { server } = await import("../src/server.js");
 const { stateFileForBundle } = await import("@argent/tools-client");
 
+const stateDir = path.join(home, ".argent");
+
 afterEach(() => {
   vi.restoreAllMocks();
+  // Here rather than in the test, which skips its `finally` when it times out.
+  if (fs.existsSync(stateDir)) fs.chmodSync(stateDir, 0o755);
 });
 
 afterAll(() => {
@@ -77,27 +81,22 @@ it("keeps a state file that another server wrote over ours", async () => {
   expect(result).toEqual({ code: 3, stateFile: theirs });
 });
 
-it("forwards SIGHUP and removes the state file", async () => {
+it("stops the child with SIGTERM on SIGHUP and removes the state file", async () => {
   const result = await runForeground("hup", "setTimeout(() => process.exit(0), 3000);\n", () => {
     process.emit("SIGHUP", "SIGHUP");
   });
-  expect(result).toEqual({ code: 129, stateFile: null });
+  expect(result).toEqual({ code: 143, stateFile: null });
 });
 
 it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "mirrors the child's exit code when the state file cannot be removed",
   async () => {
-    const stateDir = path.join(home, ".argent");
-    try {
-      const result = await runForeground(
-        "readonly",
-        "setTimeout(() => process.exit(3), 500);\n",
-        () => fs.chmodSync(stateDir, 0o555)
-      );
-      expect(result.code).toBe(3);
-      expect(result.stateFile).not.toBeNull();
-    } finally {
-      fs.chmodSync(stateDir, 0o755);
-    }
+    const result = await runForeground(
+      "readonly",
+      "setTimeout(() => process.exit(3), 500);\n",
+      () => fs.chmodSync(stateDir, 0o555)
+    );
+    expect(result.code).toBe(3);
+    expect(result.stateFile).not.toBeNull();
   }
 );

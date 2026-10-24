@@ -396,7 +396,7 @@ async function runForeground(
 
   // The child has its own SIGINT/SIGTERM handlers that drain HTTP and dispose the
   // registry, so forwarding lets a supervisor stop us cleanly. SIGHUP (terminal
-  // closed) is caught too, so we outlive the child and run cleanup.
+  // closed) stops it the same way and keeps us alive to run cleanup.
   const forward = (signal: NodeJS.Signals) => () => {
     try {
       child.kill(signal);
@@ -406,7 +406,7 @@ async function runForeground(
   };
   const onInt = forward("SIGINT");
   const onTerm = forward("SIGTERM");
-  const onHup = forward("SIGHUP");
+  const onHup = forward("SIGTERM");
   process.on("SIGINT", onInt);
   process.on("SIGTERM", onTerm);
   process.on("SIGHUP", onHup);
