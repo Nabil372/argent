@@ -45,7 +45,7 @@ describe("captureVegaScreenshotPng", () => {
     expect(await failureFor("KO: Failed to take screenshot\r\n")).toBe(
       "emulator console wrote no PNG for emulator-5556: KO: Failed to take screenshot"
     );
-    // A console without auth refuses adb's `auth` as unknown, then runs the command.
+    // Only the last line is the verdict.
     expect(await failureFor("KO: unknown command, try 'help'\r\nOK\r\n")).toBe(
       "emulator console wrote no PNG for emulator-5556: KO: unknown command, try 'help'; OK"
     );
