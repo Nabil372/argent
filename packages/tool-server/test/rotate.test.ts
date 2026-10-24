@@ -69,7 +69,9 @@ describe("rotate tool", () => {
     expect(sendCommand).toHaveBeenCalledTimes(1);
   });
 
-  it("rotates an Android phone", async () => {
+  it("rotates an Android phone and leaves no probe timer behind", async () => {
+    vi.useFakeTimers();
+
     await expect(
       rotateTool.execute(
         { simulatorServer: {} },
@@ -77,6 +79,7 @@ describe("rotate tool", () => {
       )
     ).resolves.toEqual({ orientation: "LandscapeLeft" });
     expect(sendCommand).toHaveBeenCalledWith({}, { cmd: "rotate", direction: "LandscapeLeft" });
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("rotates an iOS simulator without probing adb", async () => {
