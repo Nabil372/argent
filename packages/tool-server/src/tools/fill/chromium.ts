@@ -184,8 +184,8 @@ export async function fillChromium(
 ): Promise<FillResult> {
   const ref = chromiumCdpRef(device);
   // A page under a JavaScript dialog queues every evaluation and runs it when
-  // the dialog closes. Connecting only reads, and a no-op goes first, so a
-  // blocked page is sent nothing that writes.
+  // the dialog closes. Connecting touches no field, and a no-op goes first, so
+  // a blocked page is sent nothing that edits a field.
   const api = await withTimeoutError(
     () => registry.resolveService<ChromiumCdpApi>(ref.urn, ref.options),
     () => pageNotAnsweringError("fill_chromium_connect")
