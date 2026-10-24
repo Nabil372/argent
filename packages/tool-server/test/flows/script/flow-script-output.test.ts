@@ -55,6 +55,11 @@ describe("flow script executor — output validation", () => {
       "output.ratio is Infinity; output numbers must be finite",
     ],
     [
+      "-Infinity",
+      `output.floor = -Infinity;`,
+      "output.floor is -Infinity; output numbers must be finite",
+    ],
+    [
       "a function",
       `output.items = [1, 2, { handler: () => {} }];`,
       "output.items[2].handler is a function; output must be JSON-compatible data",
