@@ -1801,6 +1801,27 @@ describe("copyRulesAndAgents", () => {
       });
     });
 
+    it.skipIf(!fs.existsSync(os.tmpdir().toUpperCase()))(
+      "labels a project under a home spelled in a different case with ~",
+      () => {
+        const claudeAdapter = ALL_ADAPTERS.find((a) => a.name === "Claude Code")!;
+        const realHome = fs.realpathSync(tmpDir);
+        homedirOverride = realHome.toUpperCase();
+        const projectRoot = path.join(realHome, "Dev", "app");
+        fs.mkdirSync(projectRoot, { recursive: true });
+
+        const results = copyRulesAndAgents(
+          [claudeAdapter],
+          projectRoot,
+          "local",
+          rulesDir,
+          agentsDir
+        );
+
+        expect(results).toContain("  Copied rules to ~/Dev/app/.claude/rules");
+      }
+    );
+
     it("installs rules into a symlinked .claude/rules", () => {
       const claudeAdapter = ALL_ADAPTERS.find((a) => a.name === "Claude Code")!;
       const canonical = path.join(tmpDir, ".agents", "rules");

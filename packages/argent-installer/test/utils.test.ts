@@ -467,6 +467,18 @@ describe("resolveProjectRoot", () => {
     });
   });
 
+  it.skipIf(!fs.existsSync(os.tmpdir().toUpperCase()))(
+    "stops at home when HOME differs from the on-disk case",
+    () => {
+      const home = path.join(fs.realpathSync(tmpDir), "home");
+      const projectRoot = path.join(home, "Dev", "argent-test");
+      fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+      fs.mkdirSync(projectRoot, { recursive: true });
+
+      expect(resolveProjectRoot(projectRoot, home.toUpperCase())).toBe(projectRoot);
+    }
+  );
+
   it("recognizes opencode.jsonc as a project root marker", () => {
     const projectRoot = path.join(tmpDir, "project");
     const nestedDir = path.join(projectRoot, "src");

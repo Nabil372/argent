@@ -27,6 +27,19 @@ describe("isHomeDir", () => {
     expect(isHomeDir(path.join(homeDir, "missing"), { homeDir })).toBe(false);
   });
 
+  it("compares resolved paths when neither side exists", () => {
+    const missing = path.join(homeDir, "missing");
+    expect(isHomeDir(missing, { homeDir: `${missing}${path.sep}` })).toBe(true);
+  });
+
+  it.skipIf(!fs.existsSync(os.tmpdir().toUpperCase()))(
+    "matches home spelled in a different case on a case-insensitive filesystem",
+    () => {
+      expect(isHomeDir(homeDir, { homeDir: homeDir.toUpperCase() })).toBe(true);
+      expect(isHomeDir(homeDir.toUpperCase(), { homeDir })).toBe(true);
+    }
+  );
+
   it.skipIf(process.platform === "win32")("matches home through a symlink on either side", () => {
     fs.symlinkSync(homeDir, linkedHome);
     expect(isHomeDir(homeDir, { homeDir: linkedHome })).toBe(true);

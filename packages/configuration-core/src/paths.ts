@@ -31,18 +31,23 @@ export function resolveHomeDir(options: ConfigPathOptions = {}): string {
 }
 
 /**
- * Whether `dir` is the home directory, by real path: project roots walked up from
- * `process.cwd()` are physical, while HOME may run through a symlink.
+ * Whether `dir` is the home directory, by canonical path: project roots walked up
+ * from `process.cwd()` are physical, while HOME may run through a symlink or
+ * differ from the on-disk case.
  */
 export function isHomeDir(dir: string, options: ConfigPathOptions = {}): boolean {
-  return realDir(dir) === realDir(resolveHomeDir(options));
+  return canonicalPath(dir) === canonicalPath(resolveHomeDir(options));
 }
 
-function realDir(dir: string): string {
+/**
+ * `p` with symlinks resolved and, on case-insensitive filesystems, in its on-disk
+ * case; `path.resolve(p)` when it doesn't exist.
+ */
+export function canonicalPath(p: string): string {
   try {
-    return fs.realpathSync(dir);
+    return fs.realpathSync.native(p);
   } catch {
-    return path.resolve(dir);
+    return path.resolve(p);
   }
 }
 
