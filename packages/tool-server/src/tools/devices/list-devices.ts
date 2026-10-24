@@ -142,7 +142,8 @@ const EXTERNAL_DEVICES_HINT =
 const IOS_LIST_TIMED_OUT_HINT =
   `iOS simulators may be missing from this list: \`xcrun simctl list\` did not answer within ` +
   `${SIMCTL_LIST_TIMEOUT_MS / 1000}s. CoreSimulatorService is probably still starting, which can take ` +
-  `about a minute after a reboot. Call list-devices again shortly.`;
+  `about a minute after a reboot, so call list-devices again shortly. If it keeps timing out, ` +
+  `restart CoreSimulatorService.`;
 
 function sortIos(a: IosDevice, b: IosDevice): number {
   const aBooted = a.state === "Booted" ? 0 : 1;
