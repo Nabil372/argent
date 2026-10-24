@@ -26,9 +26,9 @@ export async function runEmuConsole(serial: string, args: string[]): Promise<str
 /**
  * The whole `adb emu` reply on one line, for an error message.
  *
- * Until adb authenticates, the console refuses commands as unknown, and adb sends
- * no auth unless its token file is a non-empty regular file (it ignores a
- * symlink). So a reply ending in `KO: unknown command` also names that file.
+ * Before auth the console refuses every command as unknown, and adb skips auth
+ * unless its token file is a non-empty regular file (not a symlink), so that
+ * reply also names the file.
  */
 export function describeConsoleReply(stdout: string): string {
   const lines = replyLines(stdout);
