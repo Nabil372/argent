@@ -1511,10 +1511,13 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
         );
       }
       if (isDebuggerNotConnectedResult(params.command, toolResult)) {
+        // debugger-log-registry's note is consumed as it is read, so this
+        // message is the only place it can still reach the agent.
+        const note = (toolResult as { note?: unknown }).note;
         throw new FailureError(
-          `${params.command} found no debugger (${toolResult.reason}): ${toolResult.detail} - nothing was recorded; ${toolResult.guidance}`,
+          `${params.command}: debugger not connected (${toolResult.reason}): ${toolResult.detail} - nothing was recorded. ${toolResult.guidance}${typeof note === "string" ? ` ${note}` : ""}`,
           {
-            error_code: FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED,
+            error_code: FAILURE_CODES.DEBUGGER_NOT_CONNECTED,
             failure_stage: "flow_add_step_debugger_not_connected",
             failure_area: "tool_server",
             error_kind: "not_found",

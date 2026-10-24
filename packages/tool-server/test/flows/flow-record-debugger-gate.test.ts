@@ -61,12 +61,24 @@ describe("flow-add-step on a not_connected debugger result", () => {
     async (command) => {
       const err: unknown = await addStep(NOT_CONNECTED, command).catch((e: unknown) => e);
       expect((err as Error).message).toBe(
-        `${command} found no debugger (no_app_connected): Metro at port 8081 has no CDP targets - nothing was recorded; launch the app`
+        `${command}: debugger not connected (no_app_connected): Metro at port 8081 has no CDP targets - nothing was recorded. launch the app`
       );
-      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED);
+      expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.DEBUGGER_NOT_CONNECTED);
       expect(await recordedSteps()).toEqual([]);
     }
   );
+
+  // The tool consumes the note as it builds the result, so a refusal that
+  // dropped it would lose it for good.
+  it("keeps debugger-log-registry's note in the refusal", async () => {
+    const err: unknown = await addStep(
+      { ...NOT_CONNECTED, note: "The log was kept at /KEPT/log.jsonl." },
+      "debugger-log-registry"
+    ).catch((e: unknown) => e);
+    expect((err as Error).message).toBe(
+      "debugger-log-registry: debugger not connected (no_app_connected): Metro at port 8081 has no CDP targets - nothing was recorded. launch the app The log was kept at /KEPT/log.jsonl."
+    );
+  });
 
   it("records a connected debugger-status", async () => {
     await addStep({ status: "connected", connected: true }, "debugger-status");
