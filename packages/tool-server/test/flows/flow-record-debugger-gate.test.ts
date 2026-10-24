@@ -19,8 +19,8 @@ const NOT_CONNECTED = {
   connected: false,
   port: 8081,
   reason: "no_app_connected",
-  detail: "Metro at port 8081 has no CDP targets",
-  guidance: "launch the app",
+  detail: "Metro at port 8081 has no CDP targets.",
+  guidance: "Launch the app.",
 };
 
 let tmpDir: string;
@@ -61,22 +61,20 @@ describe("flow-add-step on a not_connected debugger result", () => {
     async (command) => {
       const err: unknown = await addStep(NOT_CONNECTED, command).catch((e: unknown) => e);
       expect((err as Error).message).toBe(
-        `${command}: debugger not connected (no_app_connected): Metro at port 8081 has no CDP targets - nothing was recorded. launch the app`
+        `${command}: debugger not connected (no_app_connected) - nothing was recorded. Metro at port 8081 has no CDP targets. Launch the app.`
       );
       expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.DEBUGGER_NOT_CONNECTED);
       expect(await recordedSteps()).toEqual([]);
     }
   );
 
-  // The tool consumes the note as it builds the result, so a refusal that
-  // dropped it would lose it for good.
   it("keeps debugger-log-registry's note in the refusal", async () => {
     const err: unknown = await addStep(
       { ...NOT_CONNECTED, note: "The log was kept at /KEPT/log.jsonl." },
       "debugger-log-registry"
     ).catch((e: unknown) => e);
     expect((err as Error).message).toBe(
-      "debugger-log-registry: debugger not connected (no_app_connected): Metro at port 8081 has no CDP targets - nothing was recorded. launch the app The log was kept at /KEPT/log.jsonl."
+      "debugger-log-registry: debugger not connected (no_app_connected) - nothing was recorded. Metro at port 8081 has no CDP targets. Launch the app. The log was kept at /KEPT/log.jsonl."
     );
   });
 

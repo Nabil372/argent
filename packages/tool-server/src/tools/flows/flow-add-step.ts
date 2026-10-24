@@ -1515,7 +1515,7 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
         // message is the only place it can still reach the agent.
         const note = (toolResult as { note?: unknown }).note;
         throw new FailureError(
-          `${params.command}: debugger not connected (${toolResult.reason}): ${toolResult.detail} - nothing was recorded. ${toolResult.guidance}${typeof note === "string" ? ` ${note}` : ""}`,
+          `${params.command}: debugger not connected (${toolResult.reason}) - nothing was recorded. ${toolResult.detail} ${toolResult.guidance}${typeof note === "string" ? ` ${note}` : ""}`,
           {
             error_code: FAILURE_CODES.DEBUGGER_NOT_CONNECTED,
             failure_stage: "flow_add_step_debugger_not_connected",
