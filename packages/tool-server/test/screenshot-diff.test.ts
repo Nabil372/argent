@@ -121,6 +121,8 @@ describe("diffPngFiles", () => {
     { baseline: { width: 1179, height: 2556 }, current: { width: 1206, height: 2622 } },
     // Pixel 9 vs Pixel 7: same width, 24 rows taller.
     { baseline: { width: 1080, height: 2424 }, current: { width: 1080, height: 2400 } },
+    // Same height, different width.
+    { baseline: { width: 1080, height: 2400 }, current: { width: 1440, height: 2400 } },
   ])(
     "reports $baseline.width x $baseline.height vs $current.width x $current.height as a dimension mismatch without comparing",
     async ({ baseline, current }) => {

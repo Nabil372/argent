@@ -201,7 +201,7 @@ export async function executeScreenshotDiffTool(
   // there, once per distinct warning.
   let summary = result.summary;
   for (const warning of new Set(warnings)) summary = `${summary}\n- panel: ${warning}`;
-  // On a foldable an aspect mismatch is usually a posture mismatch: the two
+  // On a foldable a size mismatch is usually a posture mismatch: the two
   // panels differ in size, and a baseline belongs to the posture that produced
   // it. Name the posture behind each size; every other device is unchanged.
   if (result.dimensionMismatch) {
@@ -393,10 +393,10 @@ function requireIosDeviceRunner(services: Record<string, unknown>): IosDeviceRun
 
 /**
  * Physical-iOS live capture through the on-device XCUITest runner. The runner
- * returns one full-resolution device-wide PNG, so no app session is required
- * and the simulator scale fallback does not apply. The rotation parameter is
- * deliberately not forwarded, because the capture always follows the device's
- * real orientation, the same behaviour as the screenshot tool on hardware.
+ * returns one full-resolution device-wide PNG, so no app session is required.
+ * The rotation parameter is deliberately not forwarded, because the capture
+ * always follows the device's real orientation, the same behaviour as the
+ * screenshot tool on hardware.
  */
 async function captureIosDeviceLiveInput(params: {
   runner: IosDeviceRunnerApi;
