@@ -244,6 +244,44 @@ describe("list-devices", () => {
     expect(result).not.toHaveProperty("hint");
   });
 
+  /**
+   * A cold CoreSimulatorService holds `simctl list` past its timeout, and the
+   * tool-server can be serving by then, so an empty iOS list must not read as
+   * "no simulators".
+   */
+  it("says the iOS list may be incomplete when simctl list is killed at its timeout", async () => {
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "xcrun" && args[0] === "simctl") {
+        return Object.assign(new Error("Command failed: xcrun simctl list devices --json"), {
+          killed: true,
+          signal: "SIGKILL",
+        });
+      }
+      return { stderr: "", stdout: "" };
+    });
+
+    const result = await listDevicesTool.execute!({}, {});
+
+    expect(result.devices.filter((d) => d.platform === "ios")).toEqual([]);
+    expect(result.hint).toContain("did not answer within 10s");
+  });
+
+  it("adds no hint when simctl fails without timing out", async () => {
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "xcrun" && args[0] === "simctl") {
+        return Object.assign(new Error('xcrun: error: unable to find utility "simctl"'), {
+          code: 72,
+          killed: false,
+        });
+      }
+      return { stderr: "", stdout: "" };
+    });
+
+    const result = await listDevicesTool.execute!({}, {});
+
+    expect(result).not.toHaveProperty("hint");
+  });
+
   it("readAvdName prefers the modern avd_name prop over the legacy one (now probed concurrently)", async () => {
     // The two getprops run in parallel (so a wedged device costs 5s, not 10s), but
     // precedence must be unchanged: `ro.boot.qemu.avd_name` (modern, emulator 30+)

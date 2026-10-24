@@ -396,8 +396,10 @@ export function start(): void {
 
   // Bind once the identity warm-up settles, so the accept path never pays for it.
   // Not on the watcher's first poll: a cold CoreSimulatorService can hold that
-  // `simctl list` for close to a minute, and launch-app / restart-app arm
-  // injection themselves.
+  // `simctl list` for close to a minute, past the launcher's 15s ready timeout.
+  // launch-app / restart-app arm injection themselves; open-url and the native
+  // profiler's malloc relaunch do not, so on a simulator booted before startup
+  // they can start an app ahead of that poll.
   identityWarm
     .then(() => {
       server = httpHandle.app.listen(PORT, HOST, () => {
@@ -502,8 +504,8 @@ export function start(): void {
           },
         });
         shutdownReason = "crash";
-        // The readiness gate rejected before the listener bound, so this is always
-        // a startup crash. Best-effort: fall back to phase-only if describeCrash
+        // Only a throw before the listener bound lands here, so this is always a
+        // startup crash. Best-effort: fall back to phase-only if describeCrash
         // itself throws.
         try {
           shutdownCrashDiagnostics = describeCrash(err, "startup");
