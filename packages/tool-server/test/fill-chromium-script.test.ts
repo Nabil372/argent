@@ -5,7 +5,7 @@ import { buildChromiumFillScript } from "../src/tools/fill/chromium";
  * Runs the real page script against a hand-built document. The mock carries
  * only what the script reads: the focused element (through an open shadow
  * root or a frame), its kind, `select()`, the document selection and
- * `execCommand`, `createElement` for a detached input that applies the HTML
+ * `execCommand`, which fires `input` on the element it edits, `createElement` for a detached input that applies the HTML
  * value sanitization of number and email inputs, and the window's native
  * value setters and Event.
  */
@@ -87,11 +87,22 @@ function makePage(options: PageOptions = {}): Page {
       if (command === "insertText") el[key] = options.rewrite ? options.rewrite(value!) : value;
       else if (command === "delete") el[key] = "";
       else return false;
+      for (const listener of el.listeners) listener();
       if (options.restore) setTimeout(() => (el[key] = before), 0);
       return true;
     },
   };
   return { doc, win, events };
+}
+
+/** The `input` listeners of a mock element; the edit calls them. */
+function listenable() {
+  const listeners = new Set<() => void>();
+  return {
+    listeners,
+    addEventListener: (type: string, fn: () => void) => type === "input" && listeners.add(fn),
+    removeEventListener: (type: string, fn: () => void) => type === "input" && listeners.delete(fn),
+  };
 }
 
 function control(page: Page, tag: "INPUT" | "TEXTAREA", props: Record<string, unknown> = {}) {
@@ -114,6 +125,7 @@ function control(page: Page, tag: "INPUT" | "TEXTAREA", props: Record<string, un
       page.events.push(event.type);
       return true;
     },
+    ...listenable(),
     ...props,
   });
   return el;
@@ -126,6 +138,7 @@ function editable(page: Page, props: Record<string, unknown> = {}) {
     innerText: "old text",
     parentElement: page.doc.body,
     ownerDocument: page.doc,
+    ...listenable(),
     ...props,
   };
 }
@@ -207,9 +220,23 @@ describe("fill page script", () => {
     expect(page.events).toEqual([]);
   });
 
+  it("keeps the browser's rewrite when it equals the old text, as on a retry", async () => {
+    const page = makePage({ rewrite: (t) => t.replace("ąę", "xn--2da4b") });
+    const input = control(page, "INPUT", { type: "email", _value: "a@xn--2da4b.pl" });
+    page.doc.activeElement = input;
+    await expect(runScript(page, "a@ąę.pl")).resolves.toEqual({ status: "ok", verified: false });
+    expect(input._value).toBe("a@xn--2da4b.pl");
+    expect(page.events).toEqual([]);
+    expect(input.listeners.size).toBe(0);
+  });
+
   it.each([
     ["an input", "INPUT", "text", "abcdef"],
     ["a textarea", "TEXTAREA", "textarea", "abcdef"],
+    ["a search input", "INPUT", "search", "abcd"],
+    ["a url input", "INPUT", "url", "abcd"],
+    ["a tel input", "INPUT", "tel", "abcd"],
+    ["an email input", "INPUT", "email", "a@bc"],
     ["a password input, in UTF-16 units", "INPUT", "password", "😀😀"],
   ] as const)(
     "refuses text over the maxlength of %s without touching it",
@@ -224,6 +251,13 @@ describe("fill page script", () => {
       expect(field._value).toBe("old value");
     }
   );
+
+  it("counts a textarea's CRLF as the one line break it stores", async () => {
+    const page = makePage();
+    const area = control(page, "TEXTAREA", { maxLength: 5 });
+    page.doc.activeElement = area;
+    await expect(runScript(page, "ab\r\ncd")).resolves.toMatchObject({ status: "ok" });
+  });
 
   it.each([
     ["text up to the maxlength", { maxLength: 3 }, "abc"],
@@ -269,21 +303,34 @@ describe("fill page script", () => {
     expect(input._value).toBe(text);
   });
 
-  it.each(["IFRAME", "FRAME"])("descends into a same-origin %s", async (tagName) => {
+  it.each(["IFRAME", "FRAME", "OBJECT"])("descends into a same-origin %s", async (tagName) => {
     const page = makePage();
     const input = control(page, "INPUT");
-    page.doc.activeElement = { tagName, contentDocument: { activeElement: input } };
+    page.doc.activeElement = {
+      tagName,
+      contentWindow: {},
+      contentDocument: { activeElement: input },
+    };
     await expect(runScript(page, "x")).resolves.toEqual({ status: "ok", verified: true });
     expect(input._value).toBe("x");
   });
 
-  it("refuses focus in a cross-origin frame, whose document it cannot read", async () => {
+  it.each(["IFRAME", "OBJECT"])(
+    "refuses focus in a cross-origin %s, whose document it cannot read",
+    async (tagName) => {
+      const page = makePage();
+      page.doc.activeElement = { tagName, contentWindow: {}, contentDocument: null };
+      await expect(runScript(page, "x")).resolves.toEqual({
+        status: "unsupported",
+        detail: "focus is in a cross-origin frame, which fill cannot reach",
+      });
+    }
+  );
+
+  it("answers no_focus for an <object> that shows an image, which has no document", async () => {
     const page = makePage();
-    page.doc.activeElement = { tagName: "IFRAME", contentDocument: null };
-    await expect(runScript(page, "x")).resolves.toEqual({
-      status: "unsupported",
-      detail: "focus is in a cross-origin frame, which fill cannot reach",
-    });
+    page.doc.activeElement = { tagName: "OBJECT", contentWindow: null, contentDocument: null };
+    await expect(runScript(page, "x")).resolves.toEqual({ status: "no_focus" });
   });
 
   it("sets a contenteditable's text", async () => {

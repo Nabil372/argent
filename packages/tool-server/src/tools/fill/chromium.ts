@@ -22,10 +22,11 @@ interface PageFillAnswer {
  * and same-origin frames — selects its content and replaces it with the
  * page's own editing commands, so the page sees a user edit: `beforeinput`
  * and `input` fire, React's value tracker and rich-text editors update. A text
- * control whose page refused the command, so it still holds its old text, gets
- * the native value setter and `input` and `change` events instead. A control
- * the browser keeps from holding the text (maxlength, a number or email
- * input's value rules) is refused before anything changes.
+ * control whose page refused the command, so it fired no `input` and still
+ * holds its old text, gets the native value setter and `input` and `change`
+ * events instead. A control the browser keeps from holding the text
+ * (maxlength, the value sanitization of a number or email input) is refused
+ * before anything changes.
  *
  * The comparison happens in the page, after a task boundary so an editor that
  * restores its model on a microtask has done so. Only a boolean comes
@@ -45,7 +46,9 @@ export function buildChromiumFillScript(text: string): string {
       return el;
     };
     let el = deepActive(document);
-    while (el && /^i?frame$/.test(String(el.tagName).toLowerCase())) {
+    while (el && /^(i?frame|object)$/.test(String(el.tagName).toLowerCase())) {
+      // An <object> showing an image or a plugin has no document to descend into.
+      if (!el.contentWindow) break;
       let inner = null;
       try { inner = el.contentDocument; } catch (e) { inner = null; }
       // A cross-origin or sandboxed frame hides its document.
@@ -70,14 +73,16 @@ export function buildChromiumFillScript(text: string): string {
     if (tag === "input" && /[\\r\\n]/.test(text)) {
       return { status: "unsupported", detail: "a single-line input cannot hold a newline" };
     }
-    // Typed text stops at maxlength, which the value setter ignores.
+    // Typed text stops at maxlength, which the value setter ignores. A
+    // textarea stores CRLF and CR as one LF.
     const limited = tag === "textarea" || /^(text|search|url|tel|email|password)$/.test(type);
-    if (limited && el.maxLength >= 0 && text.length > el.maxLength) {
+    const length = tag === "textarea" ? text.replace(/\\r\\n?/g, "\\n").length : text.length;
+    if (limited && el.maxLength >= 0 && length > el.maxLength) {
       return { status: "unsupported", detail: "the text is longer than its maxlength of " + el.maxLength };
     }
     // A number input holds only a valid number and an email input drops the
     // whitespace around an address, typed or set. A detached input of the
-    // same type applies the browser's own rules.
+    // same type applies the browser's own sanitization.
     if (type === "number" || type === "email") {
       const probe = doc.createElement("input");
       probe.type = type;
@@ -111,24 +116,33 @@ export function buildChromiumFillScript(text: string): string {
     };
 
     const before = read();
-    if (control) {
-      try { el.select(); } catch (e) { /* no selection API */ }
-    } else {
-      const sel = doc.getSelection();
-      const range = doc.createRange();
-      range.selectNodeContents(el);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-    if (text === "") {
-      if (read() !== "") doc.execCommand("delete");
-    } else {
-      doc.execCommand("insertText", false, text);
+    // The browser fires input synchronously for an edit it performed.
+    let edited = false;
+    const onInput = () => { edited = true; };
+    el.addEventListener("input", onInput);
+    try {
+      if (control) {
+        try { el.select(); } catch (e) { /* no selection API */ }
+      } else {
+        const sel = doc.getSelection();
+        const range = doc.createRange();
+        range.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      if (text === "") {
+        if (read() !== "") doc.execCommand("delete");
+      } else {
+        doc.execCommand("insertText", false, text);
+      }
+    } finally {
+      el.removeEventListener("input", onInput);
     }
     let verified = await settle();
-    // A refused edit leaves the old text. Other text is the browser's or the
-    // page's own rewrite, which the setter must not override.
-    if (!verified && control && read() === before) {
+    // A refused edit fires no input and leaves the old text. Anything else is
+    // the browser's or the page's own rewrite, which the setter must not
+    // override, even when the rewrite equals the old text.
+    if (!verified && control && !edited && read() === before) {
       const proto = tag === "textarea" ? win.HTMLTextAreaElement.prototype : win.HTMLInputElement.prototype;
       const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
       setter.call(el, text);
