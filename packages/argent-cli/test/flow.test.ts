@@ -1535,6 +1535,28 @@ describe("argent e2e run", () => {
     ]);
   });
 
+  it("names an unwritten baseline under the failing step of a run that also failed a step", async () => {
+    toolsClientMock.callTool.mockResolvedValue({
+      data: report({
+        ok: false,
+        passed: 0,
+        failed: 1,
+        steps: [{ index: 0, kind: "tap", status: "fail", reason: "no element" }],
+        baselineWrites: [{ path: "/p/b.png", error: "EACCES: permission denied" }],
+      }),
+    });
+
+    await expect(flow(["run", checkoutPath], opts)).rejects.toThrow("process.exit:1");
+    const lines = logs.join("\n").split("\n");
+    expect(lines.slice(-5)).toEqual([
+      "  ✗ step 1 tap",
+      "    no element",
+      "    baseline not written: /p/b.png: EACCES: permission denied",
+      "",
+      "FAIL — 0 passed, 1 failed, 0 errored, 0 skipped",
+    ]);
+  });
+
   it.each(["--json", "--json-stream"])(
     "reports ok: false with %s when a baseline was not written",
     async (flag) => {

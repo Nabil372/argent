@@ -432,8 +432,8 @@ The outcome line of an e2e test that produced a report gives the result, the ste
 The `Failed e2e tests` section has one entry for each e2e test that failed. Each entry holds these items:
 
 - The e2e test path.
-- The first step that failed or errored, with its number. An e2e test without a report gives its outcome line instead.
-- The reason of that step, or the error message of an e2e test without a report.
+- The first step that failed or errored, with its number. An e2e test without a report gives its outcome line instead. An e2e test whose only failure is a baseline that the CLI could not write gives `baselines not written`.
+- The reason of that step, or the error message of an e2e test without a report. Then each baseline that the CLI could not write, with the path and the reason.
 - A `re-run:` command that runs only that e2e test. The command uses the same `--device`, `--platform` and `--update-baselines` options as the directory run. If the directory run has `--output`, the command writes the images of that e2e test to the same directory as the directory run.
 
 The section does not include the e2e tests that Argent skipped.
@@ -571,7 +571,7 @@ Over a link, both sources send these files with the call, and the tool-server ru
 - the snapshot baselines of each run
 - the file arguments of the `tool:` steps
 
-The client sends these files with the rules of [E2E tests over a link](#e2e-tests-over-a-link). The `project_root` argument is the project root. When a run of the call updates baselines, the client writes each new baseline into the `__baselines__/<test>/` directory of its e2e test when the run ends. When the client cannot write a baseline, the report shows `baseline not written` with the path and the reason. When the call sets `updateBaselines`, a `tool: e2e-execute` step in the e2e test also updates the baselines of its e2e test, unless the step sets `updateBaselines` itself.
+The client sends these files with the rules of [E2E tests over a link](#e2e-tests-over-a-link). The `project_root` argument is the project root. When a run of the call updates baselines, the client writes each new baseline into the `__baselines__/<test>/` directory of its e2e test when the run ends. When the client cannot write a baseline, the report names that baseline with the path and the reason, and the run fails. When the call sets `updateBaselines`, a `tool: e2e-execute` step in the e2e test also updates the baselines of its e2e test, unless the step sets `updateBaselines` itself.
 
 Before the first step, Argent checks the e2e test and each fragment and nested e2e test that the client sends, at any depth. Argent rejects these:
 

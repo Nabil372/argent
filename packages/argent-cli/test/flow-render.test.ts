@@ -421,6 +421,20 @@ describe("failure recap", () => {
     });
   });
 
+  it("names the unwritten baselines under a failing step's reason", () => {
+    const report = mkReport(
+      [
+        { index: 0, kind: "snapshot", status: "pass" },
+        { index: 1, kind: "tap", status: "fail", reason: "no element" },
+      ],
+      { baselineWrites: [{ path: "/p/b.png", error: "EACCES" }] } as never
+    );
+    expect(summarizeFailure(report)).toEqual({
+      headline: "step 2 tap",
+      detail: "no element\nbaseline not written: /p/b.png: EACCES",
+    });
+  });
+
   it("says so when a failed report has no failing step", () => {
     const report = mkReport([{ index: 0, kind: "tap", status: "skip" }], { ok: false });
     expect(summarizeFailure(report)).toEqual({ headline: "failed with no failing step" });
