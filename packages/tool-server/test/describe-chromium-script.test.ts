@@ -52,6 +52,17 @@ function defineNative(proto: object, prop: string, field: string): void {
   });
 }
 defineNative(MockNode.prototype, "childNodes", "__childNodes");
+// nodeType too, so a test can clobber an element's public nodeType. The fixtures' text,
+// CDATA and comment nodes are plain objects, which keep their own nodeType field.
+Object.defineProperty(MockNode.prototype, "nodeType", {
+  get(this: Record<string, unknown>) {
+    return this instanceof MockNode ? this.__nodeType : this.nodeType;
+  },
+  set(this: Record<string, unknown>, v: unknown) {
+    this.__nodeType = v;
+  },
+  configurable: true,
+});
 defineNative(MockElement.prototype, "tagName", "__tagName");
 defineNative(MockElement.prototype, "localName", "__localName");
 defineNative(MockElement.prototype, "namespaceURI", "__namespaceURI");
@@ -499,7 +510,7 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
   it("does not crash on an aria-labelledby target whose form clobbers childNodes", () => {
     // accessibleName resolves aria-labelledby via getElementById, then walks the target's
     // childNodes. A <form id="lbl"> with a control named "childNodes" shadows the
-    // inherited getter, so a direct read returns the control (not iterable) and throws.
+    // inherited getter, so a direct read returns the control and loses the label.
     const control = el({
       tag: "input",
       attrs: { id: "cn", name: "childNodes" },
@@ -545,12 +556,34 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     expect(findById(tree, "btn")!.label).toBe("deep");
   });
 
-  it("keeps CDATA text in an aria-labelledby target, as textContent does", () => {
+  it("keeps CDATA text and skips comments in an aria-labelledby target, as textContent does", () => {
+    // React SSR puts <!-- --> markers between text nodes.
     const label = el({ tag: "span", rect: BOX, attrs: { id: "lbl" } }) as MockElement &
       Record<string, unknown>;
     label.childNodes = [
       { nodeType: 3, nodeValue: "Save " },
+      { nodeType: 8, nodeValue: "$" },
       { nodeType: 4, nodeValue: "my" },
+      { nodeType: 3, nodeValue: " draft" },
+    ];
+    const button = el({
+      tag: "button",
+      rect: BOX,
+      attrs: { "id": "btn", "aria-labelledby": "lbl" },
+    });
+    const { tree } = run([button, label]);
+    expect(findById(tree, "btn")!.label).toBe("Save my draft");
+  });
+
+  it("reads a nested form that clobbers nodeType in an aria-labelledby target", () => {
+    const control = el({ tag: "input", attrs: { name: "nodeType" }, rect: BOX });
+    const form = Object.assign(el({ tag: "form", text: "my", rect: BOX }), { nodeType: 1 });
+    Object.defineProperty(form, "nodeType", { value: control, configurable: true });
+    const label = el({ tag: "span", rect: BOX, attrs: { id: "lbl" } }) as MockElement &
+      Record<string, unknown>;
+    label.childNodes = [
+      { nodeType: 3, nodeValue: "Save " },
+      form,
       { nodeType: 3, nodeValue: " draft" },
     ];
     const button = el({
