@@ -74,9 +74,9 @@ export function buildChromiumFillScript(text: string): string {
       return { status: "unsupported", detail: "a single-line input cannot hold a newline" };
     }
     // Typed text stops at maxlength, which the value setter ignores. A
-    // textarea stores CRLF and CR as one LF.
+    // textarea stores CRLF as one LF.
     const limited = tag === "textarea" || /^(text|search|url|tel|email|password)$/.test(type);
-    const length = tag === "textarea" ? text.replace(/\\r\\n?/g, "\\n").length : text.length;
+    const length = tag === "textarea" ? text.replace(/\\r\\n/g, "\\n").length : text.length;
     if (limited && el.maxLength >= 0 && length > el.maxLength) {
       return { status: "unsupported", detail: "the text is longer than its maxlength of " + el.maxLength };
     }
@@ -130,10 +130,15 @@ export function buildChromiumFillScript(text: string): string {
         sel.removeAllRanges();
         sel.addRange(range);
       }
-      if (text === "") {
-        if (read() !== "") doc.execCommand("delete");
-      } else {
-        doc.execCommand("insertText", false, text);
+      try {
+        if (text === "") {
+          if (read() !== "") doc.execCommand("delete");
+        } else {
+          doc.execCommand("insertText", false, text);
+        }
+      } catch (e) {
+        // An SVG document has no editing commands; a control still has its setter.
+        if (!control) throw e;
       }
     } finally {
       el.removeEventListener("input", onInput);
@@ -178,10 +183,13 @@ export async function fillChromium(
   text: string
 ): Promise<FillResult> {
   const ref = chromiumCdpRef(device);
-  const api = await registry.resolveService<ChromiumCdpApi>(ref.urn, ref.options);
   // A page under a JavaScript dialog queues every evaluation and runs it when
-  // the dialog closes. A no-op goes first, so a blocked page is sent nothing
-  // that writes.
+  // the dialog closes. Connecting only reads, and a no-op goes first, so a
+  // blocked page is sent nothing that writes.
+  const api = await withTimeoutError(
+    () => registry.resolveService<ChromiumCdpApi>(ref.urn, ref.options),
+    () => pageNotAnsweringError("fill_chromium_connect")
+  );
   await withTimeoutError(
     () => api.cdp.send("Runtime.evaluate", { expression: "0" }, PAGE_ANSWER_TIMEOUT_MS),
     () => pageNotAnsweringError("fill_chromium_page_blocked")

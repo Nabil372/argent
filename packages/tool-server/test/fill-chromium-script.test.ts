@@ -23,6 +23,8 @@ interface PageOptions {
   restore?: boolean;
   /** The browser changes inserted text, as Chromium punycodes an email input's domain. */
   rewrite?: (text: string) => string;
+  /** The edit's `input` never reaches the element, as when the page stops it in the capture phase. */
+  hideInput?: boolean;
 }
 
 /** HTML value sanitization for the input types the script probes. */
@@ -87,7 +89,7 @@ function makePage(options: PageOptions = {}): Page {
       if (command === "insertText") el[key] = options.rewrite ? options.rewrite(value!) : value;
       else if (command === "delete") el[key] = "";
       else return false;
-      for (const listener of el.listeners) listener();
+      if (!options.hideInput) for (const listener of el.listeners) listener();
       if (options.restore) setTimeout(() => (el[key] = before), 0);
       return true;
     },
@@ -230,6 +232,28 @@ describe("fill page script", () => {
     expect(input.listeners.size).toBe(0);
   });
 
+  it("keeps a rewrite whose input event the page stopped before it reached the field", async () => {
+    const page = makePage({ rewrite: (t) => t.toUpperCase(), hideInput: true });
+    const input = control(page, "INPUT");
+    page.doc.activeElement = input;
+    await expect(runScript(page, "new")).resolves.toEqual({ status: "ok", verified: false });
+    expect(input._value).toBe("NEW");
+    expect(page.events).toEqual([]);
+  });
+
+  it("falls back to the value setter in a document without editing commands, as SVG", async () => {
+    const page = makePage();
+    page.doc.execCommand = () => {
+      throw new Error("execCommand is only supported on HTML documents");
+    };
+    const input = control(page, "INPUT");
+    page.doc.activeElement = input;
+    await expect(runScript(page, "new")).resolves.toEqual({ status: "ok", verified: true });
+    expect(input._value).toBe("new");
+    expect(page.events).toEqual(["input", "change"]);
+    expect(input.listeners.size).toBe(0);
+  });
+
   it.each([
     ["an input", "INPUT", "text", "abcdef"],
     ["a textarea", "TEXTAREA", "textarea", "abcdef"],
@@ -252,11 +276,17 @@ describe("fill page script", () => {
     }
   );
 
-  it("counts a textarea's CRLF as the one line break it stores", async () => {
+  it("counts each CRLF in a textarea as the one line break it stores", async () => {
     const page = makePage();
     const area = control(page, "TEXTAREA", { maxLength: 5 });
     page.doc.activeElement = area;
-    await expect(runScript(page, "ab\r\ncd")).resolves.toMatchObject({ status: "ok" });
+    await expect(runScript(page, "a\r\nb\r\nc")).resolves.toMatchObject({ status: "ok" });
+    area._value = "old value";
+    await expect(runScript(page, "ab\r\ncde")).resolves.toEqual({
+      status: "unsupported",
+      detail: "the text is longer than its maxlength of 5",
+    });
+    expect(area._value).toBe("old value");
   });
 
   it.each([
@@ -414,6 +444,17 @@ describe("fill page script", () => {
     };
     page.doc.activeElement = editable(page);
     await expect(runScript(page, "x")).resolves.toEqual({ status: "error" });
+  });
+
+  it("answers an error for a contenteditable in a document without editing commands", async () => {
+    const page = makePage();
+    page.doc.execCommand = () => {
+      throw new Error("execCommand is only supported on HTML documents");
+    };
+    const div = editable(page);
+    page.doc.activeElement = div;
+    await expect(runScript(page, "x")).resolves.toEqual({ status: "error" });
+    expect(div.listeners.size).toBe(0);
   });
 
   it("answers no text for a password input", async () => {

@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FAILURE_CODES, FailureError, getFailureSignal, type FailureCode } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  FailureError,
+  getFailureSignal,
+  ServiceInitializationError,
+  type FailureCode,
+} from "@argent/registry";
 import type { AXFillResponse } from "../src/blueprints/ax-service";
 import type { SetTextResult } from "../src/blueprints/android-devtools";
 
@@ -55,7 +61,7 @@ interface Services {
   ax?: { fill: ReturnType<typeof vi.fn> };
   helper?: { setText: ReturnType<typeof vi.fn> } | Error;
   sim?: ReturnType<typeof simulatorServer>;
-  cdp?: { send: ReturnType<typeof vi.fn> };
+  cdp?: { send: ReturnType<typeof vi.fn> } | Error;
 }
 
 function registryWith(services: Services) {
@@ -67,7 +73,10 @@ function registryWith(services: Services) {
         return services.helper;
       }
       if (urn.startsWith("SimulatorServer:")) return services.sim?.api;
-      if (urn.startsWith("ChromiumCdp:")) return { cdp: services.cdp };
+      if (urn.startsWith("ChromiumCdp:")) {
+        if (services.cdp instanceof Error) throw services.cdp;
+        return { cdp: services.cdp };
+      }
       if (urn.startsWith("IosDeviceRunner:")) return {};
       throw new Error(`unexpected service ${urn}`);
     }),
@@ -387,6 +396,29 @@ describe("fill: Chromium", () => {
       failure_stage: "fill_chromium_timeout",
     });
     expect(err.message).toContain("may still change when the page resumes");
+  });
+
+  function connectError(code: FailureCode) {
+    return new ServiceInitializationError("ChromiumCdp:x", "connect failed", {
+      cause: cdpError(code),
+    });
+  }
+
+  it("maps a connect timeout, which wrote nothing", async () => {
+    const cdp = connectError(FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT);
+    const err = await failure({ cdp }, CHROMIUM, "hello");
+    expect(getFailureSignal(err)).toMatchObject({
+      error_code: "FILL_NOT_VERIFIED",
+      error_kind: "timeout",
+      failure_stage: "fill_chromium_connect",
+    });
+    expect(err.message).toContain("fill changed nothing");
+  });
+
+  it("passes any other connect failure through", async () => {
+    const cdp = connectError(FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED);
+    const err = await failure({ cdp }, CHROMIUM, "hello");
+    expect(getFailureSignal(err)?.error_code).toBe("DEBUGGER_CDP_NOT_CONNECTED");
   });
 
   it("passes any other CDP failure through", async () => {
