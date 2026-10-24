@@ -47,7 +47,7 @@ export const SIMCTL_LIST_TIMEOUT_MS = 10_000;
 
 interface IosSimulatorScan {
   simulators: IosSimulator[];
-  /** A set's `simctl list` was killed at its timeout, so its simulators are missing. */
+  /** Some set's `simctl list` timed out, so the list is incomplete. */
   timedOut: boolean;
 }
 
@@ -110,9 +110,8 @@ export async function listIosSimulators(): Promise<IosSimulator[]> {
 }
 
 /**
- * {@link listIosSimulators}, plus whether any set's `simctl list` timed out. It
- * does on a cold CoreSimulatorService (the first simulator call after a reboot can
- * take close to a minute), and an empty list is then wrong, not just empty.
+ * {@link listIosSimulators}, plus whether any set's `simctl list` timed out, as it
+ * does on a cold CoreSimulatorService (up to about a minute after a reboot).
  */
 export async function scanIosSimulators(): Promise<IosSimulatorScan> {
   const sets: DeviceSetPath[] = [null, ...configuredAdditionalDeviceSets()];
