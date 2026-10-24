@@ -27,17 +27,21 @@ describe("argent server logs --follow", () => {
   it("reports a `tail` that cannot be spawned and exits 1", async () => {
     const err: string[] = [];
     vi.spyOn(console, "error").mockImplementation((...args) => void err.push(args.join(" ")));
-    const exitCode = new Promise<number | undefined>((resolve) => {
-      vi.spyOn(process, "exit").mockImplementation(((code?: number) => resolve(code)) as never);
+    // Snapshot at exit: the real process.exit drops anything printed after it.
+    const exited = new Promise<{ code?: number; printed: string[] }>((resolve) => {
+      vi.spyOn(process, "exit").mockImplementation(((code?: number) =>
+        resolve({ code, printed: [...err] })) as never);
     });
     const { server } = await import("../src/server.js");
 
     await server(["logs", "-f"]);
 
-    expect(await exitCode).toBe(1);
-    expect(err).toEqual([
-      "argent server logs: cannot run `tail` to follow the log (spawn tail ENOENT). " +
-        "Run `argent server logs` without -f to print it.",
-    ]);
+    expect(await exited).toEqual({
+      code: 1,
+      printed: [
+        "argent server logs: cannot run `tail` to follow the log (spawn tail ENOENT). " +
+          "Run `argent server logs` without -f to print it.",
+      ],
+    });
   });
 });
