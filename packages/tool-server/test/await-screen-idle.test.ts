@@ -27,6 +27,7 @@ function makeSequencedAXService(responses: AXDescribeResponse[]): AXServiceApi {
     alertCheck: async () => false,
     livePanel: async () => null,
     foregroundApp: async () => ({ alertVisible: false }),
+    fill: async () => ({ focused: false, verified: false }),
     tree: async () => ({ alertVisible: false, nodes: [], truncated: false }),
     ping: async () => true,
   };
@@ -72,6 +73,20 @@ describe("await-screen-idle tool", () => {
     expect(result.waitedMs).toBeGreaterThanOrEqual(30);
     expect(result.waitedMs).toBeLessThan(2000);
     expect(result.polls).toBeGreaterThan(1);
+  });
+
+  it("settles on a degraded simulator without a note", async () => {
+    // A degraded tree is live; its boot hint does not qualify a settle.
+    const ax = { ...makeSequencedAXService([content()]), degraded: true };
+    const tool = createAwaitScreenIdleTool(iosRegistry(ax));
+
+    const result = await tool.execute(
+      {},
+      { udid: IOS_UDID, timeoutMs: 2000, pollIntervalMs: 10, minStableMs: 0 }
+    );
+
+    expect(result.settled).toBe(true);
+    expect(result.note).toBeUndefined();
   });
 
   it("does not settle while the screen stays blank (times out)", async () => {
