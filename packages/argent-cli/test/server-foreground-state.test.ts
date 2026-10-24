@@ -1,4 +1,4 @@
-import { afterAll, expect, it, vi } from "vitest";
+import { afterAll, afterEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -19,22 +19,38 @@ const { home, originalHome, originalUserProfile } = await vi.hoisted(async () =>
 const { server } = await import("../src/server.js");
 const { stateFileForBundle } = await import("@argent/tools-client");
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 afterAll(() => {
   process.env.HOME = originalHome;
   process.env.USERPROFILE = originalUserProfile;
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-it("removes the foreground state file before mirroring the child's exit code", async () => {
-  const bundlePath = path.join(home, "tool-server.cjs");
-  fs.writeFileSync(bundlePath, "setTimeout(() => process.exit(3), 500);\n");
+/**
+ * Runs foreground `server start` on a bundle with `source`, calls `whileRunning`
+ * once the state file exists, and resolves with the exit code plus the state
+ * file's contents (null when gone) captured inside process.exit: anything still
+ * pending at that point never runs.
+ */
+async function runForeground(
+  name: string,
+  source: string,
+  whileRunning: (stateFile: string) => void = () => {}
+): Promise<{ code: number | undefined; stateFile: string | null }> {
+  const bundlePath = path.join(home, `${name}.cjs`);
+  fs.writeFileSync(bundlePath, source);
   const stateFile = stateFileForBundle(bundlePath);
   vi.spyOn(console, "log").mockImplementation(() => {});
 
-  // Captured inside process.exit: anything still pending at that point never runs.
-  const exited = new Promise<{ code: number | undefined; stateFileLeft: boolean }>((resolve) => {
+  const exited = new Promise<{ code: number | undefined; stateFile: string | null }>((resolve) => {
     vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
-      resolve({ code, stateFileLeft: fs.existsSync(stateFile) });
+      resolve({
+        code,
+        stateFile: fs.existsSync(stateFile) ? fs.readFileSync(stateFile, "utf8") : null,
+      });
     }) as typeof process.exit);
   });
 
@@ -42,6 +58,46 @@ it("removes the foreground state file before mirroring the child's exit code", a
     paths: { bundlePath, simulatorServerDir: home, nativeDevtoolsDir: home },
   });
   await vi.waitFor(() => expect(fs.existsSync(stateFile)).toBe(true), { timeout: 2000 });
+  whileRunning(stateFile);
+  return exited;
+}
 
-  expect(await exited).toEqual({ code: 3, stateFileLeft: false });
+it("removes the foreground state file before mirroring the child's exit code", async () => {
+  const result = await runForeground("exits", "setTimeout(() => process.exit(3), 500);\n");
+  expect(result).toEqual({ code: 3, stateFile: null });
 });
+
+it("keeps a state file that another server wrote over ours", async () => {
+  const theirs = JSON.stringify({ pid: process.pid, port: 1, bundlePath: "x" });
+  const result = await runForeground(
+    "replaced",
+    "setTimeout(() => process.exit(3), 500);\n",
+    (stateFile) => fs.writeFileSync(stateFile, theirs)
+  );
+  expect(result).toEqual({ code: 3, stateFile: theirs });
+});
+
+it("forwards SIGHUP and removes the state file", async () => {
+  const result = await runForeground("hup", "setTimeout(() => process.exit(0), 3000);\n", () => {
+    process.emit("SIGHUP", "SIGHUP");
+  });
+  expect(result).toEqual({ code: 129, stateFile: null });
+});
+
+it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "mirrors the child's exit code when the state file cannot be removed",
+  async () => {
+    const stateDir = path.join(home, ".argent");
+    try {
+      const result = await runForeground(
+        "readonly",
+        "setTimeout(() => process.exit(3), 500);\n",
+        () => fs.chmodSync(stateDir, 0o555)
+      );
+      expect(result.code).toBe(3);
+      expect(result.stateFile).not.toBeNull();
+    } finally {
+      fs.chmodSync(stateDir, 0o755);
+    }
+  }
+);
