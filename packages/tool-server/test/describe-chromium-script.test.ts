@@ -813,8 +813,8 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     expect(findById(tree, "txt")!.label).toBe("typed text");
   });
 
-  // reference/e2e-yaml.mdx lists these as fields `'^$'` never passes on.
-  it("reads a field's aria-label, aria-labelledby or placeholder in place of its value, and an empty one's title", () => {
+  // reference/e2e-yaml.mdx documents these reads.
+  it("reads a field's aria-label, aria-labelledby or placeholder in place of its value, and an element's title", () => {
     const labelEl = el({ text: "Email", attrs: { id: "lbl" }, rect: BOX }) as MockElement &
       Record<string, unknown>;
     labelEl.__textContent = "Email";
@@ -829,6 +829,7 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
         attrs: { "id": "editor", "contenteditable": "true", "aria-label": "Compose" },
         rect: BOX,
       }),
+      el({ text: "Hello", attrs: { id: "tip", title: "Tip" }, rect: BOX }),
     ]);
     expect(findById(tree, "aria")).toMatchObject({ label: "Name" });
     expect(findById(tree, "lb")).toMatchObject({ label: "Email" });
@@ -836,6 +837,7 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
     expect(findById(tree, "ta-ph")).toMatchObject({ label: "Notes" });
     expect(findById(tree, "titled")).toMatchObject({ label: "Hint" });
     expect(findById(tree, "editor")).toMatchObject({ label: "Compose" });
+    expect(findById(tree, "tip")).toMatchObject({ label: "Tip", value: "Hello" });
     expect(JSON.stringify(tree)).not.toContain("abc");
   });
 

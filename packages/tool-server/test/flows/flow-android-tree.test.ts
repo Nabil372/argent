@@ -299,7 +299,7 @@ describe("adaptFullAndroidHierarchyToDescribeResult", () => {
     expect(evaluateCondition("text", "Row 50", feed)).toBe(false);
   });
 
-  // reference/e2e-yaml.mdx lists these as fields `'^$'` never passes on.
+  // reference/e2e-yaml.mdx documents these reads.
   it("reads an empty password, hinted or described field as text, so '^$' fails, and a described field's description before its text", () => {
     // Attributes as the helper dumps them: an empty field with a hint carries
     // the hint as its text.
