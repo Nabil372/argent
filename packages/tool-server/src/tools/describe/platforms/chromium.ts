@@ -121,8 +121,8 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
 
   // A <br> separates the words around it unless it is display:none (what a
   // display:contents <br> computes to), which leaves them joined on screen.
-  // The nodeType check comes first: the Element getters throw on a Comment. The
-  // namespace check excludes an SVG or createElementNS "BR", which renders inline.
+  // The nodeType check comes first: the Element getters throw on a Comment. An SVG
+  // br or a createElementNS "BR" fails the name/namespace check and renders inline.
   function isRenderedBr(node) {
     return (
       getNodeType.call(node) === 1 &&
@@ -146,9 +146,10 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     return s.replace(/\\s+/g, " ").trim();
   }
 
-  // An aria-labelledby target's textContent (text and CDATA), reading a rendered <br>
-  // as a space like ownText. Iterative: the target's depth has no MAX_DEPTH bound, so
-  // recursion could overflow the stack. Memoized, as many controls can share one target.
+  // An aria-labelledby target's textContent (text and CDATA), read like ownText: a
+  // rendered <br> is a space and whitespace collapses. Iterative: the target's depth has
+  // no MAX_DEPTH bound, so recursion could overflow the stack. Memoized, as many controls
+  // can share one target.
   const labelTexts = new Map();
   function labelText(root) {
     const cached = labelTexts.get(root);
@@ -167,6 +168,7 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
       else if (isRenderedBr(node)) s += " ";
       else if (type === 1) pushChildren(node);
     }
+    s = s.replace(/\\s+/g, " ");
     labelTexts.set(root, s);
     return s;
   }

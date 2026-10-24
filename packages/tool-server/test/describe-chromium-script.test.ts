@@ -34,10 +34,15 @@ class MockHTMLImageElement extends MockElement {}
 // field, so a test can shadow the *public* property (see `clobberStructural`) while the
 // prototype getter still returns the real value — exactly the real [LegacyOverrideBuiltins]
 // behaviour the fix relies on. childNodes lives on Node.prototype, tagName/children on
-// Element.prototype, matching where the script captures each getter.
+// Element.prototype, matching where the script captures each getter. Like Chrome's, an
+// Element.prototype getter throws on a receiver that is not an element (a text or
+// comment node).
 function defineNative(proto: object, prop: string, field: string): void {
   Object.defineProperty(proto, prop, {
     get(this: Record<string, unknown>) {
+      if (proto === MockElement.prototype && !(this instanceof MockElement)) {
+        throw new TypeError("Illegal invocation");
+      }
       return this[field];
     },
     set(this: Record<string, unknown>, v: unknown) {
@@ -47,7 +52,6 @@ function defineNative(proto: object, prop: string, field: string): void {
   });
 }
 defineNative(MockNode.prototype, "childNodes", "__childNodes");
-defineNative(MockNode.prototype, "textContent", "__textContent");
 defineNative(MockElement.prototype, "tagName", "__tagName");
 defineNative(MockElement.prototype, "localName", "__localName");
 defineNative(MockElement.prototype, "namespaceURI", "__namespaceURI");
@@ -141,13 +145,7 @@ function el(opts: Opts = {}): MockElement {
     // read would re-walk the control's children (duplicating the subtree). The script must
     // route every one of these through the captured Element.prototype accessor.
     const ctrl = (opts.children ?? [])[0];
-    for (const m of [
-      "getAttribute",
-      "hasAttribute",
-      "getBoundingClientRect",
-      "shadowRoot",
-      "textContent",
-    ]) {
+    for (const m of ["getAttribute", "hasAttribute", "getBoundingClientRect", "shadowRoot"]) {
       Object.defineProperty(node, m, { value: ctrl, configurable: true });
     }
   }
@@ -580,8 +578,9 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
   });
 
   it("walks an aria-labelledby target shared by many controls only once", () => {
-    const childNodesReads = (buttons: number) => {
-      const label = el({ tag: "span", text: "Shared", rect: BOX, attrs: { id: "lbl" } });
+    // An empty target too: its cached "" must count as a hit.
+    const childNodesReads = (text: string, buttons: number) => {
+      const label = el({ tag: "span", text, rect: BOX, attrs: { id: "lbl" } });
       let reads = 0;
       const kids = (label as MockElement & Record<string, unknown>).__childNodes;
       Object.defineProperty(label, "__childNodes", {
@@ -592,10 +591,42 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
         el({ tag: "button", rect: BOX, attrs: { "id": `b${i}`, "aria-labelledby": "lbl" } })
       );
       const { tree } = run([...controls, label]);
-      expect(findById(tree, `b${buttons - 1}`)!.label).toBe("Shared");
+      expect(findById(tree, `b${buttons - 1}`)!.label).toBe(text || undefined);
       return reads;
     };
-    expect(childNodesReads(5)).toBe(childNodesReads(1));
+    for (const text of ["Shared", ""]) {
+      expect(childNodesReads(text, 5)).toBe(childNodesReads(text, 1));
+    }
+  });
+
+  it("reads each aria-labelledby target as its own text", () => {
+    const one = el({ tag: "span", text: "One", rect: BOX, attrs: { id: "l1" } });
+    const two = el({ tag: "span", text: "Two", rect: BOX, attrs: { id: "l2" } });
+    const button = (id: string, labelledBy: string) =>
+      el({ tag: "button", rect: BOX, attrs: { "id": id, "aria-labelledby": labelledBy } });
+    const { tree } = run([button("b1", "l1"), button("b2", "l2"), button("b3", "l1 l2"), one, two]);
+    expect(findById(tree, "b1")!.label).toBe("One");
+    expect(findById(tree, "b2")!.label).toBe("Two");
+    expect(findById(tree, "b3")!.label).toBe("One Two");
+  });
+
+  it("collapses whitespace in an aria-labelledby target, as in own text", () => {
+    // A <br> beside a space must not leave a double space a text selector would miss,
+    // and a self-labelled button's label then equals its own text, so it is not repeated.
+    const button = el({
+      tag: "button",
+      rect: BOX,
+      attrs: { "id": "btn", "aria-labelledby": "btn" },
+    }) as MockElement & Record<string, unknown>;
+    const br = Object.assign(el({ tag: "br", rect: ZERO }), { nodeType: 1 });
+    button.childNodes = [
+      { nodeType: 3, nodeValue: "  Save as " },
+      br,
+      { nodeType: 3, nodeValue: "\n    draft  " },
+    ];
+    const node = findById(run([button]).tree, "btn")!;
+    expect(node.label).toBe("Save as draft");
+    expect(node.value).toBeUndefined();
   });
 
   it("leaves an ordinary visible element unchanged", () => {
@@ -861,7 +892,7 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
   });
 
   it("skips a comment child between own text nodes", () => {
-    // A real Element.prototype.tagName getter throws on a Comment, aborting the whole walk.
+    // Element.prototype getters throw on a Comment, which would abort the whole walk.
     const div = el({ rect: BOX, attrs: { id: "nl" } }) as MockElement & Record<string, unknown>;
     div.childNodes = [
       { nodeType: 3, nodeValue: "alpha" },
