@@ -184,8 +184,11 @@ const liveChildren = new Map<number, ChildProcess>();
 export interface ElectronLaunchSpec {
   appPath: string;
   extraArgs: string[];
-  /** Group leader of the most recent boot; see {@link killChromiumByPort}. */
-  pid: number;
+  /**
+   * Group leader of the most recent boot while it runs; see
+   * {@link killChromiumByPort}. Cleared on exit, as the pid may be recycled.
+   */
+  pid?: number;
 }
 
 /**
@@ -198,6 +201,16 @@ const launchSpecs = new Map<number, ElectronLaunchSpec>();
 /** The launch spec of the app this tool-server last booted on `port`, if any. */
 export function electronLaunchSpec(port: number): ElectronLaunchSpec | undefined {
   return launchSpecs.get(port);
+}
+
+/** Drop `port`'s launch spec, so restart-app no longer relaunches its app. */
+export function forgetElectronLaunchSpec(port: number): void {
+  launchSpecs.delete(port);
+}
+
+/** Throws the boot's own path errors without launching anything. */
+export function assertElectronAppLaunchable(appPath: string): void {
+  resolveLauncher(appPath);
 }
 
 /**
@@ -462,13 +475,14 @@ export async function bootElectronApp(options: BootElectronOptions): Promise<Ele
   // listener only clears the map entry, so a natural exit long after boot stays
   // inert; the identity check keeps a stale child's exit from evicting a newer
   // boot that reused the same fixed port.
+  const appPath = path.resolve(options.appPath);
+  const spec: ElectronLaunchSpec = { appPath, extraArgs: extra, pid: child.pid };
+  launchSpecs.set(port, spec);
   liveChildren.set(port, child);
   child.once("exit", () => {
     if (liveChildren.get(port) === child) liveChildren.delete(port);
+    spec.pid = undefined;
   });
-
-  const appPath = path.resolve(options.appPath);
-  launchSpecs.set(port, { appPath, extraArgs: extra, pid: child.pid });
 
   trackChromiumPort(port);
 

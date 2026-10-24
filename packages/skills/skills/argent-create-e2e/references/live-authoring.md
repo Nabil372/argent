@@ -194,7 +194,6 @@ Only these unrecorded insertions are allowed, at states observed live:
 
 - A planned `snapshot:` for pixel-level evidence.
 - `await: { idle: true }` after a navigation identity check.
-- The Chromium launch that packages the live boot.
 
 Keep raw forms only when conversion changes behavior. Examples include point-anchored or panning pinch, an edge swipe or one with exotic velocity control, or rotation with a tested start angle, radius, pivot, duration, or speed. Keep screenshots for human evidence. Use `snapshot:` for automated visual comparison. Read [E2E YAML](e2e-yaml.md) for syntax.
 
@@ -260,7 +259,7 @@ Resolve every hit and confirm:
 - Every fixed wait has an echo and a following hard check. Prefer a condition or `idle`.
 - No `open-url` replaces tested navigation.
 - Every snapshot is intentional, deterministic, non-mutating, and ready for reviewed baseline creation.
-- The standalone launch and real first-screen gate are present. Only Chromium permits an inserted launch.
+- The standalone launch and real first-screen gate are present.
 - Every screen change has a destination-only identity check and an `idle` readiness check. The two are repaired differently: record a missing identity check live on the restored screen, but add a missing readiness gate in YAML, because `await: { idle: true }` has no recorder form.
 - Every `hidden` check follows a `visible` check on the same stable selector and the removing action. A proven containing screen is not a substitute, because it is no evidence the selector itself ever resolved.
 

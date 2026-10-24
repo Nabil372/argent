@@ -1560,7 +1560,8 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
       // `native` id so the flow still replays elsewhere; other extra args (e.g.
       // an Android `activity`) keep the raw tool step. An empty `launchArgs` is
       // no args. On Chromium the bundleId is a tag, so the step records the
-      // relaunched app's path and args instead. `launch-app` is NOT rewritten —
+      // relaunched app's path and args instead, and a pinned replay attaches
+      // rather than relaunching (see runChromiumLaunch). `launch-app` is NOT rewritten —
       // it foregrounds without terminating.
       const strippedArgs = stripDeviceKeys(args);
       const { bundleId: _bundleId, launchArgs, ...extraLaunchArgs } = strippedArgs;

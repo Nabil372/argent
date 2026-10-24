@@ -34,14 +34,14 @@ const zodSchema = z.object({
     .min(1)
     .regex(BUNDLE_ID_PATTERN, BUNDLE_ID_MESSAGE)
     .describe(
-      "App identifier. iOS: bundle id. Android: package name.<flag:harmonyos> HarmonyOS: bundle name.</flag:harmonyos> Chromium: any tag, echoed back."
+      "App identifier. iOS: bundle id. Android: package name.<flag:harmonyos> HarmonyOS: bundle name.</flag:harmonyos> Chromium: any tag in the same alphabet (letters, digits, '.', '_' and '-'), echoed back."
     ),
   activity: z
     .string()
     .regex(ACTIVITY_PATTERN, "activity may only contain letters, digits, '.', '_', '-' and '/'")
     .optional()
     .describe(
-      "Android-only: relaunch a non-launcher Activity (e.g. `.SettingsActivity` or `com.example/com.example.SettingsActivity`). If omitted, the app's default launcher activity is used. Ignored on iOS<flag:harmonyos> / HarmonyOS</flag:harmonyos>."
+      "Android-only: relaunch a non-launcher Activity (e.g. `.SettingsActivity` or `com.example/com.example.SettingsActivity`). If omitted, the app's default launcher activity is used. Ignored on iOS / Chromium<flag:harmonyos> / HarmonyOS</flag:harmonyos>."
     ),
   launchArgs: z
     .array(z.string())
@@ -75,7 +75,7 @@ export function createRestartAppTool(registry: Registry): ToolDefinition<Params,
         `Failed to restart ${params.bundleId}: ${failureSignal.error_code}`,
     },
     description: `Terminate then relaunch an app by its bundle id (iOS, <flag:harmonyos>HarmonyOS, </flag:harmonyos>Vega) or package name (Android).
-Use when you need a clean in-memory state without a full reinstall. On Chromium it relaunches an Electron app that boot-device started, on the same port and device id; a Chromium runtime launched any other way cannot be restarted. Also refreshes the native-devtools injection before the relaunch (the iOS slice on iOS, the tvOS slice on Apple TV); on tvOS, interaction is focus-driven; use the tv-* tools rather than coordinate taps.
+Use when you need a clean in-memory state without a full reinstall. On Chromium it relaunches an Electron app that boot-device started in this tool-server session, on the same port and device id; any other Chromium runtime cannot be restarted. Also refreshes the native-devtools injection before the relaunch (the iOS slice on iOS, the tvOS slice on Apple TV); on tvOS, interaction is focus-driven; use the tv-* tools rather than coordinate taps.
 Returns { restarted, bundleId }. Fails if the app is not installed.`,
     alwaysLoad: true,
     searchHint:

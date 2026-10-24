@@ -4,7 +4,13 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FAILURE_CODES, getFailureSignal, Registry } from "@argent/registry";
+import {
+  FAILURE_CODES,
+  getFailureSignal,
+  Registry,
+  ServiceState,
+  zodObjectToJsonSchema,
+} from "@argent/registry";
 import { scopeTempHome } from "./helpers/temp-home";
 
 scopeTempHome("argent-restart-app-chromium-home-");
@@ -23,7 +29,7 @@ vi.mock("../src/utils/chromium-discovery", () => ({
   untrackChromiumPort: vi.fn(),
 }));
 
-import { bootElectronApp } from "../src/tools/devices/boot-electron";
+import { bootElectronApp, forgetElectronLaunchSpec } from "../src/tools/devices/boot-electron";
 import { createRestartAppTool } from "../src/tools/restart-app";
 import { createFlowAddStepTool } from "../src/tools/flows/flow-add-step";
 import { flowStartRecordingTool } from "../src/tools/flows/flow-start-recording";
@@ -141,6 +147,83 @@ describe("restart-app on Chromium", () => {
     await registry.invokeTool("restart-app", { udid: `chromium-cdp-${port}`, bundleId: "tag" });
 
     expect(children).toHaveLength(2);
+    // The dead leader's pid may be recycled, so its group is never signalled.
+    expect(process.kill).not.toHaveBeenCalledWith(-children[0]!.pid, expect.anything());
+  });
+
+  it("runs overlapping restarts of one port one after the other", async () => {
+    await bootElectronApp({ appPath: appDir, port });
+    const registry = registryWithRestartApp();
+    const udid = `chromium-cdp-${port}`;
+
+    await Promise.all([
+      registry.invokeTool("restart-app", { udid, bundleId: "tag" }),
+      registry.invokeTool("restart-app", { udid, bundleId: "tag" }),
+    ]);
+
+    // Each restart replaced the instance before it: one survivor, not two.
+    expect(children).toHaveLength(3);
+    expect(children[0]!.kill).toHaveBeenCalledTimes(1);
+    expect(children[1]!.kill).toHaveBeenCalledTimes(1);
+    expect(children[2]!.kill).not.toHaveBeenCalled();
+  });
+
+  it("is what flow-start-recording tells a chromium recording to start with", () => {
+    const schema = zodObjectToJsonSchema(flowStartRecordingTool.zodSchema!) as {
+      properties: { executionPrerequisite: { description: string } };
+    };
+    const description = schema.properties.executionPrerequisite.description;
+    expect(description).toContain("`launch: { chromium: <app path> }`");
+    expect(description).not.toContain("no chromium support");
+  });
+
+  it("disposes the CDP service after the kill", async () => {
+    await bootElectronApp({ appPath: appDir, port });
+    const registry = registryWithRestartApp();
+    const urn = `ChromiumCdp:chromium-cdp-${port}`;
+    vi.spyOn(registry, "getSnapshot").mockReturnValue({
+      services: new Map([[urn, { state: ServiceState.RUNNING, dependents: [] }]]),
+    } as unknown as ReturnType<Registry["getSnapshot"]>);
+    const dispose = vi.spyOn(registry, "disposeService").mockResolvedValue();
+
+    await registry.invokeTool("restart-app", { udid: `chromium-cdp-${port}`, bundleId: "tag" });
+
+    expect(dispose).toHaveBeenCalledWith(urn);
+    expect(children[0]!.kill.mock.invocationCallOrder[0]).toBeLessThan(
+      dispose.mock.invocationCallOrder[0]!
+    );
+  });
+
+  it("keeps the running app when its path can no longer be launched", async () => {
+    const gone = fs.mkdtempSync(path.join(os.tmpdir(), "argent-restart-app-chromium-gone-"));
+    fs.writeFileSync(path.join(gone, "package.json"), JSON.stringify({ main: "main.js" }));
+    await bootElectronApp({ appPath: gone, port });
+    fs.rmSync(gone, { recursive: true, force: true });
+    const registry = registryWithRestartApp();
+
+    const err = await registry
+      .invokeTool("restart-app", { udid: `chromium-cdp-${port}`, bundleId: "tag" })
+      .then(
+        () => undefined,
+        (e: unknown) => e
+      );
+
+    expect(getFailureSignal(err)?.error_code).toBe(
+      FAILURE_CODES.CHROMIUM_ELECTRON_APP_PATH_INVALID
+    );
+    expect(children[0]!.kill).not.toHaveBeenCalled();
+    expect(children).toHaveLength(1);
+  });
+
+  it("refuses a port whose launch spec was forgotten", async () => {
+    await bootElectronApp({ appPath: appDir, port });
+    forgetElectronLaunchSpec(port);
+    const registry = registryWithRestartApp();
+
+    await expect(
+      registry.invokeTool("restart-app", { udid: `chromium-cdp-${port}`, bundleId: "tag" })
+    ).rejects.toThrow(/can only relaunch/);
+    expect(children).toHaveLength(1);
   });
 
   it("refuses a Chromium runtime this tool-server did not boot", async () => {
@@ -158,8 +241,11 @@ describe("restart-app on Chromium", () => {
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
-  it("is recorded as a chromium launch of the app's path and args", async () => {
-    await bootElectronApp({ appPath: appDir, port, extraArgs: ["--feature-x"] });
+  it.each([
+    ["path and args", ["--feature-x"], () => ({ path: appDir, args: ["--feature-x"] })],
+    ["bare path", [], () => appDir],
+  ])("is recorded as a chromium launch of the app's %s", async (_name, extraArgs, expected) => {
+    await bootElectronApp({ appPath: appDir, port, extraArgs });
     const registry = registryWithRestartApp();
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-restart-app-chromium-flow-"));
     try {
@@ -181,9 +267,7 @@ describe("restart-app on Chromium", () => {
         path.join(projectRoot, ".argent", "e2e", "chromium-launch.yaml"),
         "utf8"
       );
-      expect(parseFlow(yaml).steps).toEqual([
-        { kind: "launch", app: { chromium: { path: appDir, args: ["--feature-x"] } } },
-      ]);
+      expect(parseFlow(yaml).steps).toEqual([{ kind: "launch", app: { chromium: expected() } }]);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
