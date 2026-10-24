@@ -2,7 +2,6 @@ import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import type { ToolDependency } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../contract";
 import { fetchVegaPageSource } from "../../../utils/vega-inspect";
-import { MultipleVegaDevicesError } from "../../../utils/vega-vvd";
 import { parseVegaPageSource } from "./vega/source-parser";
 
 // Runs entirely over `adb` and never touches the `vega`/`kepler` CLI, so a running
@@ -26,6 +25,7 @@ const PAGE_SOURCE_EMPTY_LENGTH = 50;
 const DISCOVERY_FAILURES = new Set<string>([
   FAILURE_CODES.VEGA_DEVICE_NOT_FOUND,
   FAILURE_CODES.VEGA_DEVICE_NOT_REGISTERED,
+  FAILURE_CODES.VEGA_MULTIPLE_DEVICES,
 ]);
 
 /**
@@ -39,7 +39,6 @@ export async function describeVega(_serial: string): Promise<DescribeTreeData> {
   try {
     xml = (await fetchVegaPageSource()).trim();
   } catch (err) {
-    if (err instanceof MultipleVegaDevicesError) throw err;
     const code = getFailureSignal(err)?.error_code;
     if (code && DISCOVERY_FAILURES.has(code)) throw err;
     return { tree: EMPTY_TREE, source: "vega-automation", hint: UNAVAILABLE_HINT };

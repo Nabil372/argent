@@ -44,4 +44,18 @@ describe("describeVega failure handling", () => {
     expect(out.tree.children).toEqual([]);
     expect(out.hint).toMatch(/relaunch the foreground app/i);
   });
+
+  it("returns the relaunch hint for a typed failure that is not a VVD discovery failure", async () => {
+    fetchVegaPageSource.mockRejectedValue(
+      new FailureError("adb forward failed", {
+        error_code: FAILURE_CODES.ANDROID_ADB_COMMAND_FAILED,
+        failure_stage: "android_adb_command",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+      })
+    );
+    const out = await describeVega("amazon-abc");
+    expect(out.tree.children).toEqual([]);
+    expect(out.hint).toMatch(/relaunch the foreground app/i);
+  });
 });
