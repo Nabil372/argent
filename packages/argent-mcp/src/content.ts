@@ -185,7 +185,16 @@ export async function screenshotDiffToMcpContent(
   }
 
   blocks.push({ type: "text" as const, text: result.summary });
-  if (typeof diffPath === "string") blocks.push({ type: "text", text: `diffPath: ${diffPath}` });
+  // The summary refers the agent to these fields by name; null ⇒ the fetch failed.
+  const paths = [
+    ["diffPath", diffPath],
+    ["contextDiffPath", contextDiffPath],
+  ] as const;
+  for (const [key, value] of paths) {
+    if (value === undefined) continue;
+    const text = `${key}: ${typeof value === "string" ? value : "(unavailable)"}`;
+    blocks.push({ type: "text", text });
+  }
   return blocks;
 }
 
