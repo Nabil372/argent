@@ -13,8 +13,9 @@ export interface DecodedRgbaImage {
   data: Buffer;
 }
 
-// Relative tolerance: uniform scalings of one framebuffer (0.3x save vs 1.0x
-// capture) match in theory but pick up rounding error from integer dimensions.
+// Uniform scalings of one framebuffer (0.3x save vs 1.0x capture) match in
+// theory, but integer rounding moves the aspect by less than 2 / shortest side.
+// This caps that bound for images under 200 px.
 const ASPECT_RATIO_TOLERANCE = 0.01;
 
 /**
