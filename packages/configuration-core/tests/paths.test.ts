@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -30,6 +30,19 @@ describe("isHomeDir", () => {
   it("compares resolved paths when neither side exists", () => {
     const missing = path.join(homeDir, "missing");
     expect(isHomeDir(missing, { homeDir: `${missing}${path.sep}` })).toBe(true);
+  });
+
+  it("compares the filesystem's canonical spelling of both sides", () => {
+    // A case-insensitive filesystem whose on-disk names are lowercase.
+    const native = vi
+      .spyOn(fs.realpathSync, "native")
+      .mockImplementation(((p: fs.PathLike) =>
+        String(p).toLowerCase()) as typeof fs.realpathSync.native);
+    try {
+      expect(isHomeDir("/Users/Foo", { homeDir: "/users/foo" })).toBe(true);
+    } finally {
+      native.mockRestore();
+    }
   });
 
   it.skipIf(!fs.existsSync(os.tmpdir().toUpperCase()))(

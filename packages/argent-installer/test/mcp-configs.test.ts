@@ -1784,6 +1784,15 @@ describe("copyRulesAndAgents", () => {
         expect(results).toContain("  Copied agents to ~/.claude/agents -> ~/.agents/agents");
       });
 
+      it("labels a global target with ~ when HOME ends in a separator", () => {
+        homedirOverride = `${homedirOverride}${path.sep}`;
+        const claudeAdapter = ALL_ADAPTERS.find((a) => a.name === "Claude Code")!;
+
+        const results = copyRulesAndAgents([claudeAdapter], tmpDir, "global", rulesDir, agentsDir);
+
+        expect(results).toContain("  Copied rules to ~/.claude/rules");
+      });
+
       it("labels a project under home with ~", () => {
         const claudeAdapter = ALL_ADAPTERS.find((a) => a.name === "Claude Code")!;
         const projectRoot = path.join(realHome, "Dev", "app");

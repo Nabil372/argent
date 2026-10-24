@@ -1683,7 +1683,7 @@ function formatCopyDestination(
 
 function formatManagedPathLabel(targetPath: string, root: string): string {
   // targetPath may be physical (from process.cwd() or realpath) while $HOME is not.
-  for (const home of [homedir(), canonicalPath(homedir())]) {
+  for (const home of [path.resolve(homedir()), canonicalPath(homedir())]) {
     if (targetPath === home || targetPath.startsWith(`${home}${path.sep}`)) {
       return `~${targetPath.slice(home.length)}`;
     }
