@@ -35,8 +35,7 @@ class MockHTMLImageElement extends MockElement {}
 // prototype getter still returns the real value — exactly the real [LegacyOverrideBuiltins]
 // behaviour the fix relies on. childNodes lives on Node.prototype, tagName/children on
 // Element.prototype, matching where the script captures each getter. Like Chrome's, an
-// Element.prototype getter throws on a receiver that is not an element (a text or
-// comment node).
+// Element.prototype getter throws on a non-element receiver (a text or comment node).
 function defineNative(proto: object, prop: string, field: string): void {
   Object.defineProperty(proto, prop, {
     get(this: Record<string, unknown>) {
