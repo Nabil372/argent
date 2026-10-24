@@ -23,16 +23,11 @@ export function deriveInvalidParams(error: ZodError, declared: Set<string>): str
 }
 
 /**
- * The deduped zod issue codes. Codes outside ZOD_ISSUE_CODES are dropped: the
- * telemetry allowlist would void the whole array for one unknown value.
+ * The deduped zod issue codes, in ZOD_ISSUE_CODES order so one set always
+ * serializes the same. Codes outside it are dropped: the telemetry allowlist
+ * would void the whole array for one unknown value.
  */
 export function deriveInvalidParamIssues(error: ZodError): ZodIssueCode[] {
-  const known = new Set<string>(ZOD_ISSUE_CODES);
-  const out: ZodIssueCode[] = [];
-  for (const issue of error.issues) {
-    if (!known.has(issue.code)) continue;
-    const code = issue.code as ZodIssueCode;
-    if (!out.includes(code)) out.push(code);
-  }
-  return out;
+  const raised = new Set<string>(error.issues.map((issue) => issue.code));
+  return ZOD_ISSUE_CODES.filter((code) => raised.has(code));
 }

@@ -113,10 +113,16 @@ describe("deriveInvalidParamIssues", () => {
     expect(deriveInvalidParamIssues(issuesFor(timeoutMs, { timeoutMs: 0 }))).toEqual(["too_small"]);
   });
 
-  it("dedupes repeats but keeps distinct codes, in first-seen order", () => {
+  it("dedupes repeats but keeps distinct codes, in one order whatever the input", () => {
     const schema = z.object({ a: z.number().max(5), b: z.number().max(5), c: z.string() });
-    const err = issuesFor(schema, { a: 9, b: 9, c: 1 });
-    expect(deriveInvalidParamIssues(err)).toEqual(["too_big", "invalid_type"]);
+    expect(deriveInvalidParamIssues(issuesFor(schema, { a: 9, b: 9, c: 1 }))).toEqual([
+      "invalid_type",
+      "too_big",
+    ]);
+    expect(deriveInvalidParamIssues(issuesFor(schema, { a: "x", b: 9, c: "ok" }))).toEqual([
+      "invalid_type",
+      "too_big",
+    ]);
   });
 
   it("reports unrecognized_keys without carrying the user-typed key names", () => {
