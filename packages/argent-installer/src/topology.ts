@@ -21,8 +21,10 @@ const TEMP_RUNNER_PATTERNS = [
   /\/dlx-\d+\//,
   // yarn 2+ dlx: <tmp>/xfs-<hex>/argent
   /\/xfs-[0-9a-f]{8,}\//,
-  // bunx: <tmp>/bunx-<uid>-<spec>/node_modules/.bin
+  // bunx up to 1.4.3, and on Windows: <tmp>/bunx-<uid>-<spec>/node_modules/.bin
   /\/bunx-\d+-/,
+  // bunx 1.4.4+: <bun install cache, else tmp>/.bunx-<uid>/<spec>/node_modules/.bin
+  /\/\.bunx-\d+\//,
 ];
 
 function isTempRunnerPath(binaryPath: string): boolean {

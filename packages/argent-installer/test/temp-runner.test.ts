@@ -43,7 +43,15 @@ const TEMP_RUNNER_BINS: Array<[string, string]> = [
   ],
   ["pnpm 8 dlx", "/home/u/.local/share/pnpm/store/v3/tmp/dlx-3943361/node_modules/.bin/argent"],
   ["yarn 4 dlx", "/tmp/xfs-fc85fa55/argent"],
-  ["bunx", "/tmp/bunx-1000-@swmansion/argent@latest/node_modules/.bin/argent"],
+  ["bunx 1.4.2", "/tmp/bunx-1000-@swmansion/argent@latest/node_modules/.bin/argent"],
+  [
+    "bunx 1.4.4",
+    "/home/u/.bun/install/cache/.bunx-1000/@swmansion/argent@latest/node_modules/.bin/argent",
+  ],
+  [
+    "bunx 1.4.4 without a usable install cache",
+    "/tmp/.bunx-1000/@swmansion/argent@latest/node_modules/.bin/argent",
+  ],
   [
     "npx on Windows",
     "C:\\Users\\u\\AppData\\Local\\npm-cache\\_npx\\0ba8f3802715c416\\node_modules\\.bin\\argent.cmd",
