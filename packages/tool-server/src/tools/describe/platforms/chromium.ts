@@ -65,6 +65,7 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   const getTagName = protoGetter(Element.prototype, "tagName");
   const getChildrenEls = protoGetter(Element.prototype, "children");
   const getShadowRoot = protoGetter(Element.prototype, "shadowRoot");
+  const getAssignedSlot = protoGetter(Element.prototype, "assignedSlot");
   const getScrollHeight = protoGetter(Element.prototype, "scrollHeight");
   const getClientHeight = protoGetter(Element.prototype, "clientHeight");
   const getScrollWidth = protoGetter(Element.prototype, "scrollWidth");
@@ -214,6 +215,10 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   // so an absolute or fixed box takes the clip in force at its containing block. Each
   // entry is the clip a child with that position gets.
   const NO_CLIP = { flow: null, abs: null, fixed: null };
+
+  // A slotted element paints where its <slot> sits in the shadow tree, so it takes the
+  // clips in force there; each host's shadow tree is walked before its light children.
+  const slotClips = new Map();
 
   // False for a pseudo-class this Chromium lacks.
   function matches(el, sel) {
@@ -494,12 +499,7 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     if (inTopLayer(el, style)) clips = NO_CLIP;
     const clip = ownClip(clips, style);
     const inner = childClips(el, style, clips, clip);
-    const childResults = [];
-    const kids = getChildrenEls.call(el);
-    for (let i = 0; i < kids.length; i++) {
-      const c = walk(kids[i], depth + 1, inPicker(el, kids[i], i) ? NO_CLIP : inner);
-      if (c) childResults.push(c);
-    }
+    if (getTagName.call(el) === "SLOT") slotClips.set(el, inner);
 
     // Pierce open shadow roots — closed roots are unreachable by design.
     // Web-components-heavy apps (VS Code, every Lit/Polymer SPA) put their
@@ -509,13 +509,26 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     // would otherwise return that control, and we'd re-walk its light-DOM children as
     // shadow content and duplicate the subtree. A real ShadowRoot is a DocumentFragment
     // (never a form), so its own .children read is safe.
+    const shadowResults = [];
     const shadow = getShadowRoot.call(el);
     if (shadow) {
       for (const child of shadow.children) {
         const c = walk(child, depth + 1, inner);
-        if (c) childResults.push(c);
+        if (c) shadowResults.push(c);
       }
     }
+
+    const childResults = [];
+    const kids = getChildrenEls.call(el);
+    for (let i = 0; i < kids.length; i++) {
+      const slot = getAssignedSlot.call(kids[i]);
+      // A slot the walk pruned paints none of its assigned nodes.
+      if (slot && !slotClips.has(slot)) continue;
+      const kidClips = inPicker(el, kids[i], i) ? NO_CLIP : slot ? slotClips.get(slot) : inner;
+      const c = walk(kids[i], depth + 1, kidClips);
+      if (c) childResults.push(c);
+    }
+    childResults.push(...shadowResults);
 
     // Same-origin iframes: pierce contentDocument if accessible. Cross-origin
     // contentDocument access throws SecurityError — swallowed silently so the

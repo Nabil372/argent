@@ -54,6 +54,7 @@ defineNative(MockNode.prototype, "textContent", "__textContent");
 defineNative(MockElement.prototype, "tagName", "__tagName");
 defineNative(MockElement.prototype, "children", "__children");
 defineNative(MockElement.prototype, "shadowRoot", "__shadowRoot");
+defineNative(MockElement.prototype, "assignedSlot", "__assignedSlot");
 // Scroll-dimension getters live on Element.prototype too; the script captures their
 // descriptor up front (so they must exist) and only reads them for overflow:auto/scroll.
 defineNative(MockElement.prototype, "scrollHeight", "__scrollHeight");
@@ -1027,6 +1028,56 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     ]);
     expect(pxFrame(tree, "shadow-in")).toEqual({ x: 1, y: 1, w: 285, h: 40 });
     expect(pxFrame(tree, "shadow-out").h).toBe(0);
+  });
+
+  // A host in a 300x100 overflow:hidden card whose shadow root wraps a <slot> in
+  // `wrapper`; `light` is assigned to that slot.
+  const slotted = (wrapper: Opts, light: MockElement[]) => {
+    const slot = el({ tag: "slot", rect: ZERO, style: { display: "contents" } });
+    for (const n of light) (n as Record<string, unknown>).assignedSlot = slot;
+    return run([
+      scroller(
+        [
+          el({
+            tag: "x-host",
+            rect: { x: 1, y: 1, w: 285, h: 20 },
+            children: light,
+            shadow: [el({ ...wrapper, children: [slot] })],
+          }),
+        ],
+        { style: { overflow: "hidden" } }
+      ),
+    ]).tree;
+  };
+
+  it("clips slotted content where its slot sits: escaping with a fixed wrapper", () => {
+    const tree = slotted({ rect: { x: 10, y: 500, w: 80, h: 20 }, style: { position: "fixed" } }, [
+      row("slotted", { x: 10, y: 500, w: 80, h: 20 }),
+    ]);
+    expect(pxFrame(tree, "slotted")).toEqual({ x: 10, y: 500, w: 80, h: 20 });
+  });
+
+  it("clips slotted content where its slot sits: inside a shadow scroller", () => {
+    const tree = slotted(
+      {
+        rect: { x: 1, y: 1, w: 200, h: 50 },
+        client: { left: 0, top: 0, width: 200, height: 50 },
+        style: { overflow: "auto" },
+      },
+      [
+        row("slot-in", { x: 1, y: 1, w: 200, h: 40 }),
+        row("slot-out", { x: 1, y: 61, w: 200, h: 40 }),
+      ]
+    );
+    expect(pxFrame(tree, "slot-in")).toEqual({ x: 1, y: 1, w: 200, h: 40 });
+    expect(pxFrame(tree, "slot-out").h).toBe(0);
+  });
+
+  it("drops slotted content whose slot is pruned", () => {
+    const tree = slotted({ rect: { x: 1, y: 1, w: 200, h: 50 }, style: { opacity: "0" } }, [
+      row("unpainted", { x: 1, y: 1, w: 200, h: 40 }),
+    ]);
+    expect(findById(tree, "unpainted")).toBeNull();
   });
 
   it("clips an absolute box only when the clipper is its containing block or inside it", () => {
