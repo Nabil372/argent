@@ -109,7 +109,10 @@ describe("resolveFileInputs — tar-upload kind", () => {
         { appPath: wire({ path: appDir, size: st.size, mtimeMs: 0 }) },
         () => undefined
       )
-    ).rejects.toThrow(/no upload was provided\. Update argent/);
+    ).rejects.toThrow(
+      `Path "${appDir}" does not exist on the tool-server host and no upload was provided. ` +
+        `Update argent to a version that supports uploads for remote sessions.`
+    );
   });
 
   it("resolves a file in place when it exists on this host with matching stat", async () => {

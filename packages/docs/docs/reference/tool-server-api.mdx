@@ -249,7 +249,7 @@ The `project_root` input of `e2e-add-step` has the kind `probe` and carries `"co
 
 The recording file is `<project_root>/.argent/e2e/<name>.yaml`, with the `project_root` and the `name` of the call. A recording that the client keeps is in `<project_root>/.argent/flows/<name>.yaml` when the client does not send the [`x-argent-e2e-dir` header](#the-x-argent-e2e-dir-header). The [client policy](#client-policy) applies, with the recording file in place of the e2e test file.
 
-The run of a recorded `e2e-execute` step updates baselines only when the step sets `updateBaselines: true`. The result of `e2e-add-step` then has a `baselineWrites` list, as the result of a run. A step that reads no file sends an empty `members` list. The call is still a stream, as [The call](#the-call) describes. A call without a valid `name` or with `args` that are not the JSON text of an object also sends an empty list.
+The run of a recorded `e2e-execute` step updates baselines only when the step sets `updateBaselines: true`. The result of `e2e-add-step` then has a `baselineWrites` list, as the result of a run. A step that reads no file sends an empty `members` list. The call is still a stream, as [The call](#the-call) describes. A call without a valid `name`, with a `..` segment in `project_root`, or with `args` that are not the JSON text of an object also sends an empty list.
 
 ## The `x-argent-e2e-dir` header
 
