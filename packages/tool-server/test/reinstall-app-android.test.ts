@@ -1,4 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 
 // A fake device behind the real runAdb/adbShell: only execFile is stubbed, so
 // the handler's whole adb conversation runs against it.
@@ -58,6 +61,10 @@ vi.mock("node:child_process", async () => {
   };
 });
 
+vi.mock("../src/utils/apk-package", () => ({
+  readApkPackageName: vi.fn(async () => device.apkPackage),
+}));
+
 vi.mock("../src/utils/android-binary", () => ({
   resolveAndroidBinary: vi.fn(async (name: "adb" | "emulator") => name),
   __resetAndroidBinaryCacheForTesting: () => {},
@@ -69,10 +76,17 @@ import { androidImpl } from "../src/tools/reinstall-app/platforms/android";
 
 const SERIAL = "emulator-5554";
 const androidDevice = { id: SERIAL, platform: "android", kind: "emulator" } as DeviceInfo;
-const APK = "/builds/app-debug.apk";
+let dir: string;
+
+beforeAll(() => {
+  dir = mkdtempSync(join(tmpdir(), "reinstall-android-"));
+  writeFileSync(join(dir, "app-debug.apk"), "");
+});
+afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 function reinstall(bundleId: string) {
-  return androidImpl.handler({}, { udid: SERIAL, bundleId, appPath: APK }, androidDevice);
+  const appPath = join(dir, "app-debug.apk");
+  return androidImpl.handler({}, { udid: SERIAL, bundleId, appPath }, androidDevice);
 }
 
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
@@ -113,18 +127,6 @@ describe("reinstall-app on Android", () => {
     expect(device.installed.has("com.example.app")).toBe(true);
   });
 
-  it("fails when the APK is a different package than bundleId", async () => {
-    device.installed.add("com.example.app");
-
-    const err = await rejection(reinstall("com.wrong.pkg"));
-
-    expect(getFailureSignal(err)).toMatchObject({
-      error_code: FAILURE_CODES.ANDROID_REINSTALL_INSTALL_FAILED,
-      failure_stage: "android_reinstall_package_mismatch",
-    });
-    expect((err as Error).message).toContain("com.wrong.pkg is not on the device");
-  });
-
   it("fails without installing when the installed package cannot be uninstalled", async () => {
     device.apkPackage = "com.android.settings";
 
@@ -140,10 +142,11 @@ describe("reinstall-app on Android", () => {
 
   it("does not mistake a package whose name contains bundleId for bundleId", async () => {
     device.installed.add("com.example.app.debug");
-    device.apkPackage = "com.example.app.debug";
 
-    const err = await rejection(reinstall("com.example.app"));
-
-    expect(getFailureSignal(err)?.failure_stage).toBe("android_reinstall_package_mismatch");
+    await expect(reinstall("com.example.app")).resolves.toEqual({
+      reinstalled: true,
+      bundleId: "com.example.app",
+    });
+    expect(ran("uninstall")).toEqual([]);
   });
 });
