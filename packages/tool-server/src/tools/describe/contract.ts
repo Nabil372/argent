@@ -27,6 +27,9 @@ export interface DescribeNode {
   // A scroll container's content window: `frame` less borders and scrollbars,
   // where the source measures it (Chromium). Its content is clipped to this.
   clipFrame?: DescribeFrame;
+  // Where an ancestor's clip cuts `frame` (Chromium): that clip's window along
+  // each axis it cuts, the whole screen along the other.
+  clipBounds?: DescribeFrame;
   checkable?: boolean;
   checked?: boolean;
   disabled?: boolean;
@@ -53,6 +56,7 @@ export const describeNodeSchema: z.ZodType<DescribeNode> = z.lazy(() =>
       longClickable: z.boolean().optional(),
       scrollable: z.boolean().optional(),
       clipFrame: describeFrameSchema.optional(),
+      clipBounds: describeFrameSchema.optional(),
       checkable: z.boolean().optional(),
       checked: z.boolean().optional(),
       disabled: z.boolean().optional(),

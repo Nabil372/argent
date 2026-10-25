@@ -670,34 +670,6 @@ function anchorScrollFrames(tree: DescribeNode, anchor: { x: number; y: number }
   return frames;
 }
 
-/**
- * The smallest content window (`clipFrame`) of another scroll container holding
- * `target`'s frame. A target scrolled without `within` is revealed into it, and a
- * partly revealed target's frame ends flush at its edge rather than the screen's.
- */
-function enclosingClipFrame(tree: DescribeNode, target: DescribeNode): DescribeFrame | undefined {
-  const { frame } = target;
-  let best: DescribeFrame | undefined;
-  const walk = (node: DescribeNode): void => {
-    const c = node.clipFrame;
-    if (
-      c &&
-      node !== target &&
-      isVisible(node) &&
-      frame.x >= c.x - EDGE_EPS &&
-      frame.y >= c.y - EDGE_EPS &&
-      frame.x + frame.width <= c.x + c.width + EDGE_EPS &&
-      frame.y + frame.height <= c.y + c.height + EDGE_EPS &&
-      (!best || c.width * c.height < best.width * best.height)
-    ) {
-      best = c;
-    }
-    for (const child of node.children) walk(child);
-  };
-  walk(tree);
-  return best;
-}
-
 function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[] {
   if (node.focused) acc.push(node);
   for (const child of node.children) collectFocused(child, acc);
@@ -855,22 +827,27 @@ async function scrollToVisible(
     const axisDirection = nativeDirection(direction, orientation);
 
     // Anchor the gesture inside the container (so the right nested scroller
-    // moves), or over the whole screen when none is named. The axis check
-    // measures the target against the window the container clips its content
-    // to, or against its frame where the source does not report one. With no
-    // container named, that window is the innermost scroller holding the target.
+    // moves). With none named, a target an ancestor's clip cuts (`clipBounds`)
+    // anchors in that clip along the axis and on the target across it, so
+    // inside its scroller even when the tree has no node for it; any other
+    // gesture spans the whole screen. The axis check measures the target
+    // against the window that cuts it, else the one the container clips its
+    // content to, else the container's frame.
     const container = within ? flowSelectorToNode(tree, within, orientation) : undefined;
-    const region = within ? container?.frame : FULL_SCREEN;
-    if (!region) {
-      return { reason: `scroll container ${describeSelector(within!)} is not visible` };
+    if (within && !container) {
+      return { reason: `scroll container ${describeSelector(within)} is not visible` };
     }
-
     const targetNode = flowSelectorToNode(tree, target, orientation);
     const frame = targetNode?.frame;
-    const clip = container
-      ? (container.clipFrame ?? region)
-      : ((targetNode && enclosingClipFrame(tree, targetNode)) ?? region);
-    if (frame && axisFullyInside(frame, axisDirection, clip)) {
+    const cut = frame && targetNode.clipBounds;
+    const region =
+      container?.frame ??
+      (cut
+        ? axisDirection === "up" || axisDirection === "down"
+          ? { x: frame.x, y: cut.y, width: frame.width, height: cut.height }
+          : { x: cut.x, y: frame.y, width: cut.width, height: frame.height }
+        : FULL_SCREEN);
+    if (frame && axisFullyInside(frame, axisDirection, cut ?? container?.clipFrame ?? region)) {
       return { frame, ...warnedBy(warning) };
     }
 
@@ -878,8 +855,8 @@ async function scrollToVisible(
     // outside it (a spinner, a ticking clock) would keep a wider fingerprint
     // changing on every read, so a container that stopped moving would never
     // read as "end of scroll" and the loop would burn all its iterations. The
-    // scope is the `within` region when one is named, otherwise the union of the
-    // visible scroll containers under the gesture anchor (not the innermost; see
+    // scope is the gesture's region when it is a container or a clip, otherwise
+    // the union of the visible scroll containers under the gesture anchor (not the innermost; see
     // anchorScrollFrames). Only when the tree surfaces none there does the scope
     // stay the whole screen, where a screen-level animator can still mask
     // end-of-scroll and the loop falls back to the iteration cap. Text stays in
@@ -887,7 +864,7 @@ async function scrollToVisible(
     // content, so structure alone would misread real progress as a stuck scroll
     // — which leaves an animating node INSIDE the scrolled content a known
     // limitation.
-    const scope = within ? [region] : anchorScrollFrames(tree, getDescribeTapPoint(region));
+    const scope = within || cut ? [region] : anchorScrollFrames(tree, getDescribeTapPoint(region));
     if (scope.length === 0) scope.push(FULL_SCREEN);
     const fp = treeFingerprint(tree, (node) => scope.some((r) => framesOverlap(node.frame, r)));
     if (prevFp !== undefined && fp === prevFp) {

@@ -234,7 +234,8 @@ function inputEl(opts: Opts & { type?: string; value?: string; placeholder?: str
 function run(
   rootChildren: MockElement[],
   body: MockElement = el({ tag: "body", rect: { x: 0, y: 0, w: W, h: H } }),
-  rootStyle: Record<string, string> = {}
+  rootStyle: Record<string, string> = {},
+  compatMode = "CSS1Compat"
 ): { tree: unknown; truncated: boolean } {
   const root = el({
     tag: "html",
@@ -263,6 +264,7 @@ function run(
   };
   g.document = {
     documentElement: root,
+    compatMode,
     // Resolve aria-labelledby targets by walking the mock tree's backing __children
     // (the real children, unaffected by any structural clobber) for a matching id.
     getElementById: (id: string) => {
@@ -961,10 +963,14 @@ describe("DESCRIBE_DOM_SCRIPT visibility rules", () => {
 });
 
 // Frame in mock px (W = H = 1000), rounded so float noise never decides an assertion.
-function pxFrame(tree: unknown, id: string): { x: number; y: number; w: number; h: number } {
+function pxFrame(
+  tree: unknown,
+  id: string,
+  key: "frame" | "clipBounds" = "frame"
+): { x: number; y: number; w: number; h: number } {
   const node = findById(tree, id);
   if (!node) throw new Error(`no node identified ${id}`);
-  const f = node.frame as { x: number; y: number; width: number; height: number };
+  const f = node[key] as { x: number; y: number; width: number; height: number };
   const r = (v: number) => Math.round(v * 1e3 * 1e3) / 1e3;
   return { x: r(f.x), y: r(f.y), w: r(f.width), h: r(f.height) };
 }
@@ -998,6 +1004,10 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "in")).toEqual({ x: 1, y: 1, w: 285, h: 40 });
     expect(pxFrame(tree, "part")).toEqual({ x: 1, y: 81, w: 285, h: 18 });
     expect(pxFrame(tree, "out").h).toBe(0);
+    // A cut row carries the clip window along the axis it is cut on.
+    expect(findById(tree, "in")!.clipBounds).toBeUndefined();
+    expect(findById(tree, "out")!.clipBounds).toBeUndefined();
+    expect(pxFrame(tree, "part", "clipBounds")).toEqual({ x: 0, y: 1, w: 1000, h: 98 });
     // The container's own frame is its border box, not its clip.
     expect(pxFrame(tree, "sc")).toEqual({ x: 0, y: 0, w: 300, h: 100 });
   });
@@ -1005,6 +1015,7 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
   it("clips by the padding box, so a row under the scrollbar is cut there", () => {
     const { tree } = run([scroller([row("wide", { x: 1, y: 1, w: 400, h: 20 })])]);
     expect(pxFrame(tree, "wide")).toEqual({ x: 1, y: 1, w: 285, h: 20 });
+    expect(pxFrame(tree, "wide", "clipBounds")).toEqual({ x: 1, y: 0, w: 285, h: 1000 });
   });
 
   it("intersects nested clips", () => {
@@ -1068,6 +1079,8 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
   const slotted = (wrapper: Opts, light: MockElement[]) => {
     const slot = el({ tag: "slot", rect: ZERO, style: { display: "contents" } });
     for (const n of light) (n as Record<string, unknown>).assignedSlot = slot;
+    const shadowWrapper = el({ ...wrapper, children: [slot] });
+    (slot as Record<string, unknown>).parentNode = shadowWrapper;
     return run([
       scroller(
         [
@@ -1075,7 +1088,7 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
             tag: "x-host",
             rect: { x: 1, y: 1, w: 285, h: 20 },
             children: light,
-            shadow: [el({ ...wrapper, children: [slot] })],
+            shadow: [shadowWrapper],
           }),
         ],
         { style: { overflow: "hidden" } }
@@ -1106,11 +1119,56 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "slot-out").h).toBe(0);
   });
 
+  it("keeps slotted content whose slot lies past the depth cap under its host's clips", () => {
+    let deep = el({ tag: "slot", rect: ZERO, style: { display: "contents" } });
+    const slot = deep;
+    for (let i = 0; i < 70; i++) {
+      const parent = el({ rect: { x: 1, y: 1, w: 285, h: 20 }, children: [deep] });
+      (deep as Record<string, unknown>).parentNode = parent;
+      deep = parent;
+    }
+    const kept = row("kept", { x: 1, y: 1, w: 200, h: 20 });
+    const cut = row("cut", { x: 1, y: 150, w: 200, h: 20 });
+    for (const n of [kept, cut]) (n as Record<string, unknown>).assignedSlot = slot;
+    const { tree } = run([
+      scroller(
+        [
+          el({
+            tag: "x-host",
+            rect: { x: 1, y: 1, w: 285, h: 20 },
+            children: [kept, cut],
+            shadow: [deep],
+          }),
+        ],
+        { style: { overflow: "hidden" } }
+      ),
+    ]);
+    expect(pxFrame(tree, "kept")).toEqual({ x: 1, y: 1, w: 200, h: 20 });
+    expect(pxFrame(tree, "cut").h).toBe(0);
+  });
+
   it("drops slotted content whose slot is pruned", () => {
     const tree = slotted({ rect: { x: 1, y: 1, w: 200, h: 50 }, style: { opacity: "0" } }, [
       row("unpainted", { x: 1, y: 1, w: 200, h: 40 }),
     ]);
     expect(findById(tree, "unpainted")).toBeNull();
+  });
+
+  it("starts an iframe's document from no clip, its rects being in its own viewport", () => {
+    const inner = el({
+      tag: "html",
+      rect: { x: 0, y: 0, w: 285, h: 500 },
+      children: [
+        el({
+          tag: "body",
+          rect: { x: 0, y: 0, w: 285, h: 500 },
+          children: [row("inside", { x: 1, y: 150, w: 100, h: 20 })],
+        }),
+      ],
+    });
+    const iframe = el({ tag: "iframe", rect: { x: 1, y: 1, w: 285, h: 500 }, iframeDoc: inner });
+    const { tree } = run([scroller([iframe], { style: { overflow: "hidden" } })]);
+    expect(pxFrame(tree, "inside")).toEqual({ x: 1, y: 150, w: 100, h: 20 });
   });
 
   it("clips an absolute box only when the clipper is its containing block or inside it", () => {
@@ -1131,6 +1189,7 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(card({}), "abs")).toEqual({ x: 10, y: 150, w: 80, h: 20 });
     // The clipper itself is positioned, so it contains and clips the box.
     expect(pxFrame(card({ position: "relative" }), "abs").h).toBe(0);
+    expect(pxFrame(card({ position: "sticky" }), "abs").h).toBe(0);
     // A positioned wrapper inside the clipper contains it, so the clip applies.
     const wrapped = card({}, [
       el({
@@ -1161,6 +1220,8 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
       { willChange: "translate" },
       { willChange: "contain" },
       { willChange: "filter" },
+      { willChange: "backdrop-filter" },
+      { willChange: "transform-style" },
     ];
     for (const style of containingBlocks) {
       const contained = run([scroller([fixed()], { style: { overflow: "hidden", ...style } })]);
@@ -1172,7 +1233,9 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
         "fixed"
       );
     expect(hinted("opacity, contain").h).toBe(0);
-    expect(hinted("contain-intrinsic-size")).toEqual({ x: 10, y: 500, w: 80, h: 20 });
+    for (const willChange of ["contain-intrinsic-size", "transform-origin", "perspective-origin"]) {
+      expect(hinted(willChange), willChange).toEqual({ x: 10, y: 500, w: 80, h: 20 });
+    }
   });
 
   it("ignores transforms on inline boxes and containment on them and on table rows", () => {
@@ -1322,6 +1385,18 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
         { x: 60, y: 60, w: 20, h: 20 }
       )
     ).toEqual({ x: 71, y: 71, w: 9, h: 9 });
+    // Each edge scales by its own axis: 1x across (clip at 70), 2x down (clip at 40).
+    expect(
+      margin(
+        { overflow: "clip", overflowClipMargin: "30px" },
+        {
+          rect: { x: 100, y: 100, w: 300, h: 200 },
+          client: { left: 0, top: 0, width: 300, height: 100 },
+          offset: { width: 300, height: 100 },
+        },
+        { x: 60, y: 30, w: 20, h: 20 }
+      )
+    ).toEqual({ x: 70, y: 40, w: 10, h: 10 });
   });
 
   it("clips only the axes whose overflow is not visible", () => {
@@ -1341,6 +1416,7 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
   it("clips under paint containment with overflow visible", () => {
     const contained: Record<string, string>[] = [
       { contain: "paint" },
+      { contain: "strict" },
       { contentVisibility: "auto" },
       { contentVisibility: "hidden" },
     ];
@@ -1396,26 +1472,70 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "far").h).toBe(0);
   });
 
+  it("treats a paint-contained body as a clip", () => {
+    const body = el({
+      tag: "body",
+      rect: { x: 0, y: 0, w: W, h: 50 },
+      client: { left: 0, top: 0, width: W, height: 50 },
+      style: { overflow: "hidden", contain: "paint" },
+    });
+    const { tree } = run([row("far", { x: 0, y: 900, w: 100, h: 20 })], body);
+    expect(pxFrame(tree, "far").h).toBe(0);
+  });
+
+  it("never treats a quirks-mode body as a clip (its client box is the viewport's)", () => {
+    const clippers: Record<string, string>[] = [{ overflow: "clip" }, { contain: "paint" }];
+    for (const style of clippers) {
+      const body = el({
+        tag: "body",
+        rect: { x: 0, y: -1500, w: W, h: 3000 },
+        client: { left: 0, top: 0, width: W, height: H },
+        style,
+      });
+      const { tree } = run(
+        [row("deep", { x: 0, y: 100, w: 100, h: 20 })],
+        body,
+        { overflowY: "scroll" },
+        "BackCompat"
+      );
+      expect(pxFrame(tree, "deep"), JSON.stringify(style)).toEqual({ x: 0, y: 100, w: 100, h: 20 });
+    }
+  });
+
   it("does not clip a fieldset's rendered legend by the fieldset's overflow", () => {
     const legend = (id: string, y: number, style: Record<string, string> = {}) =>
       el({ tag: "legend", attrs: { id }, rect: { x: 20, y, w: 60, h: 10 }, style });
+    const rendered = legend("rendered", 3);
+    (rendered as Record<string, unknown>).children = [
+      row("pinned", { x: 20, y: 500, w: 60, h: 10 }, { position: "fixed" }),
+    ];
     const { tree } = run([
-      el({
-        tag: "fieldset",
-        rect: { x: 0, y: 0, w: 300, h: 100 },
-        client: { left: 16, top: 16, width: 268, height: 68 },
-        offset: { width: 300, height: 100 },
-        style: { overflow: "hidden" },
-        children: [
-          legend("floated", 2, { cssFloat: "left" }),
-          legend("rendered", 3),
-          legend("second", 4),
-          row("content", { x: 20, y: 5, w: 60, h: 10 }),
+      scroller(
+        [
+          el({
+            tag: "fieldset",
+            rect: { x: 0, y: 0, w: 300, h: 100 },
+            client: { left: 16, top: 16, width: 268, height: 68 },
+            offset: { width: 300, height: 100 },
+            style: { overflow: "hidden", position: "relative" },
+            children: [
+              legend("floated", 2, { cssFloat: "left" }),
+              legend("placed", 2, { position: "absolute" }),
+              rendered,
+              legend("second", 4),
+              row("content", { x: 20, y: 5, w: 60, h: 10 }),
+            ],
+          }),
         ],
-      }),
+        { style: { overflow: "hidden" } }
+      ),
     ]);
     expect(pxFrame(tree, "rendered")).toEqual({ x: 20, y: 3, w: 60, h: 10 });
-    for (const id of ["floated", "second", "content"]) expect(pxFrame(tree, id).h, id).toBe(0);
+    // A fixed box in the legend escapes the clips that do not contain it.
+    expect(pxFrame(tree, "pinned")).toEqual({ x: 20, y: 500, w: 60, h: 10 });
+    for (const id of ["floated", "placed", "second", "content"]) {
+      expect(pxFrame(tree, id).h, id).toBe(0);
+    }
   });
 
   it("scales the padding box by the clipper's transform", () => {
@@ -1469,21 +1589,77 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "padding").w).toBe(0);
   });
 
-  it("clips to a <foreignObject>'s rect", () => {
+  it("scales an outer <svg>'s content-box inset by its transform", () => {
+    // Laid out 100x40 plus 25px of border and padding a side, rendered at 2x.
     const { tree } = run([
       el({
-        svg: true,
-        tag: "foreignObject",
-        rect: { x: 0, y: 0, w: 300, h: 100 },
-        style: { display: "inline", overflow: "hidden" },
-        children: [
-          row("in", { x: 10, y: 10, w: 100, h: 20 }),
-          row("out", { x: 10, y: 150, w: 100, h: 20 }),
-        ],
+        outerSvg: true,
+        tag: "svg",
+        rect: { x: 0, y: 0, w: 300, h: 180 },
+        style: {
+          overflow: "hidden",
+          width: "100px",
+          height: "40px",
+          paddingLeft: "20px",
+          paddingTop: "20px",
+          paddingRight: "20px",
+          paddingBottom: "20px",
+          borderLeftWidth: "5px",
+          borderTopWidth: "5px",
+          borderRightWidth: "5px",
+          borderBottomWidth: "5px",
+        },
+        children: [row("edge", { x: 240, y: 60, w: 20, h: 10 })],
       }),
     ]);
+    expect(pxFrame(tree, "edge")).toEqual({ x: 240, y: 60, w: 10, h: 10 });
+  });
+
+  it("measures an outer <svg>'s clip margin from its content box", () => {
+    const { tree } = run([
+      el({
+        outerSvg: true,
+        tag: "svg",
+        rect: { x: 0, y: 0, w: 150, h: 90 },
+        style: {
+          overflow: "clip",
+          overflowClipMargin: "content-box",
+          width: "100px",
+          height: "40px",
+          paddingLeft: "20px",
+          paddingTop: "20px",
+          paddingRight: "20px",
+          paddingBottom: "20px",
+          borderLeftWidth: "5px",
+          borderTopWidth: "5px",
+          borderRightWidth: "5px",
+          borderBottomWidth: "5px",
+        },
+        children: [row("edge", { x: 120, y: 30, w: 10, h: 10 })],
+      }),
+    ]);
+    expect(pxFrame(tree, "edge")).toEqual({ x: 120, y: 30, w: 5, h: 10 });
+  });
+
+  it("clips to a <foreignObject>'s rect", () => {
+    // SVG tag names keep their case.
+    const fo = el({
+      svg: true,
+      tag: "foreignObject",
+      rect: { x: 0, y: 0, w: 300, h: 100 },
+      style: { display: "inline", overflow: "hidden" },
+      children: [
+        row("in", { x: 10, y: 10, w: 100, h: 20 }),
+        row("out", { x: 10, y: 150, w: 100, h: 20 }),
+        row("fixed", { x: 10, y: 200, w: 100, h: 20 }, { position: "fixed" }),
+        row("abs", { x: 10, y: 260, w: 100, h: 20 }, { position: "absolute" }),
+      ],
+    });
+    (fo as Record<string, unknown>).tagName = "foreignObject";
+    const { tree } = run([fo]);
     expect(pxFrame(tree, "in")).toEqual({ x: 10, y: 10, w: 100, h: 20 });
-    expect(pxFrame(tree, "out").h).toBe(0);
+    // It is the containing block of its positioned content too.
+    for (const id of ["out", "fixed", "abs"]) expect(pxFrame(tree, id).h, id).toBe(0);
   });
 
   it("clips to a nested <svg>'s viewport, not its rect (the content's bbox)", () => {

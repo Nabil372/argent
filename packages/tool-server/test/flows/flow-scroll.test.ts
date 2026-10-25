@@ -349,12 +349,10 @@ describe("scroll-to directive", () => {
     expect(swipes).toHaveLength(1);
   });
 
-  // Without `within`, a target is measured against the innermost scroller holding
-  // it: a row cut flush at that scroller's clip edge is only partly revealed.
-  async function scrollWithoutWithin(
+  async function scrollTo(
     name: string,
     nodes: (scrolled: boolean) => DescribeNode[],
-    target: string
+    step: Record<string, unknown>
   ): Promise<SwipeCall[]> {
     let scrolled = false;
     currentTree = () => screen(nodes(scrolled));
@@ -364,7 +362,7 @@ describe("scroll-to directive", () => {
     });
     await writeFlow(name, {
       executionPrerequisite: "",
-      steps: [{ kind: "scroll-to", target: { identifier: target }, direction: "down" }],
+      steps: [{ kind: "scroll-to", direction: "down", ...step } as never],
     });
     const result = asRun(
       await createRunFlowTool(registry).execute({}, { name, project_root: tmpDir, device: DEVICE })
@@ -373,48 +371,107 @@ describe("scroll-to directive", () => {
     return swipes;
   }
 
-  it("measures a target without `within` against the clip window of the scroller holding it", async () => {
-    const swipes = await scrollWithoutWithin(
-      "enclosing-clip",
+  const list = n({
+    identifier: "list",
+    scrollable: true,
+    frame: { x: 0, y: 0.1, width: 1, height: 0.8 },
+    clipFrame: { x: 0, y: 0.1, width: 1, height: 0.7 },
+  });
+
+  // A row cut flush at the bottom (0.8) of a list window spanning 0.4-0.8 on
+  // the right half, well inside the screen; one increment reveals it.
+  const cutRow = (scrolled: boolean) =>
+    n({
+      identifier: "row",
+      frame: scrolled
+        ? { x: 0.6, y: 0.5, width: 0.3, height: 0.1 }
+        : { x: 0.6, y: 0.75, width: 0.3, height: 0.05 },
+      clipBounds: scrolled ? undefined : { x: 0, y: 0.4, width: 1, height: 0.4 },
+    });
+
+  it("scrolls a target its scroller cuts inside that scroller's clip window", async () => {
+    // The scroller has no identifier, so the flow tree holds no node for it.
+    const swipes = await scrollTo("cut-row", (scrolled) => [cutRow(scrolled)], {
+      target: { identifier: "row" },
+    });
+    expect(swipes).toHaveLength(1);
+    // At the target across the axis: the window spans the screen there.
+    expect(swipes[0].fromX).toBeCloseTo(0.75);
+    expect(swipes[0].fromY).toBeCloseTo(0.6);
+    expect(swipes[0].fromY - swipes[0].toY).toBeCloseTo(0.2);
+  });
+
+  it("accepts a whole target flush with its scroller's far edge without scrolling", async () => {
+    const swipes = await scrollTo(
+      "flush-row",
+      () => [list, n({ identifier: "row", frame: { x: 0.1, y: 0.7, width: 0.8, height: 0.1 } })],
+      { target: { identifier: "row" } }
+    );
+    expect(swipes).toHaveLength(0);
+  });
+
+  it("ends the scroll once the clip cutting a target stops moving, whatever moves outside it", async () => {
+    // The list is at its end, so the row stays cut, while the gesture moves the
+    // page's top bar.
+    const swipes = await scrollTo(
+      "stuck-cut",
       (scrolled) => [
         n({
-          identifier: "list",
-          scrollable: true,
-          frame: { x: 0, y: 0.1, width: 1, height: 0.8 },
-          clipFrame: { x: 0, y: 0.1, width: 1, height: 0.7 },
+          identifier: "bar",
+          label: scrolled ? "moved" : "still",
+          frame: { x: 0, y: 0, width: 1, height: 0.1 },
         }),
-        n({
-          identifier: "row",
-          frame: scrolled
-            ? { x: 0.1, y: 0.4, width: 0.8, height: 0.1 }
-            : { x: 0.1, y: 0.75, width: 0.8, height: 0.05 },
-        }),
+        cutRow(false),
       ],
-      "row"
+      { target: { identifier: "row" } }
     );
     expect(swipes).toHaveLength(1);
   });
 
-  it("measures a scroller target against its enclosing scroller, not its own clip window", async () => {
-    const swipes = await scrollWithoutWithin(
-      "own-clip",
-      (scrolled) => {
-        const frame = scrolled
-          ? { x: 0.1, y: 0.4, width: 0.8, height: 0.2 }
-          : { x: 0.1, y: 0.7, width: 0.8, height: 0.1 };
-        return [
-          n({
-            identifier: "list",
-            scrollable: true,
-            frame: { x: 0, y: 0.1, width: 1, height: 0.8 },
-            clipFrame: { x: 0, y: 0.1, width: 1, height: 0.7 },
-          }),
-          n({ identifier: "inner", scrollable: true, frame, clipFrame: frame }),
-        ];
-      },
-      "inner"
+  it("anchors a horizontal scroll in the cutting clip along the axis, on the target across it", async () => {
+    const swipes = await scrollTo(
+      "cut-left",
+      (scrolled) => [
+        n({
+          identifier: "card",
+          frame: scrolled
+            ? { x: 0.4, y: 0.3, width: 0.2, height: 0.1 }
+            : { x: 0.2, y: 0.3, width: 0.05, height: 0.1 },
+          clipBounds: scrolled ? undefined : { x: 0.2, y: 0, width: 0.6, height: 1 },
+        }),
+      ],
+      { target: { identifier: "card" }, direction: "left" }
     );
     expect(swipes).toHaveLength(1);
+    expect(swipes[0].fromX).toBeCloseTo(0.5);
+    expect(swipes[0].fromY).toBeCloseTo(0.35);
+  });
+
+  it("scrolls a `within` target until the clip cutting it no longer does, in any container", async () => {
+    // A padded panel round the list, which does not scroll itself.
+    const panel = n({ identifier: "panel", frame: { x: 0, y: 0.2, width: 1, height: 0.75 } });
+    const swipes = await scrollTo("cut-within", (scrolled) => [panel, cutRow(scrolled)], {
+      target: { identifier: "row" },
+      within: { identifier: "panel" },
+    });
+    expect(swipes).toHaveLength(1);
+    // Anchored in the named container, not the clip.
+    expect(swipes[0].fromY).toBeCloseTo(0.575);
+  });
+
+  it("measures a target cut on the cross axis only against the screen along the scroll axis", async () => {
+    const swipes = await scrollTo(
+      "cross-cut",
+      () => [
+        n({
+          identifier: "row",
+          frame: { x: 0.2, y: 0.7, width: 0.5, height: 0.1 },
+          clipBounds: { x: 0.2, y: 0, width: 0.5, height: 1 },
+        }),
+      ],
+      { target: { identifier: "row" } }
+    );
+    expect(swipes).toHaveLength(0);
   });
 
   it("accepts a last item flush at the far edge once the scroll hits its end", async () => {
