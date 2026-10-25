@@ -366,16 +366,20 @@ describe("compactAutoDescribe", () => {
     ],
   };
 
-  it.each(["ax-service", "native-devtools", "uiautomator", "android-devtools", "cdp-dom"])(
-    "replaces the %s preamble with the legend and keeps the tree",
-    (source) => {
-      const full = formatDescribeTree(root, { source });
-      const tree = full.slice(full.indexOf("\n\nROOT  ") + 1);
-      expect(tree.startsWith("\nROOT  AXGroup")).toBe(true);
-      expect(tree).toContain('AXButton "Continue"');
-      expect(compactAutoDescribe(full)).toBe(`${AUTO_DESCRIBE_LEGEND}\n${tree}`);
-    }
-  );
+  it.each([
+    "ax-service",
+    "native-devtools",
+    "uiautomator",
+    "android-devtools",
+    "cdp-dom",
+    "harmony-uitest",
+  ])("replaces the %s preamble with the legend and keeps the tree", (source) => {
+    const full = formatDescribeTree(root, { source });
+    const tree = full.slice(full.indexOf("\n\nROOT  ") + 1);
+    expect(tree.startsWith("\nROOT  AXGroup")).toBe(true);
+    expect(tree).toContain('AXButton "Continue"');
+    expect(compactAutoDescribe(full)).toBe(`${AUTO_DESCRIBE_LEGEND}\n${tree}`);
+  });
 
   it.each(["vega-automation", "xcuitest-runner"])(
     "leaves %s unchanged, since its header carries platform notes",
