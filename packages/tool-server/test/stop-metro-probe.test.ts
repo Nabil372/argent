@@ -109,6 +109,14 @@ describe("stop-metro port probe", () => {
     );
   });
 
+  it("fails instead of claiming the port is free when lsof exits 2", async () => {
+    lsofThrows({ message: "Command failed: lsof -ti tcp:8081 -sTCP:LISTEN", status: 2 });
+
+    await expect(runStopMetro(8081)).rejects.toThrow(
+      "Could not determine what is listening on port 8081: Command failed: lsof -ti tcp:8081 -sTCP:LISTEN"
+    );
+  });
+
   it("fails instead of claiming the port is free when lsof times out", async () => {
     lsofThrows({ message: "spawnSync lsof ETIMEDOUT", code: "ETIMEDOUT", status: null });
 
