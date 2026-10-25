@@ -88,6 +88,8 @@ function summarizeRequests(events: NetworkEvent[]): NativeRequestRow[] {
       if (typeof p.encodedDataLength === "number") row.bytes = p.encodedDataLength;
       if (t !== undefined && row.start !== undefined)
         row.durationMs = Math.round((t - row.start) * 1000);
+      else if (typeof p.nativeDevtoolsDurationMs === "number")
+        row.durationMs = Math.round(p.nativeDevtoolsDurationMs);
     };
     switch (e.method) {
       case "Network.requestWillBeSent":

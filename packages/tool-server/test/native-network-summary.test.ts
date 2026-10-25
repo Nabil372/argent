@@ -148,6 +148,25 @@ describe("native-network-logs request summary", () => {
     ]);
     expect(row?.durationMs).toBe(253);
   });
+
+  it("takes the dylib's duration when the request event is gone", () => {
+    const rows = summarizeRequests([
+      ev("Network.loadingFinished", {
+        requestId: "1",
+        timestamp: 20,
+        encodedDataLength: 13,
+        nativeDevtoolsDurationMs: 5012.4,
+      }),
+      ev("Network.loadingFailed", {
+        requestId: "2",
+        timestamp: 21,
+        errorText: "timed out",
+        encodedDataLength: 0,
+        nativeDevtoolsDurationMs: 60000,
+      }),
+    ]);
+    expect(rows.map((r) => r.durationMs)).toEqual([5012, 60000]);
+  });
 });
 
 describe("native-network-logs execute", () => {
