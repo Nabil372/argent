@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Registry } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
-import { X;
+import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
 const PREREQUISITE = "The QA app is open on its main screen";
