@@ -12,6 +12,8 @@ import { createFlowAddStepTool } from "../src/tools/flows/flow-add-step";
 import { createRunFlowTool, type FlowRunResult } from "../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../src/tools/flows/flow-read-prerequisite";
 import { flowStartRecordingTool } from "../src/tools/flows/flow-start-recording";
+import { flowInsertEchoTool } from "../src/tools/flows/flow-insert-echo";
+import { flowFinishRecordingTool } from "../src/tools/flows/flow-finish-recording";
 import { parseFlow, serializeFlow } from "../src/tools/flows/flow-utils";
 import { redirectTmpdir } from "./helpers/tmpdir-env";
 
@@ -81,11 +83,15 @@ function httpRegistry(steps: Registry): Registry {
     | ReturnType<typeof createRunFlowTool | typeof createFlowAddStepTool>
     | typeof flowReadPrerequisiteTool
     | typeof flowStartRecordingTool
+    | typeof flowInsertEchoTool
+    | typeof flowFinishRecordingTool
   > = {
     "flow-execute": createRunFlowTool(steps),
     "flow-read-prerequisite": flowReadPrerequisiteTool,
     "flow-start-recording": flowStartRecordingTool,
     "flow-add-step": createFlowAddStepTool(steps),
+    "flow-add-echo": flowInsertEchoTool,
+    "flow-finish-recording": flowFinishRecordingTool,
   };
   return {
     // GET /tools lists the step tools too, as one real registry does.
@@ -1196,6 +1202,30 @@ describe("flow-execute over a link, from the real argent client", () => {
       process.chdir(originalCwd);
     }
   });
+
+  it.each([false, true])(
+    "continues and finishes a recording started with a relative project_root (remote: %s)",
+    async (remote) => {
+      const client = await toolsClient(remote, "flow-finish-recording");
+      const recording = { name: "rel", project_root: "." };
+      const originalCwd = process.cwd();
+      process.chdir(projectRoot);
+      try {
+        await client.callTool("flow-start-recording", recording);
+        await client.callTool("flow-add-echo", { ...recording, message: "hi" });
+        const { data } = await client.callTool("flow-finish-recording", recording);
+
+        expect((data as { savedTo: string }).savedTo).toBe(
+          path.join(process.cwd(), ".argent/e2e/rel.yaml")
+        );
+        expect(parseFlow((data as { flowFile: string }).flowFile).steps).toEqual([
+          { kind: "echo", message: "hi" },
+        ]);
+      } finally {
+        process.chdir(originalCwd);
+      }
+    }
+  );
 
   /** A flow whose first step acts on the device, then runs `target`. */
   function tapThenRun(target: string): Promise<string> {
