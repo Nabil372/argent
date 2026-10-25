@@ -40,6 +40,20 @@ describe("flow-execute parameter handling", () => {
     expect(message).not.toContain('"code"');
   });
 
+  it("accepts every platform `argent e2e run --platform` accepts, ios-remote included", async () => {
+    for (const platform of ["ios", "android", "chromium", "vega", "ios-remote"]) {
+      let caught: unknown;
+      try {
+        await registry().invokeTool("flow-execute", { project_root: tmpDir, name: "x", platform });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined(); // the missing e2e test, not the platform
+      expect(caught).not.toBeInstanceOf(InvalidToolInputError);
+      expect((caught as Error).message).not.toContain("`platform`");
+    }
+  });
+
   it("says which parameter it needs when no flow source is present", async () => {
     await expect(
       registry().invokeTool("flow-execute", {

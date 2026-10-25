@@ -2294,6 +2294,9 @@ describe("argent e2e run", () => {
   it("prints help instead of running when --help follows the flow name", async () => {
     await flow(["run", "checkout", "--help"], opts);
     expect(logs.join("\n")).toContain("Options (run):");
+    expect(logs.join("\n")).toContain(
+      "--platform <p>         ios | android | chromium | vega | ios-remote — narrow"
+    );
     expect(getResolvedToolsUrlMock).not.toHaveBeenCalled();
     expect(toolsClientMock.callTool).not.toHaveBeenCalled();
   });
