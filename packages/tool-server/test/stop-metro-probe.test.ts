@@ -49,6 +49,12 @@ describe("stop-metro port probe", () => {
         status: 1,
       });
     });
+  // netstat answers, so a call that fails can only have failed on lsof.
+  const lsofThrows = (fields: Record<string, unknown>) =>
+    execFileSyncMock.mockImplementation((bin: string) => {
+      if (bin.endsWith("netstat")) return NETSTAT_HEADER;
+      throw Object.assign(new Error(String(fields.message)), fields);
+    });
   const NETSTAT_HEADER =
     "Active Internet connections (including servers)\nProto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n";
 
@@ -68,9 +74,11 @@ describe("stop-metro port probe", () => {
     );
 
     await expect(runStopMetro(8081)).rejects.toThrow(
-      "Could not determine what is listening on port 8081: no visible process owns a socket listening on port 8081; it belongs to another user"
+      "Could not determine what is listening on port 8081: no visible process owns a socket listening on port 8081: it belongs to another user, or just opened"
     );
     expect(kill).not.toHaveBeenCalled();
+    const netstat = existsSync("/usr/sbin/netstat") ? "/usr/sbin/netstat" : "netstat";
+    expect(execFileSyncMock.mock.calls[1].slice(0, 2)).toEqual([netstat, ["-an", "-p", "tcp"]]);
   });
 
   it("asks netstat only on macOS", async () => {
@@ -94,7 +102,7 @@ describe("stop-metro port probe", () => {
   });
 
   it("fails instead of claiming the port is free when lsof is absent", async () => {
-    probeThrows({ message: "spawnSync lsof ENOENT", code: "ENOENT", status: null });
+    lsofThrows({ message: "spawnSync lsof ENOENT", code: "ENOENT", status: null });
 
     await expect(runStopMetro(8081)).rejects.toThrow(
       "Could not determine what is listening on port 8081: spawnSync lsof ENOENT"
@@ -102,7 +110,7 @@ describe("stop-metro port probe", () => {
   });
 
   it("fails instead of claiming the port is free when lsof times out", async () => {
-    probeThrows({ message: "spawnSync lsof ETIMEDOUT", code: "ETIMEDOUT", status: null });
+    lsofThrows({ message: "spawnSync lsof ETIMEDOUT", code: "ETIMEDOUT", status: null });
 
     await expect(runStopMetro(8081)).rejects.toThrow(
       "Could not determine what is listening on port 8081: spawnSync lsof ETIMEDOUT"
@@ -259,7 +267,7 @@ describe("procListeningPids", () => {
     mkdirSync(join(proc, "100"));
 
     expect(() => procListeningPids(8081, proc)).toThrow(
-      "no visible process owns a socket listening on port 8081; it belongs to another user or PID namespace"
+      "no visible process owns a socket listening on port 8081: it belongs to another user or PID namespace, or just closed"
     );
   });
 

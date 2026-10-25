@@ -91,7 +91,7 @@ export function procListeningPids(port: number, proc = "/proc"): number[] {
   // Killing only the visible listeners would report the port freed while one still holds it.
   if (owned.size < inodes.size) {
     throw new Error(
-      `no visible process owns a socket listening on port ${port}; it belongs to another user or PID namespace`
+      `no visible process owns a socket listening on port ${port}: it belongs to another user or PID namespace, or just closed`
     );
   }
   return pids;
@@ -152,7 +152,7 @@ function listeningPids(port: number): number[] {
       });
       if (parseDarwinNetstatHasListener(netstat, port)) {
         throw new Error(
-          `no visible process owns a socket listening on port ${port}; it belongs to another user`,
+          `no visible process owns a socket listening on port ${port}: it belongs to another user, or just opened`,
           { cause: error }
         );
       }
