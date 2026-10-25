@@ -39,7 +39,10 @@ function loadVerdicts(): Record<string, Verdict> {
 function persistVerdict(key: string, verdict: Verdict): void {
   const filePath = verdictFilePath();
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify({ ...loadVerdicts(), [key]: verdict }, null, 2));
+  // Renamed into place, so another tool-server never reads a half-written file.
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify({ ...loadVerdicts(), [key]: verdict }, null, 2));
+  fs.renameSync(tmpPath, filePath);
 }
 
 async function bundleVersion(infoPlist: string): Promise<string> {

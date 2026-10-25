@@ -309,6 +309,30 @@ describe("boot-device — iOS path", () => {
       stderr.mockRestore();
     });
 
+    it("hands over a launch that settles only once open has", async () => {
+      let launch: () => Promise<unknown> = async () => undefined;
+      launchSimulatorAppMock.mockImplementation(
+        async (_app: string, fn: () => Promise<unknown>) => {
+          launch = fn;
+          return true;
+        }
+      );
+      await createBootDeviceTool(registry).execute!({}, { udid });
+
+      let finishOpen = () => {};
+      mockExecFile.mockImplementation((...args: unknown[]) => {
+        finishOpen = () => getCallback(args)(null, { stdout: "", stderr: "" } as never);
+        return {} as never;
+      });
+      let settled = false;
+      const launched = launch().finally(() => (settled = true));
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      finishOpen();
+      await launched;
+      expect(openCalls()).toEqual([["open", ["-a", SIMULATOR_APP]]]);
+    });
+
     it("says nothing about the record when the Simulator.app opens", async () => {
       const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 

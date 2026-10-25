@@ -29,6 +29,8 @@ let appBuild: string;
 let appRunning: boolean;
 let launchedAppStays: boolean;
 let psExecutable: string;
+// Other processes in the list, beside launchd and CoreSimulatorService.
+let psOthers: string[];
 let psFails: boolean;
 let launch: Mock<() => Promise<unknown>>;
 
@@ -54,6 +56,7 @@ beforeEach(() => {
   appRunning = false;
   launchedAppStays = false;
   psExecutable = EXECUTABLE;
+  psOthers = [];
   psFails = false;
   launch = vi.fn(async (): Promise<void> => {
     appRunning = launchedAppStays;
@@ -79,7 +82,10 @@ beforeEach(() => {
         callback(new Error("ps failed"));
         return {};
       }
-      stdout = `/sbin/launchd\n${CORE_SIMULATOR_SERVICE}\n${appRunning ? `${psExecutable}\n` : ""}`;
+      // Without -ax, ps leaves out processes with no terminal, as LaunchServices starts apps.
+      const listsAll = argv.join(" ") === "-axo comm=";
+      const app = appRunning && listsAll ? [psExecutable] : [];
+      stdout = ["/sbin/launchd", CORE_SIMULATOR_SERVICE, ...psOthers, ...app, ""].join("\n");
     }
     callback(null, { stdout, stderr: "" });
     return {};
@@ -121,6 +127,15 @@ describe("launchSimulatorApp", () => {
 
     await expect(result).resolves.toBe(true);
     expect(verdicts()).toEqual({ [`${APP} 1042.1 / CoreSimulator 1166`]: "crashes" });
+  });
+
+  it("returns as soon as the launched app is gone", async () => {
+    let settled = false;
+    const result = launchSimulatorApp(APP, launch).finally(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settled).toBe(true);
+    await expect(result).resolves.toBe(true);
   });
 
   it("stops watching once the watch window has passed", async () => {
@@ -179,6 +194,16 @@ describe("launchSimulatorApp", () => {
     });
   });
 
+  it("does not mistake another Simulator.app for the launched one", async () => {
+    psOthers = [
+      "/Applications/Xcode-26.app/Contents/Developer/Applications/Simulator.app/Contents/MacOS/Simulator",
+      `/Volumes/Backup${EXECUTABLE}`,
+    ];
+
+    await run();
+    expect(verdicts()).toEqual({ [`${APP} 1042.1 / CoreSimulator 1166`]: "crashes" });
+  });
+
   it("does not judge an instance that was already running", async () => {
     appRunning = true;
     launchedAppStays = true;
@@ -223,6 +248,25 @@ describe("launchSimulatorApp", () => {
 
     await expect(run()).resolves.toBe(true);
     expect(fs.existsSync(path.join(home, ".argent", "simulator-app-launch.json"))).toBe(false);
+  });
+
+  it("records nothing when the process list cannot be read during the watch", async () => {
+    launch.mockImplementation(async () => {
+      psFails = true;
+    });
+
+    await expect(run()).resolves.toBe(true);
+    expect(fs.existsSync(path.join(home, ".argent", "simulator-app-launch.json"))).toBe(false);
+  });
+
+  it("swaps the record in with a rename, leaving no temporary file", async () => {
+    const rename = vi.spyOn(fs, "renameSync");
+    const file = path.join(home, ".argent", "simulator-app-launch.json");
+
+    await run();
+    expect(rename).toHaveBeenCalledWith(`${file}.${process.pid}.tmp`, file);
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["simulator-app-launch.json"]);
+    rename.mockRestore();
   });
 
   it("still reports the launch when the record cannot be written", async () => {
