@@ -60,12 +60,14 @@ async function launchKey(simulatorApp: string): Promise<string> {
   return `${simulatorApp} ${appBuild} / CoreSimulator ${coreSimulatorBuild}`;
 }
 
-// `ps` prints the on-disk case, which a case-insensitive volume need not share
-// with the path the app was opened by.
+// `ps` prints the on-disk case and Unicode form, which a case-insensitive volume
+// need not share with the path the app was opened by.
+const comparablePath = (p: string) => p.normalize("NFC").toLowerCase();
+
 async function isRunning(executable: string): Promise<boolean> {
   const { stdout } = await execFileAsync(PS_BIN, ["-axo", "comm="], { timeout: 5_000 });
-  const wanted = executable.toLowerCase();
-  return stdout.split("\n").some((line) => line.trim().toLowerCase() === wanted);
+  const wanted = comparablePath(executable);
+  return stdout.split("\n").some((line) => comparablePath(line.trim()) === wanted);
 }
 
 async function survivesLaunch(executable: string): Promise<boolean> {
@@ -80,7 +82,8 @@ async function survivesLaunch(executable: string): Promise<boolean> {
  * Runs `launch` (which opens `simulatorApp`) unless this app is on record as
  * crashing at launch. The first launch of each app/CoreSimulator build pair is
  * watched for {@link LAUNCH_WATCH_MS}, and an app whose process is gone by then
- * is recorded as crashing. Records live in `~/.argent/simulator-app-launch.json`;
+ * is recorded as crashing. A launch that only activates an instance already
+ * running is not watched. Records live in `~/.argent/simulator-app-launch.json`;
  * delete it to retry. Returns false when the launch was skipped.
  */
 export function launchSimulatorApp(
@@ -95,9 +98,10 @@ export function launchSimulatorApp(
     }
     const verdict = loadVerdicts()[key];
     if (verdict === "crashes") return false;
-    await launch();
-    if (verdict === "runs") return true;
     const executable = path.join(simulatorApp, "Contents", "MacOS", "Simulator");
+    const watch = verdict !== "runs" && !(await isRunning(executable).catch(() => true));
+    await launch();
+    if (!watch) return true;
     const runs = await survivesLaunch(executable).catch(() => null);
     if (runs === null) return true;
     try {

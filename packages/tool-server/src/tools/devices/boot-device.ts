@@ -542,8 +542,8 @@ async function bootIos(
  * Xcode 27 replaces Simulator.app with Device Hub, which opens the device's
  * own window from a `devices://device/open?id=<udid>` URL; it reports success
  * even when it cannot show the device, so a missing window goes unnoticed.
- * Without either app, or with a Simulator.app that crashes at launch, nothing
- * is opened.
+ * Without either app, or with a Simulator.app on record as crashing at launch,
+ * nothing is opened.
  */
 async function openSimulatorWindow(udid: string): Promise<void> {
   const timeout = 5_000;

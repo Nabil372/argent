@@ -15,6 +15,8 @@ import { PS_BIN } from "../src/utils/vega-process";
 
 const APP = "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app";
 const EXECUTABLE = `${APP}/Contents/MacOS/Simulator`;
+const CORE_SIMULATOR_INFO_PLIST =
+  "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/Info.plist";
 // Always running beside the app on a real host, and also named like it.
 const CORE_SIMULATOR_SERVICE =
   "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/XPCServices/com.apple.CoreSimulator.CoreSimulatorService.xpc/Contents/MacOS/com.apple.CoreSimulator.CoreSimulatorService";
@@ -22,18 +24,22 @@ const CORE_SIMULATOR_SERVICE =
 let home: string;
 let originalHome: string | undefined;
 let coreSimulatorBuild: string;
+let appBuild: string;
+// Whether the app process is up now, and whether `launch` leaves it up.
 let appRunning: boolean;
+let launchedAppStays: boolean;
 let psExecutable: string;
 let psFails: boolean;
 let launch: Mock<() => Promise<unknown>>;
 
-const psCalls = () => mockExecFile.mock.calls.filter(([file]) => file === PS_BIN).length;
+const callsTo = (bin: string) => mockExecFile.mock.calls.filter(([file]) => file === bin);
+const psCalls = () => callsTo(PS_BIN).length;
 const verdicts = () =>
   JSON.parse(fs.readFileSync(path.join(home, ".argent", "simulator-app-launch.json"), "utf8"));
 
 // Runs a launch to completion, stepping past the post-launch watch.
-async function run(): Promise<boolean> {
-  const result = launchSimulatorApp(APP, launch);
+async function run(app = APP): Promise<boolean> {
+  const result = launchSimulatorApp(app, launch);
   await vi.advanceTimersByTimeAsync(10_000);
   return result;
 }
@@ -44,10 +50,14 @@ beforeEach(() => {
   originalHome = process.env.HOME;
   process.env.HOME = home;
   coreSimulatorBuild = "1166";
+  appBuild = "1042.1";
   appRunning = false;
+  launchedAppStays = false;
   psExecutable = EXECUTABLE;
   psFails = false;
-  launch = vi.fn(async (): Promise<unknown> => undefined);
+  launch = vi.fn(async (): Promise<void> => {
+    appRunning = launchedAppStays;
+  });
   mockExecFile.mockReset().mockImplementation((...args: unknown[]) => {
     const [file, argv] = args as [string, string[]];
     const callback = args[args.length - 1] as (err: Error | null, out?: unknown) => void;
@@ -57,7 +67,13 @@ beforeEach(() => {
         callback(new Error(`no ${argv[1]}`));
         return {};
       }
-      stdout = argv.at(-1)!.startsWith(APP) ? "1042.1\n" : `${coreSimulatorBuild}\n`;
+      const plist = argv.at(-1)!;
+      if (plist === CORE_SIMULATOR_INFO_PLIST) stdout = `${coreSimulatorBuild}\n`;
+      else if (plist.endsWith("/Simulator.app/Contents/Info.plist")) stdout = `${appBuild}\n`;
+      else {
+        callback(new Error(`no ${plist}`));
+        return {};
+      }
     } else if (file === PS_BIN) {
       if (psFails) {
         callback(new Error("ps failed"));
@@ -86,7 +102,7 @@ describe("launchSimulatorApp", () => {
   });
 
   it("keeps launching an app that stays up, without watching it again", async () => {
-    appRunning = true;
+    launchedAppStays = true;
     await expect(run()).resolves.toBe(true);
     expect(verdicts()).toEqual({ [`${APP} 1042.1 / CoreSimulator 1166`]: "runs" });
     const watched = psCalls();
@@ -97,7 +113,7 @@ describe("launchSimulatorApp", () => {
   });
 
   it("records a crash at the end of the watch window", async () => {
-    appRunning = true;
+    launchedAppStays = true;
     const result = launchSimulatorApp(APP, launch);
     await vi.advanceTimersByTimeAsync(4_900);
     appRunning = false;
@@ -108,7 +124,7 @@ describe("launchSimulatorApp", () => {
   });
 
   it("stops watching once the watch window has passed", async () => {
-    appRunning = true;
+    launchedAppStays = true;
     const result = launchSimulatorApp(APP, launch);
     await vi.advanceTimersByTimeAsync(5_100);
     appRunning = false;
@@ -128,7 +144,7 @@ describe("launchSimulatorApp", () => {
   it("retries after the installed CoreSimulator changes", async () => {
     await run();
     coreSimulatorBuild = "1200";
-    appRunning = true;
+    launchedAppStays = true;
 
     await expect(run()).resolves.toBe(true);
     expect(launch).toHaveBeenCalledTimes(2);
@@ -138,12 +154,68 @@ describe("launchSimulatorApp", () => {
     });
   });
 
-  it("matches the running app whatever case ps prints its path in", async () => {
+  it("retries after the Simulator.app build changes", async () => {
+    await run();
+    appBuild = "1050";
+    launchedAppStays = true;
+
+    await expect(run()).resolves.toBe(true);
+    expect(verdicts()).toEqual({
+      [`${APP} 1042.1 / CoreSimulator 1166`]: "crashes",
+      [`${APP} 1050 / CoreSimulator 1166`]: "runs",
+    });
+  });
+
+  it("keeps a separate record per Simulator.app", async () => {
+    const other = "/Applications/Xcode-26.app/Contents/Developer/Applications/Simulator.app";
+    await run();
+    launchedAppStays = true;
+    psExecutable = `${other}/Contents/MacOS/Simulator`;
+
+    await expect(run(other)).resolves.toBe(true);
+    expect(verdicts()).toEqual({
+      [`${APP} 1042.1 / CoreSimulator 1166`]: "crashes",
+      [`${other} 1042.1 / CoreSimulator 1166`]: "runs",
+    });
+  });
+
+  it("does not judge an instance that was already running", async () => {
     appRunning = true;
+    launchedAppStays = true;
+
+    await expect(run()).resolves.toBe(true);
+    expect(fs.existsSync(path.join(home, ".argent", "simulator-app-launch.json"))).toBe(false);
+
+    appRunning = false;
+    launchedAppStays = false;
+    await run();
+    expect(verdicts()).toEqual({ [`${APP} 1042.1 / CoreSimulator 1166`]: "crashes" });
+  });
+
+  it("matches the running app whatever case ps prints its path in", async () => {
+    launchedAppStays = true;
     psExecutable = EXECUTABLE.toLowerCase();
 
     await run();
     expect(verdicts()).toEqual({ [`${APP} 1042.1 / CoreSimulator 1166`]: "runs" });
+  });
+
+  it("matches the running app whatever Unicode form ps prints its path in", async () => {
+    const app =
+      "/Users/me/Zażółć/Xcode.app/Contents/Developer/Applications/Simulator.app".normalize("NFC");
+    launchedAppStays = true;
+    psExecutable = `${app}/Contents/MacOS/Simulator`.normalize("NFD");
+
+    await run(app);
+    expect(verdicts()).toEqual({ [`${app} 1042.1 / CoreSimulator 1166`]: "runs" });
+  });
+
+  it("bounds the plutil and ps calls with a timeout", async () => {
+    await run();
+
+    const calls = [...callsTo("plutil"), ...callsTo(PS_BIN)];
+    expect(calls.length).toBeGreaterThan(2);
+    for (const call of calls) expect(call[2]).toMatchObject({ timeout: 5_000 });
   });
 
   it("records nothing when the process list cannot be read", async () => {
