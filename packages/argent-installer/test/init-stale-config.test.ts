@@ -605,6 +605,27 @@ describe("cleanupStaleMcpConfigs", () => {
     return { node, cli };
   }
 
+  it("keeps a live global-node entry when argent is not on PATH", async () => {
+    globallyInstalled = false;
+    const { node, cli } = pinnedEntry();
+    const cursorGlobal = path.join(home, ".cursor", "mcp.json");
+    writeJsonFile(cursorGlobal, {
+      mcpServers: { argent: { command: node, args: [cli, "mcp"] } },
+    });
+
+    const result = await cleanupStaleMcpConfigs({
+      writtenAdapters: [],
+      detectedAdapters: [cursor],
+      installMode: "local",
+      scope: "local",
+      effectiveRoot: root,
+      confirmCrossProjectRemovals: async () => true,
+    });
+
+    expect(result).toEqual({ lines: [], removedCount: 0, warnedCount: 0 });
+    expect(fs.existsSync(cursorGlobal)).toBe(true);
+  });
+
   it("names the node binary when that is the missing half of a global-node entry", async () => {
     const { node, cli } = pinnedEntry();
     fs.rmSync(node);
@@ -749,6 +770,29 @@ describe("cleanupStaleMcpConfigs", () => {
 
     expect(result).toEqual({ lines: [], removedCount: 0, warnedCount: 0 });
   });
+
+  it.skipIf(process.platform === "win32")(
+    "matches the global file through a symlinked $HOME",
+    async () => {
+      const { node, cli } = pinnedEntry();
+      writeJsonFile(path.join(home, ".cursor", "mcp.json"), {
+        mcpServers: { argent: { command: node, args: [cli, "mcp"] } },
+      });
+      const linkHome = path.join(tmpDir, "linkhome");
+      fs.symlinkSync(home, linkHome);
+      homedirOverride = linkHome;
+
+      const result = await cleanupStaleMcpConfigs({
+        writtenAdapters: [cursor],
+        detectedAdapters: [cursor],
+        installMode: "global",
+        scope: "global",
+        effectiveRoot: fs.realpathSync(home),
+      });
+
+      expect(result).toEqual({ lines: [], removedCount: 0, warnedCount: 0 });
+    }
+  );
 
   it("survives an adapter whose shadow probe throws", async () => {
     const throwing = {

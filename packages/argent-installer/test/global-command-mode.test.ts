@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as p from "@clack/prompts";
 import { getAdapterByName, resolveGlobalCommandMode } from "../src/mcp-configs.js";
 import { writeMcpConfigs } from "../src/init-mcp-write.js";
+import { isGloballyInstalled } from "../src/topology.js";
 
 // A real `which argent` against a fake npm prefix put first on PATH: the entry
 // a global-scope config gets (#1287) must name paths that outlive the shell.
@@ -127,17 +129,43 @@ describe.skipIf(process.platform === "win32")("resolveGlobalCommandMode", () => 
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
   });
 
+  // Each runner dir holds its own copy of the package, so a pin through it
+  // would name a different cli.js than the global install's.
   it.each([
     ["pnpm dlx", ["home", ".cache", "pnpm", "dlx", "abc123", "node_modules", ".bin"]],
     ["versioned bunx", ["T", "bunx-501-@swmansion+argent@latest", "node_modules", ".bin"]],
     ["project devDependency (npx from the project)", ["proj", "node_modules", ".bin"]],
   ])("skips a %s copy ahead of the global install on PATH", (_runner, segments) => {
     const runnerBin = path.join(tmp, ...segments);
+    const copy = path.join(runnerBin, "..", "@swmansion", "argent");
+    fs.cpSync(pkg, copy, { recursive: true });
     fs.mkdirSync(runnerBin, { recursive: true });
-    fs.symlinkSync(cli, path.join(runnerBin, "argent"));
+    fs.symlinkSync(path.join(copy, "dist", "cli.js"), path.join(runnerBin, "argent"));
     prependPath(runnerBin);
     const node = linkPrefixNode();
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
+  });
+
+  it.each([
+    ["yarn berry's per-command wrapper", ["T", "xfs-346d11a9"]],
+    ["a project's node package (npm exec)", ["proj", "node_modules", ".bin"]],
+  ])("skips %s when picking a node from PATH", (_source, segments) => {
+    const node = linkPathNode();
+    const wrapperDir = path.join(tmp, ...segments);
+    fs.mkdirSync(wrapperDir, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(wrapperDir, "node"));
+    prependPath(wrapperDir);
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
+  });
+});
+
+describe.skipIf(process.platform === "win32")("isGloballyInstalled", () => {
+  it("detects a yarn v1 global whose node_modules/.bin is on PATH", () => {
+    const yarnBin = path.join(tmp, "yarn-global", "node_modules", ".bin");
+    fs.mkdirSync(yarnBin, { recursive: true });
+    fs.symlinkSync(cli, path.join(yarnBin, "argent"));
+    vi.stubEnv("PATH", `${yarnBin}${path.delimiter}/usr/bin${path.delimiter}/bin`);
+    expect(isGloballyInstalled()).toBe(true);
   });
 });
 
@@ -185,6 +213,51 @@ describe.skipIf(process.platform === "win32")("writeMcpConfigs — global instal
       projectRoot: project,
     });
     expect(cursorEntryIn(project)).toEqual({ command: "argent", args: ["mcp"] });
+  });
+
+  it("warns when it can't pin and writes bare argent (npm link checkout)", () => {
+    linkPrefixNode();
+    const checkout = path.join(tmp, "checkout");
+    fs.renameSync(pkg, checkout);
+    fs.symlinkSync(checkout, pkg);
+    const warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
+    writeMcpConfigs({
+      selectedAdapters: [cursor],
+      installMode: "global",
+      scope: "global",
+      effectiveRoot: project,
+      projectRoot: project,
+    });
+    expect(cursorEntryIn(home)).toEqual({ command: "argent", args: ["mcp"] });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Could not resolve absolute node"));
+  });
+
+  it("does not warn when the global entry is pinned", () => {
+    linkPrefixNode();
+    const warn = vi.spyOn(p.log, "warn").mockImplementation(() => {});
+    writeMcpConfigs({
+      selectedAdapters: [cursor],
+      installMode: "global",
+      scope: "global",
+      effectiveRoot: project,
+      projectRoot: project,
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("pins a write at a symlinked $HOME, where cwd is the resolved path", () => {
+    const node = linkPrefixNode();
+    const linkHome = path.join(tmp, "linkhome");
+    fs.symlinkSync(home, linkHome);
+    homedirOverride = linkHome;
+    writeMcpConfigs({
+      selectedAdapters: [cursor],
+      installMode: "global",
+      scope: "local",
+      effectiveRoot: home,
+      projectRoot: home,
+    });
+    expect(cursorEntryIn(home)).toEqual({ command: node, args: [cli, "mcp"] });
   });
 
   it("pins a Local-scope write at $HOME, where the project file is the global one", () => {
