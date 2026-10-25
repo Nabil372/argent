@@ -3,33 +3,57 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from "vitest";
 
+const SERIAL = "emulator-5554";
+
 // A fake device behind the real runAdb/adbShell: only execFile is stubbed, so
 // the handler's whole adb conversation runs against it.
 const device = {
   installed: new Set<string>(),
-  undeletable: new Set<string>(),
+  // System apps: `adb uninstall` fails and the package stays.
+  system: new Set<string>(),
+  // Updated system apps: `adb uninstall` removes the update, says Success, and the package stays.
+  updatedSystem: new Set<string>(),
+  // Hidden packages: installed, but missing from `pm list packages`.
+  hidden: new Set<string>(),
+  // Before API 24: a failed `adb uninstall` exits 0, and `adb shell` output ends lines with \r\n.
+  legacy: false,
   apkPackage: "",
   calls: [] as string[][],
 };
 
-function fakeAdb(args: readonly string[]): { stdout: string; stderr: string } | Error {
-  const argv = args.slice(2); // drop `-s <serial>`
+type AdbResult = { stdout: string; stderr: string };
+
+function failure(command: string, stdout: string): Error & AdbResult {
+  return Object.assign(new Error(`Command failed: adb ${command}`), {
+    code: 1,
+    stdout,
+    stderr: "",
+  });
+}
+
+function fakeAdb(args: readonly string[]): AdbResult | Error {
+  if (args[0] !== "-s" || args[1] !== SERIAL) throw new Error(`no -s ${SERIAL}: ${args.join(" ")}`);
+  const argv = args.slice(2);
   device.calls.push(argv);
   const [command, ...rest] = argv;
+  const eol = device.legacy ? "\r\n" : "\n";
   if (command === "shell") {
     const filter = /^pm list packages '(.+)'$/.exec(rest[0]!)?.[1];
     if (filter === undefined) throw new Error(`unexpected shell command: ${rest[0]}`);
-    const lines = [...device.installed].filter((pkg) => pkg.includes(filter));
-    return { stdout: lines.map((pkg) => `package:${pkg}\n`).join(""), stderr: "" };
+    const lines = [...device.installed].filter(
+      (pkg) => pkg.includes(filter) && !device.hidden.has(pkg)
+    );
+    return { stdout: lines.map((pkg) => `package:${pkg}${eol}`).join(""), stderr: "" };
   }
   if (command === "uninstall") {
     const pkg = rest[0]!;
-    if (!device.installed.has(pkg) || device.undeletable.has(pkg)) {
-      return Object.assign(new Error(`Command failed: adb uninstall ${pkg}`), {
-        code: 1,
-        stdout: "Failure [DELETE_FAILED_INTERNAL_ERROR]\n",
-        stderr: "",
-      });
+    if (device.updatedSystem.has(pkg)) {
+      device.updatedSystem.delete(pkg);
+      return { stdout: "Success\n", stderr: "" };
+    }
+    if (!device.installed.has(pkg) || device.system.has(pkg)) {
+      const stdout = "Failure [DELETE_FAILED_INTERNAL_ERROR]\n";
+      return device.legacy ? { stdout, stderr: "" } : failure(`uninstall ${pkg}`, stdout);
     }
     device.installed.delete(pkg);
     return { stdout: "Success\n", stderr: "" };
@@ -49,12 +73,12 @@ vi.mock("node:child_process", async () => {
       _cmd: string,
       args: readonly string[],
       opts: unknown,
-      cb?: (err: Error | null, out: { stdout: string; stderr: string }) => void
+      cb?: (err: Error | null, out: AdbResult) => void
     ) => {
       const callback = typeof opts === "function" ? opts : cb!;
       const result = fakeAdb(args);
       if (result instanceof Error) {
-        const e = result as Error & { stdout: string; stderr: string };
+        const e = result as Error & AdbResult;
         callback(e, { stdout: e.stdout, stderr: e.stderr });
       } else callback(null, result);
     },
@@ -74,8 +98,8 @@ import type { DeviceInfo } from "@argent/registry";
 import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import { androidImpl } from "../src/tools/reinstall-app/platforms/android";
 
-const SERIAL = "emulator-5554";
 const androidDevice = { id: SERIAL, platform: "android", kind: "emulator" } as DeviceInfo;
+
 let dir: string;
 
 beforeAll(() => {
@@ -85,6 +109,7 @@ beforeAll(() => {
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 function reinstall(bundleId: string) {
+  device.apkPackage = bundleId;
   const appPath = join(dir, "app-debug.apk");
   return androidImpl.handler({}, { udid: SERIAL, bundleId, appPath }, androidDevice);
 }
@@ -100,10 +125,20 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 
 const ran = (command: string) => device.calls.filter((argv) => argv[0] === command);
 
+function expectUninstallFailure(err: unknown) {
+  expect(getFailureSignal(err)).toMatchObject({
+    error_code: FAILURE_CODES.ANDROID_REINSTALL_INSTALL_FAILED,
+    failure_stage: "android_reinstall_adb_uninstall",
+  });
+  expect(ran("install")).toEqual([]);
+}
+
 beforeEach(() => {
-  device.installed = new Set(["com.android.settings"]);
-  device.undeletable = new Set(["com.android.settings"]);
-  device.apkPackage = "com.example.app";
+  device.installed = new Set();
+  device.system = new Set();
+  device.updatedSystem = new Set();
+  device.hidden = new Set();
+  device.legacy = false;
   device.calls = [];
 });
 
@@ -115,8 +150,8 @@ describe("reinstall-app on Android", () => {
       reinstalled: true,
       bundleId: "com.example.app",
     });
+    expect(device.calls.map((argv) => argv[0])).toEqual(["uninstall", "shell", "install"]);
     expect(ran("uninstall")).toEqual([["uninstall", "com.example.app"]]);
-    expect(ran("install")).toHaveLength(1);
   });
 
   it("installs an app that is not installed yet", async () => {
@@ -127,26 +162,50 @@ describe("reinstall-app on Android", () => {
     expect(device.installed.has("com.example.app")).toBe(true);
   });
 
-  it("fails without installing when the installed package cannot be uninstalled", async () => {
-    device.apkPackage = "com.android.settings";
+  it("uninstalls a package that pm list packages does not show", async () => {
+    device.installed.add("com.example.app");
+    device.hidden.add("com.example.app");
+
+    await expect(reinstall("com.example.app")).resolves.toEqual({
+      reinstalled: true,
+      bundleId: "com.example.app",
+    });
+    expect(ran("uninstall")).toEqual([["uninstall", "com.example.app"]]);
+  });
+
+  it("fails without installing when the package cannot be uninstalled", async () => {
+    device.installed.add("com.android.settings");
+    device.system.add("com.android.settings");
 
     const err = await rejection(reinstall("com.android.settings"));
 
-    expect(getFailureSignal(err)).toMatchObject({
-      error_code: FAILURE_CODES.ANDROID_REINSTALL_INSTALL_FAILED,
-      failure_stage: "android_reinstall_adb_uninstall",
-    });
+    expectUninstallFailure(err);
     expect((err as Error).message).toContain("DELETE_FAILED_INTERNAL_ERROR");
-    expect(ran("install")).toEqual([]);
+  });
+
+  it("fails without installing when the uninstall only removes a system app's update", async () => {
+    device.installed.add("com.android.chrome");
+    device.system.add("com.android.chrome");
+    device.updatedSystem.add("com.android.chrome");
+
+    expectUninstallFailure(await rejection(reinstall("com.android.chrome")));
+  });
+
+  it("fails without installing when a failed uninstall exits 0 (before API 24)", async () => {
+    device.legacy = true;
+    device.installed.add("com.android.settings");
+    device.system.add("com.android.settings");
+
+    expectUninstallFailure(await rejection(reinstall("com.android.settings")));
   });
 
   it("does not mistake a package whose name contains bundleId for bundleId", async () => {
+    device.installed.add("com.example.app");
     device.installed.add("com.example.app.debug");
 
     await expect(reinstall("com.example.app")).resolves.toEqual({
       reinstalled: true,
       bundleId: "com.example.app",
     });
-    expect(ran("uninstall")).toEqual([]);
   });
 });

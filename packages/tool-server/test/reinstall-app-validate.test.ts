@@ -29,7 +29,7 @@ vi.mock("../src/utils/ios-device-sets", () => ({
 const runAdb = vi.fn();
 vi.mock("../src/utils/adb", () => ({
   runAdb: (...a: unknown[]) => runAdb(...a),
-  adbShell: async () => "package:com.example.app\n",
+  adbShell: async () => "",
   shellQuote: (value: string) => value,
 }));
 

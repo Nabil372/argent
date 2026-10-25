@@ -5,7 +5,8 @@ import { adbShell, runAdb, shellQuote } from "../../../utils/adb";
 import { assertApk } from "../validate-app";
 import type { ReinstallAppParams, ReinstallAppResult, ReinstallAppServices } from "../types";
 
-// `pm list packages <filter>` matches substrings and exits 0 either way.
+// `pm list packages <filter>` matches substrings, exits 0 either way and ends
+// lines with `\r\n` before API 24.
 async function isInstalled(udid: string, bundleId: string): Promise<boolean> {
   const listing = await adbShell(udid, `pm list packages ${shellQuote(bundleId)}`, {
     timeoutMs: 15_000,
@@ -25,25 +26,27 @@ export const androidImpl: PlatformImpl<
     await assertApk(absolute, bundleId);
 
     // Match iOS semantics: uninstall first so the reinstall is a clean wipe.
-    // `adb uninstall` fails identically for "not installed" and "cannot be
-    // uninstalled", so only an installed package is uninstalled, and must be.
+    // adb's verdict is not trusted: it fails alike for "not installed" and
+    // "cannot be uninstalled", exits 0 on failure before API 24, and reports
+    // Success for an updated system app while only removing the update.
+    const uninstall = await runAdb(["-s", udid, "uninstall", bundleId], {
+      timeoutMs: 30_000,
+    }).then(
+      ({ stdout, stderr }) => `${stdout}\n${stderr}`.trim(),
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    );
     if (await isInstalled(udid, bundleId)) {
-      try {
-        await runAdb(["-s", udid, "uninstall", bundleId], { timeoutMs: 30_000 });
-      } catch (err) {
-        throw new FailureError(
-          `Could not uninstall ${bundleId}, so its data was not cleared and nothing was installed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-          {
-            error_code: FAILURE_CODES.ANDROID_REINSTALL_INSTALL_FAILED,
-            failure_stage: "android_reinstall_adb_uninstall",
-            failure_area: "tool_server",
-            error_kind: "subprocess",
-          },
-          { cause: err instanceof Error ? err : new Error(String(err)) }
-        );
-      }
+      throw new FailureError(
+        `${bundleId} is still on the device after \`adb uninstall\`, so its data was not cleared and nothing was installed. ` +
+          `A system app or an active device admin cannot be uninstalled; an updated system app only loses its update. ` +
+          `adb uninstall said: ${uninstall}`,
+        {
+          error_code: FAILURE_CODES.ANDROID_REINSTALL_INSTALL_FAILED,
+          failure_stage: "android_reinstall_adb_uninstall",
+          failure_area: "tool_server",
+          error_kind: "subprocess",
+        }
+      );
     }
 
     // -r - allow overwrite (no-op after the uninstall above)
