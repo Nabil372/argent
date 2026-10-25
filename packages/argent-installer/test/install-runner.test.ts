@@ -32,6 +32,7 @@ vi.mock("../src/utils.js", async (importOriginal) => {
     isYarnPnp: vi.fn(() => false),
     getLocallyInstalledVersion: vi.fn(() => "1.0.0"),
     detectProjectPackageManager: vi.fn(() => "pnpm" as const),
+    isGloballyInstalled: vi.fn(() => false),
   };
 });
 
@@ -230,4 +231,53 @@ describe("installLocally failure handling", () => {
       }
     }
   );
+});
+
+describe("global install under Yarn 2+", () => {
+  const savedAgent = process.env.npm_config_user_agent;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.mocked(runShellCommand).mockReset();
+    vi.mocked(p.log.info).mockClear();
+    process.env.npm_config_user_agent = "yarn/4.13.0 npm/? node/v24.14.1 darwin arm64";
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new ExitCalled(code);
+    }) as never);
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    if (savedAgent === undefined) delete process.env.npm_config_user_agent;
+    else process.env.npm_config_user_agent = savedAgent;
+  });
+
+  it("installs with npm and advises the npm command on failure", async () => {
+    vi.mocked(runShellCommand).mockRejectedValue(new ShellCommandError("registry down", 1, null));
+
+    await expect(
+      runInstall({
+        installMode: "global",
+        fromTar: null,
+        nonInteractive: true,
+        version: "0.0.0",
+        tel: makeTel(),
+      })
+    ).rejects.toThrow(ExitCalled);
+
+    expect(runShellCommand).toHaveBeenCalledWith({
+      bin: "npm",
+      args: ["install", "-g", "@swmansion/argent"],
+    });
+    const esc = String.fromCharCode(27);
+    const advice = vi
+      .mocked(p.log.info)
+      .mock.calls.map((c) =>
+        String(c[0])
+          .split(new RegExp(`${esc}\\[[0-9;]*m`, "g"))
+          .join("")
+      )
+      .find((line) => line.startsWith("Install Argent manually with: "));
+    expect(advice).toBe("Install Argent manually with: npm install -g @swmansion/argent");
+  });
 });

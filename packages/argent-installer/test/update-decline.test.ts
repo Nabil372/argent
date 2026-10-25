@@ -95,7 +95,7 @@ let savedAgent: string | undefined;
 let exitSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
-  // detectPackageManager() reads npm_config_user_agent, so the install/update
+  // detectGlobalPackageManager() reads npm_config_user_agent, so the install/update
   // commands these tests assert on are whichever package manager runs the
   // suite. Unset it to pin the npm shape.
   savedAgent = process.env.npm_config_user_agent;
@@ -179,6 +179,23 @@ describe("update — interactive decline", () => {
     expect(promptsMock.cancel).not.toHaveBeenCalled();
     expect(telemetryMock.track).toHaveBeenCalledWith(
       "installation:cli_update_complete",
+      expect.anything()
+    );
+  });
+
+  it("updates the global package with npm when launched from Yarn 2+", async () => {
+    process.env.npm_config_user_agent = "yarn/4.13.0 npm/? node/v24.14.1 darwin arm64";
+    promptsMock.confirm.mockResolvedValueOnce(true);
+    childProcessMock.execFileSync.mockImplementationOnce((() => {
+      topologyState.globalVersion = "99.0.0";
+      return undefined;
+    }) as never);
+
+    await update([]);
+
+    expect(childProcessMock.execFileSync).toHaveBeenCalledWith(
+      "npm",
+      ["install", "-g", "@swmansion/argent@99.0.0"],
       expect.anything()
     );
   });

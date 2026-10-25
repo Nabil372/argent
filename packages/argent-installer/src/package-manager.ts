@@ -22,11 +22,17 @@ export function shellQuotePath(dir: string): string {
 
 export function detectPackageManager(): PackageManager {
   const agent = process.env.npm_config_user_agent ?? "";
-  // Yarn 2+ has no `yarn global`; npm installs for it.
-  if (agent.startsWith("yarn/1.")) return "yarn";
+  if (agent.startsWith("yarn")) return "yarn";
   if (agent.startsWith("pnpm")) return "pnpm";
   if (agent.startsWith("bun")) return "bun";
   return "npm";
+}
+
+// Yarn 2+ has no `yarn global`; npm installs for it.
+export function detectGlobalPackageManager(): PackageManager {
+  const pm = detectPackageManager();
+  const agent = process.env.npm_config_user_agent ?? "";
+  return pm === "yarn" && !agent.startsWith("yarn/1.") ? "npm" : pm;
 }
 
 function asKnownPm(name: unknown): PackageManager | null {
