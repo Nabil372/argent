@@ -292,7 +292,10 @@ describe("boot-device — iOS path", () => {
       expect(openCalls()).toEqual([["open", ["-a", SIMULATOR_APP]]]);
     });
 
-    it("does not open a Simulator.app on record as crashing at launch", async () => {
+    it("does not open a Simulator.app on record as crashing at launch, nor Device Hub", async () => {
+      existsSyncMock.mockImplementation(
+        (path: string) => path === SIMULATOR_APP || path === DEVICE_HUB_APP
+      );
       launchSimulatorAppMock.mockResolvedValue(false);
       const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
@@ -303,7 +306,7 @@ describe("boot-device — iOS path", () => {
       expect(openCalls()).toEqual([]);
       expect(stderr).toHaveBeenCalledWith(
         expect.stringContaining(
-          `not opening ${SIMULATOR_APP}: it exited right after an earlier launch`
+          `not opening ${SIMULATOR_APP}: it exited right after an earlier launch, so the device runs without a window. Delete ~/.argent/simulator-app-launch.json to try again.`
         )
       );
       stderr.mockRestore();

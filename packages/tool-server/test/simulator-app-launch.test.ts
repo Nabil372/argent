@@ -235,6 +235,14 @@ describe("launchSimulatorApp", () => {
     expect(verdicts()).toEqual({ [`${app} 1042.1 / CoreSimulator 1166`]: "runs" });
   });
 
+  it("runs ps in a UTF-8 locale, so it prints non-ASCII paths unescaped", async () => {
+    await run();
+
+    for (const call of callsTo(PS_BIN)) {
+      expect(call[2]).toMatchObject({ env: expect.objectContaining({ LC_ALL: "en_US.UTF-8" }) });
+    }
+  });
+
   it("bounds the plutil and ps calls with a timeout", async () => {
     await run();
 
@@ -245,6 +253,18 @@ describe("launchSimulatorApp", () => {
 
   it("records nothing when the process list cannot be read", async () => {
     psFails = true;
+
+    await expect(run()).resolves.toBe(true);
+    expect(fs.existsSync(path.join(home, ".argent", "simulator-app-launch.json"))).toBe(false);
+  });
+
+  it("does not judge an instance it could not check for before the launch", async () => {
+    appRunning = true;
+    launchedAppStays = true;
+    psFails = true;
+    launch.mockImplementation(async () => {
+      psFails = false;
+    });
 
     await expect(run()).resolves.toBe(true);
     expect(fs.existsSync(path.join(home, ".argent", "simulator-app-launch.json"))).toBe(false);
@@ -275,6 +295,17 @@ describe("launchSimulatorApp", () => {
 
     await expect(run()).resolves.toBe(true);
     expect(stderr).toHaveBeenCalledWith(expect.stringContaining("could not record"));
+    stderr.mockRestore();
+  });
+
+  it("removes the temporary file when the record cannot be replaced", async () => {
+    const file = path.join(home, ".argent", "simulator-app-launch.json");
+    fs.mkdirSync(file, { recursive: true });
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+    await expect(run()).resolves.toBe(true);
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("could not record"));
+    expect(fs.readdirSync(path.dirname(file))).toEqual(["simulator-app-launch.json"]);
     stderr.mockRestore();
   });
 

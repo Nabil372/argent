@@ -41,8 +41,13 @@ function persistVerdict(key: string, verdict: Verdict): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   // Renamed into place, so another tool-server never reads a half-written file.
   const tmpPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify({ ...loadVerdicts(), [key]: verdict }, null, 2));
-  fs.renameSync(tmpPath, filePath);
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify({ ...loadVerdicts(), [key]: verdict }, null, 2));
+    fs.renameSync(tmpPath, filePath);
+  } catch (err) {
+    fs.rmSync(tmpPath, { force: true });
+    throw err;
+  }
 }
 
 async function bundleVersion(infoPlist: string): Promise<string> {
@@ -64,11 +69,15 @@ async function launchKey(simulatorApp: string): Promise<string> {
 }
 
 // `ps` prints the on-disk case and Unicode form, which a case-insensitive volume
-// need not share with the path the app was opened by.
+// need not share with the path the app was opened by. Outside a UTF-8 locale (as
+// a launchd-started server may be) it escapes non-ASCII bytes instead.
 const comparablePath = (p: string) => p.normalize("NFC").toLowerCase();
 
 async function isRunning(executable: string): Promise<boolean> {
-  const { stdout } = await execFileAsync(PS_BIN, ["-axo", "comm="], { timeout: 5_000 });
+  const { stdout } = await execFileAsync(PS_BIN, ["-axo", "comm="], {
+    timeout: 5_000,
+    env: { ...process.env, LC_ALL: "en_US.UTF-8" },
+  });
   const wanted = comparablePath(executable);
   return stdout.split("\n").some((line) => comparablePath(line.trim()) === wanted);
 }
