@@ -346,7 +346,14 @@ describe("GET /artifacts/:id", () => {
     it("cuts the response off when tar abandoned the archive after zero-filled data", async () => {
       await mkdir(join(root, "Z.trace"));
       await writeFile(join(root, "Z.trace", "z"), Buffer.alloc(4096));
-      process.env.FAKE_TAR_BYTES = String(512 + 512 + 4096); // ends in zeros, but no end marker
+      // Cut right after z's data, which ends in zeros, before the end marker. macOS
+      // tar may write xattr members first, so find z's header.
+      const tar = execFileSync("tar", ["-cf", "-", "-C", root, "Z.trace"], {
+        env: { ...process.env, PATH: realPath },
+      });
+      const header = tar.indexOf(Buffer.from("Z.trace/z\0"));
+      expect(header % 512).toBe(0);
+      process.env.FAKE_TAR_BYTES = String(header + 512 + 4096);
       await expect(download("Z.trace")).rejects.toThrow();
     });
 
