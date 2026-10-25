@@ -3,8 +3,6 @@ import type { DescribeResult } from "../contract";
 import { formatDescribeTree } from "../format-tree";
 import { resolveTvApi } from "../../tv/tv-service";
 import { describeAndroid } from "./android";
-import { readImePackage, tvFocusViewFromXml } from "../../../blueprints/android-tv-control";
-import { androidDevtoolsRef, type AndroidDevtoolsApi } from "../../../blueprints/android-devtools";
 import type {
   TvControlApi,
   TvDescribeResponse,
@@ -38,32 +36,6 @@ const ANDROID_FOCUS_EMPTY_HINT =
   "Falling back to the full UI tree below. `tv-remote` (direction/select) still moves focus on " +
   "these screens even though the labels aren't enumerable, so you can drive blind + screenshot " +
   "to confirm.";
-
-// A running android-devtools helper holds the device's only UiAutomation
-// connection, so a `uiautomator dump` beside it dies `Killed`. Read through the
-// helper; the dump is the fallback when the helper read fails.
-async function readAndroidTvFocus(
-  registry: Registry,
-  device: DeviceInfo,
-  api: TvControlApi
-): Promise<{ res: TvDescribeResponse; viaHelper: boolean }> {
-  try {
-    const ref = androidDevtoolsRef(device);
-    const devtools = await registry.resolveService<AndroidDevtoolsApi>(ref.urn, ref.options);
-    const [{ xml }, imePackage] = await Promise.all([
-      devtools.getHierarchy(),
-      readImePackage(device.id).catch(() => undefined),
-    ]);
-    return { res: tvFocusViewFromXml(xml, imePackage), viaHelper: true };
-  } catch (err) {
-    console.debug(
-      `[describe.tv] devtools helper failed, falling back to uiautomator dump: ${
-        err instanceof Error ? err.message : String(err)
-      }`
-    );
-    return { res: await api.describe(), viaHelper: false };
-  }
-}
 
 function isEmpty(res: TvDescribeResponse): boolean {
   return res.focusable.length === 0 && !res.focused;
@@ -120,9 +92,7 @@ export async function describeTv(registry: Registry, device: DeviceInfo): Promis
   // only: on Android TV an empty focus set is steady state for react-native-tvos
   // screens, not a transition, so retrying would just burn reads
   // before the empty-focus fallback below.
-  const android =
-    device.platform === "android" ? await readAndroidTvFocus(registry, device, api) : undefined;
-  let res = android ? android.res : await api.describe();
+  let res = await api.describe();
   if (device.platform !== "android") {
     for (let attempt = 1; attempt < EMPTY_RETRY_ATTEMPTS && isEmpty(res); attempt++) {
       await sleep(EMPTY_RETRY_DELAY_MS);
@@ -132,8 +102,8 @@ export async function describeTv(registry: Registry, device: DeviceInfo): Promis
 
   // Still empty: on Apple TV the daemon may hold a stale primaryApp cache from a
   // killed app, and a fresh daemon rebinds to the current foreground app.
-  // Skipped on Android TV, where `recycleAx` is a no-op and `api.describe()` is
-  // a raw dump that dies beside the helper.
+  // Skipped on Android TV, where `recycleAx` is a no-op and the re-probe would
+  // only repeat the read that just came back empty.
   if (isEmpty(res) && device.platform !== "android") {
     await api.recycleAx();
     res = await api.describe();
@@ -146,13 +116,7 @@ export async function describeTv(registry: Registry, device: DeviceInfo): Promis
     // skip a redundant probe. Let a capture failure propagate: describeAndroid
     // throws an actionable error (device locked / keyguard / DRM / secure
     // overlay, or an adb failure), more useful than the generic EMPTY_HINT.
-    // Without a registry it reads the dump only: the helper read just failed.
-    const data = await describeAndroid(
-      android?.viaHelper ? registry : undefined,
-      device.id,
-      undefined,
-      true
-    );
+    const data = await describeAndroid(registry, device.id, undefined, true);
     return {
       description: `${ANDROID_FOCUS_EMPTY_HINT}\n\n${formatDescribeTree(data.tree, {
         source: data.source,
