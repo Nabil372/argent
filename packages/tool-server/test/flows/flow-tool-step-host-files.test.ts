@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Registry } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
 import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
+import { screenshotDiffTool } from "../../src/tools/screenshot-diff";
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
 const PREREQUISITE = "The QA app is open on its main screen";
@@ -16,6 +17,7 @@ function registry(): Registry {
   const r = new Registry();
   r.registerTool(createRunFlowTool(r) as never);
   r.registerTool(flowReadPrerequisiteTool as never);
+  r.registerTool(screenshotDiffTool as never);
   return r;
 }
 
@@ -70,7 +72,7 @@ describe("a tool: step with flow_path, without a link", () => {
     expect(result.steps[0].result).toEqual({ flow: "frag", executionPrerequisite: PREREQUISITE });
   });
 
-  it("fails a step whose flow_path names no file as a direct call does, not at the boundary gate", async () => {
+  it("fails a step whose flow_path names no file, naming the argument and the tool", async () => {
     const missing = path.join(flowsDir, "elsewhere", "missing.yaml");
     const result = await runOuter(
       `  - tool: e2e-read-prerequisite\n    args: { flow_path: ${missing}, project_root: ${root} }\n`
@@ -78,10 +80,32 @@ describe("a tool: step with flow_path, without a link", () => {
 
     expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toBe(
-      `File "${missing}" was not found on the tool-server host and the client did not upload ` +
-        `its content. Either the file does not exist, or it changed since it was referenced — ` +
-        `re-create it (or re-run the producing tool) and try again.`
+      `there is no file at "${missing}" (argument flow_path of e2e-read-prerequisite)`
     );
+  });
+
+  it("fails a step whose file argument is a directory", async () => {
+    const dir = path.join(root, "shots.png");
+    await fs.mkdir(dir);
+    const result = await runOuter(
+      `  - tool: screenshot-diff\n    args: { baselinePath: ${dir}, currentPath: ${dir} }\n`
+    );
+
+    expect(result.steps[0].status).toBe("error");
+    expect(result.steps[0].reason).toBe(
+      `there is no file at "${dir}" (argument baselinePath of screenshot-diff)`
+    );
+  });
+
+  it("hands a flow_path with any extension to the tool's own checks", async () => {
+    const yml = path.join(flowsDir, "elsewhere", "frag.yml");
+    await fs.copyFile(path.join(flowsDir, "elsewhere", "frag.yaml"), yml);
+    const result = await runOuter(
+      `  - tool: e2e-read-prerequisite\n    args: { flow_path: ${yml}, project_root: ${root} }\n`
+    );
+
+    expect(result.steps[0].status).toBe("error");
+    expect(result.steps[0].reason).toContain("e2e test files must use the .yaml extension");
   });
 
   it("leaves the path that a tool builds from name to the tool itself", async () => {

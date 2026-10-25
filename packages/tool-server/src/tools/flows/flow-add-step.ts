@@ -927,11 +927,12 @@ const RUN_TARGET_COMMAND = "e2e-execute";
  * Rewrite a nested `flow-execute` target from `flow_path` to the equivalent
  * `name`, in place — or reject the call before anything runs.
  *
- * The recorder keeps a nested `flow_path` only as a `run:` step. A sibling of
- * the recording, or a test in the project's other e2e test directory, is the
- * one target with that form: the same file the `name` + `project_root` pair
- * already resolves to, beside a directory flow-start-recording established
- * through its own boundary. Every other flow_path is refused here.
+ * The recorder keeps a nested `flow_path` only as the `name` it equals. A
+ * sibling of the recording, or a test in the project's other e2e test
+ * directory, is the one target with such a name: the same file the `name` +
+ * `project_root` pair already resolves to, beside a directory
+ * flow-start-recording established through its own boundary. Every other
+ * flow_path is refused here.
  * The on-disk spelling is the answer of `project`, on the client over a link;
  * a linked call whose client sent no files has no answer to give, and is
  * refused.
@@ -949,7 +950,7 @@ async function rewriteSiblingFlowPath(
   const invalid = (detail: string): FailureError =>
     new FailureError(
       `Cannot record an e2e-execute of flow_path "${flowPath}": ${detail}. The recorder keeps ` +
-        `a flow_path only as a \`run:\` step — pass name + project_root for an e2e test saved ` +
+        `a flow_path only as the name it equals — pass name + project_root for an e2e test saved ` +
         `beside the recording, or add a \`run: <relative path>.yaml\` step to the e2e test YAML ` +
         `by hand for a cross-directory target.`,
       {

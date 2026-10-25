@@ -183,7 +183,7 @@ export async function prepareToolStepInputs(
   const files = toolStepFilePaths(registry, toolId, args).filter(
     ({ spec }) => spec.unwrapWhenSet === undefined || args[spec.unwrapWhenSet] === undefined
   );
-  if (project.mode === "host") return prepareHostFileArguments(files, args);
+  if (project.mode === "host") return prepareHostFileArguments(toolId, files, args);
   if (files.length === 0) return { args, cleanup: async () => {} };
   const wrapped: Record<string, unknown> = { ...args };
   for (const file of files) {
@@ -218,10 +218,13 @@ export async function prepareToolStepInputs(
 /**
  * Wraps each file argument as an unlinked argent client does (stat, no
  * content), giving the tool a direct call's `ctx.fileInputs`; `e2e-execute`
- * and `e2e-read-prerequisite` refuse a `flow_path` without them. Other
- * inputs (directories, apps, paths built from several args) stay as written.
+ * and `e2e-read-prerequisite` refuse a `flow_path` without them. A path
+ * that is not a file fails the step, named as the client branch names it.
+ * Other inputs (directories, apps, paths built from several args) stay as
+ * written.
  */
 async function prepareHostFileArguments(
+  toolId: string,
   files: ToolStepFile[],
   args: Record<string, unknown>
 ): Promise<PreparedToolStep> {
@@ -229,9 +232,18 @@ async function prepareHostFileArguments(
   if (fileArgs.length === 0) return { args, cleanup: async () => {} };
   const wrapped: Record<string, unknown> = { ...args };
   for (const file of fileArgs) {
-    const wire: FileInputWire = { [FILE_INPUT_MARKER]: true, path: file.path };
     const st = await stat(file.path).catch(() => null);
-    if (st?.isFile()) Object.assign(wire, { size: st.size, mtimeMs: st.mtimeMs });
+    if (!st?.isFile()) {
+      throw new FileInputError(
+        `there is no file at "${file.path}" (argument ${file.spec.target} of ${toolId})`
+      );
+    }
+    const wire: FileInputWire = {
+      [FILE_INPUT_MARKER]: true,
+      path: file.path,
+      size: st.size,
+      mtimeMs: st.mtimeMs,
+    };
     wrapped[file.spec.target] = wire;
   }
   const resolved = await resolveFileInputs({ fileInputs: fileArgs.map((f) => f.spec) }, wrapped);
