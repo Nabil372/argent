@@ -48,9 +48,9 @@ describe("flow-execute parameter handling", () => {
       } catch (err) {
         caught = err;
       }
-      expect(caught).toBeDefined(); // the missing e2e test, not the platform
-      expect(caught).not.toBeInstanceOf(InvalidToolInputError);
-      expect((caught as Error).message).not.toContain("`platform`");
+      // Past the schema: the run fails on the missing e2e test.
+      expect(getFailureSignal(caught)?.error_code).not.toBe(FAILURE_CODES.TOOL_INPUT_INVALID);
+      expect((caught as Error).message).toContain("x.yaml");
     }
   });
 
