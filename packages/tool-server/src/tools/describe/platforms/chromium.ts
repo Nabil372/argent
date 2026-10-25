@@ -281,7 +281,9 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     }
     return (
       overflowApplies(el, style) &&
-      (/layout/.test(style.contain || "") || paintContained(style) || /contain/.test(willChange))
+      (/layout/.test(style.contain || "") ||
+        paintContained(style) ||
+        /(^|,)\\s*contain\\s*(,|$)/.test(willChange))
     );
   }
 
@@ -311,14 +313,26 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   }
 
   // Padding box in viewport px, scrollbars excluded, and the scale (sx, sy) from layout
-  // px to the rendered (transformed) box. A non-HTML clipper (<svg>, <foreignObject>)
-  // has no offset* to scale by, so its rect is the clip.
-  function paddingBox(el) {
+  // px to the rendered (transformed) box. A non-HTML clipper has no offset* to scale by:
+  // an outer <svg> clips at its content box, a <foreignObject> at its rect.
+  function paddingBox(el, style) {
     const vp = nestedSvgViewport(el);
     if (vp) return vp;
     const r = getBCR.call(el);
     if (!(el instanceof HTMLElement)) {
-      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, sx: 1, sy: 1 };
+      const inset = (side) =>
+        el instanceof SVGSVGElement
+          ? (parseFloat(style["border" + side + "Width"]) || 0) +
+            (parseFloat(style["padding" + side]) || 0)
+          : 0;
+      return {
+        left: r.left + inset("Left"),
+        top: r.top + inset("Top"),
+        right: r.right - inset("Right"),
+        bottom: r.bottom - inset("Bottom"),
+        sx: 1,
+        sy: 1,
+      };
     }
     const ow = getOffsetWidth.call(el);
     const oh = getOffsetHeight.call(el);
@@ -337,9 +351,13 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   }
 
   // How far overflow-clip-margin moves a clip edge out of the padding box. It applies
-  // only where the axis clips by overflow: clip or by paint containment.
+  // only where the axis clips by overflow: clip or by paint containment, and to
+  // overflow: clip only when both axes clip.
   function clipMargin(style, overflow, side, scale) {
     if (overflow !== "clip" && overflow !== "visible") return 0;
+    if (!paintContained(style) && (style.overflowX !== "clip" || style.overflowY !== "clip")) {
+      return 0;
+    }
     const v = style.overflowClipMargin || "";
     const len = parseFloat(v.replace(/^[a-z-]+/, "")) || 0;
     let box = 0;
@@ -349,11 +367,18 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   }
 
   // The root's overflow clips the viewport, not its box, and so does the body's unless
-  // the root's is set; both are left to the viewport clamp. Chromium ignores overflow
+  // the root's is set; the viewport is left to the clamp. Chromium ignores overflow
   // on inline HTML boxes and on table rows, row groups and columns.
   function overflowApplies(el, style) {
     const tag = getTagName.call(el);
-    if (tag === "HTML" || tag === "BODY") return false;
+    if (tag === "HTML") return false;
+    if (tag === "BODY") {
+      const doc = getOwnerDocument.call(el);
+      const rootStyle = doc && doc.documentElement && window.getComputedStyle(doc.documentElement);
+      if (!rootStyle || (rootStyle.overflowX === "visible" && rootStyle.overflowY === "visible")) {
+        return false;
+      }
+    }
     if (el.namespaceURI === "http://www.w3.org/2000/svg") return true;
     return style.display !== "inline" && !/^table-(row|column|header|footer)/.test(style.display);
   }
@@ -366,7 +391,7 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
       const cx = paint || style.overflowX !== "visible";
       const cy = paint || style.overflowY !== "visible";
       if (cx || cy) {
-        const p = paddingBox(el);
+        const p = paddingBox(el, style);
         const ox = style.overflowX;
         const oy = style.overflowY;
         inner = intersect(clip, {
@@ -377,12 +402,30 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
         });
       }
     }
+    return clipsWithin(el, style, clips, inner);
+  }
+
+  // The clips children get when \`el\` clips its content to \`inner\`.
+  function clipsWithin(el, style, clips, inner) {
     const fixedBlock = containsFixed(el, style);
     return {
       flow: inner,
       abs: fixedBlock || style.position !== "static" ? inner : clips.abs,
       fixed: fixedBlock ? inner : clips.fixed,
     };
+  }
+
+  // A fieldset's overflow clips its content box, never its rendered legend: the first
+  // <legend> child that is neither floated nor out of flow.
+  function isRenderedLegend(el, kids, i) {
+    if (getTagName.call(el) !== "FIELDSET") return false;
+    const inFlowLegend = (kid) => {
+      if (getTagName.call(kid) !== "LEGEND") return false;
+      const ks = window.getComputedStyle(kid);
+      return ks.cssFloat === "none" && ks.position !== "absolute" && ks.position !== "fixed";
+    };
+    for (let j = 0; j < i; j++) if (inFlowLegend(kids[j])) return false;
+    return inFlowLegend(kids[i]);
   }
 
   // Painted extent of an element's own inline TEXT. A box-less element (display:contents,
@@ -524,7 +567,13 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
       const slot = getAssignedSlot.call(kids[i]);
       // A slot the walk pruned paints none of its assigned nodes.
       if (slot && !slotClips.has(slot)) continue;
-      const kidClips = inPicker(el, kids[i], i) ? NO_CLIP : slot ? slotClips.get(slot) : inner;
+      const kidClips = inPicker(el, kids[i], i)
+        ? NO_CLIP
+        : slot
+          ? slotClips.get(slot)
+          : isRenderedLegend(el, kids, i)
+            ? clipsWithin(el, style, clips, clip)
+            : inner;
       const c = walk(kids[i], depth + 1, kidClips);
       if (c) childResults.push(c);
     }

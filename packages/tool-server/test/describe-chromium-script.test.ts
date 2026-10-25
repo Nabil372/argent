@@ -99,6 +99,7 @@ type Opts = {
   offset?: { width: number; height: number }; // untransformed border-box size
   scrollSize?: { width: number; height: number }; // scrollWidth / scrollHeight
   svg?: boolean; // an Element in the SVG namespace
+  outerSvg?: boolean; // an outermost <svg> element
   // A nested <svg>: its viewport in the parent's user space, mapped by the parent's
   // screen CTM [a, b, c, d, e, f].
   nestedSvg?: { viewport: Rect; ctm: number[] };
@@ -116,9 +117,13 @@ type Opts = {
 
 function el(opts: Opts = {}): MockElement {
   const node = (
-    opts.nestedSvg ? new MockSVGSVGElement() : opts.svg ? new MockElement() : new MockHTMLElement()
+    opts.nestedSvg || opts.outerSvg
+      ? new MockSVGSVGElement()
+      : opts.svg
+        ? new MockElement()
+        : new MockHTMLElement()
   ) as MockElement & Record<string, unknown>;
-  if (opts.svg || opts.nestedSvg) node.namespaceURI = "http://www.w3.org/2000/svg";
+  if (opts.svg || opts.nestedSvg || opts.outerSvg) node.namespaceURI = "http://www.w3.org/2000/svg";
   if (opts.nestedSvg) {
     const { viewport: v, ctm } = opts.nestedSvg;
     const len = (value: number) => ({ animVal: { value } });
@@ -204,6 +209,7 @@ function el(opts: Opts = {}): MockElement {
     overflowX: "visible",
     overflowY: "visible",
     position: "static",
+    cssFloat: "none",
   };
   const s = { ...baseStyle, ...(opts.style ?? {}) };
   if (opts.style?.overflow && !opts.style.overflowX) s.overflowX = opts.style.overflow;
@@ -227,10 +233,14 @@ function inputEl(opts: Opts & { type?: string; value?: string; placeholder?: str
 
 function run(
   rootChildren: MockElement[],
-  body: MockElement = el({ tag: "body", rect: { x: 0, y: 0, w: W, h: H } })
+  body: MockElement = el({ tag: "body", rect: { x: 0, y: 0, w: W, h: H } }),
+  rootStyle: Record<string, string> = {}
 ): { tree: unknown; truncated: boolean } {
-  const root = el({ tag: "html", rect: { x: 0, y: 0, w: W, h: H } }) as MockElement &
-    Record<string, unknown>;
+  const root = el({
+    tag: "html",
+    rect: { x: 0, y: 0, w: W, h: H },
+    style: rootStyle,
+  }) as MockElement & Record<string, unknown>;
   if (rootChildren.length) (body as Record<string, unknown>).children = rootChildren;
   root.children = [body];
 
@@ -316,6 +326,7 @@ function run(
       };
     },
   };
+  (body as Record<string, unknown>).ownerDocument = g.document;
   g.Node = MockNode;
   g.Element = MockElement;
   g.HTMLInputElement = MockHTMLInputElement;
@@ -1017,6 +1028,28 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "inner-out").h).toBe(0);
   });
 
+  it("cuts a row scrolled past the top edge there", () => {
+    const { tree } = run([scroller([row("above", { x: 1, y: -30, w: 285, h: 40 })])]);
+    expect(pxFrame(tree, "above")).toEqual({ x: 1, y: 1, w: 285, h: 9 });
+  });
+
+  it("scales each axis of the padding box by the clipper's own scale", () => {
+    // Rendered at 2x by 0.5x: the padding box spans x 2..572, y 0.5..49.5.
+    const { tree } = run([
+      scroller(
+        [row("upper", { x: 2, y: 0, w: 100, h: 10 }), row("lower", { x: 2, y: 40, w: 600, h: 20 })],
+        {
+          rect: { x: 0, y: 0, w: 600, h: 50 },
+          client: { left: 1, top: 1, width: 285, height: 98 },
+          offset: { width: 300, height: 100 },
+          style: { overflow: "hidden", transform: "matrix(2, 0, 0, 0.5, 0, 0)" },
+        }
+      ),
+    ]);
+    expect(pxFrame(tree, "upper")).toEqual({ x: 2, y: 0.5, w: 100, h: 9.5 });
+    expect(pxFrame(tree, "lower")).toEqual({ x: 2, y: 40, w: 570, h: 9.5 });
+  });
+
   it("clips shadow-root content by its host's clip", () => {
     const { tree } = run([
       scroller([], {
@@ -1133,6 +1166,13 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
       const contained = run([scroller([fixed()], { style: { overflow: "hidden", ...style } })]);
       expect(pxFrame(contained.tree, "fixed").h, JSON.stringify(style)).toBe(0);
     }
+    const hinted = (willChange: string) =>
+      pxFrame(
+        run([scroller([fixed()], { style: { overflow: "hidden", willChange } })]).tree,
+        "fixed"
+      );
+    expect(hinted("opacity, contain").h).toBe(0);
+    expect(hinted("contain-intrinsic-size")).toEqual({ x: 10, y: 500, w: 80, h: 20 });
   });
 
   it("ignores transforms on inline boxes and containment on them and on table rows", () => {
@@ -1171,7 +1211,12 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
   });
 
   it("lets a top-layer box and its content escape a clip that contains fixed boxes", () => {
-    for (const topLayer of [":modal", ":popover-open", ":fullscreen"]) {
+    for (const [topLayer, position] of [
+      [":modal", "fixed"],
+      [":popover-open", "fixed"],
+      [":popover-open", "absolute"],
+      [":fullscreen", "fixed"],
+    ]) {
       const { tree } = run([
         scroller(
           [
@@ -1179,7 +1224,7 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
               topLayer,
               attrs: { id: "dialog" },
               rect: { x: 400, y: 400, w: 200, h: 100 },
-              style: { position: "fixed" },
+              style: { position },
               children: [row("confirm", { x: 420, y: 420, w: 80, h: 20 })],
             }),
           ],
@@ -1260,8 +1305,23 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
         }
       ).h
     ).toBe(8);
-    // overflow: hidden ignores the margin.
+    // overflow: hidden ignores the margin, and so does a clip on one axis only.
     expect(margin({ overflow: "hidden", overflowClipMargin: "30px" }).h).toBe(0);
+    expect(
+      margin(
+        { overflowX: "clip", overflowY: "visible", overflowClipMargin: "30px" },
+        {},
+        { x: 290, y: 10, w: 60, h: 20 }
+      ).w
+    ).toBe(9);
+    // The left and top edges move out too: the padding box starts at 101, the clip at 71.
+    expect(
+      margin(
+        { overflow: "clip", overflowClipMargin: "30px" },
+        { rect: { x: 100, y: 100, w: 300, h: 100 }, offset: { width: 300, height: 100 } },
+        { x: 60, y: 60, w: 20, h: 20 }
+      )
+    ).toEqual({ x: 71, y: 71, w: 9, h: 9 });
   });
 
   it("clips only the axes whose overflow is not visible", () => {
@@ -1295,7 +1355,14 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
   });
 
   it("ignores overflow where Chromium does not apply it", () => {
-    for (const display of ["inline", "contents", "table-row", "table-row-group"]) {
+    for (const display of [
+      "inline",
+      "contents",
+      "table-row",
+      "table-row-group",
+      "table-header-group",
+      "table-footer-group",
+    ]) {
       const { tree } = run([
         scroller([row("out", { x: 1, y: 150, w: 100, h: 20 })], {
           style: { overflow: "hidden", display },
@@ -1314,6 +1381,41 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     });
     const { tree } = run([row("far", { x: 0, y: 900, w: 100, h: 20 })], body);
     expect(pxFrame(tree, "far")).toEqual({ x: 0, y: 900, w: 100, h: 20 });
+  });
+
+  it("treats the body's overflow as a clip once the root's overflow is set", () => {
+    const body = el({
+      tag: "body",
+      rect: { x: 0, y: 0, w: W, h: 50 },
+      client: { left: 0, top: 0, width: W, height: 50 },
+      style: { overflow: "auto" },
+    });
+    const { tree } = run([row("far", { x: 0, y: 900, w: 100, h: 20 })], body, {
+      overflow: "hidden",
+    });
+    expect(pxFrame(tree, "far").h).toBe(0);
+  });
+
+  it("does not clip a fieldset's rendered legend by the fieldset's overflow", () => {
+    const legend = (id: string, y: number, style: Record<string, string> = {}) =>
+      el({ tag: "legend", attrs: { id }, rect: { x: 20, y, w: 60, h: 10 }, style });
+    const { tree } = run([
+      el({
+        tag: "fieldset",
+        rect: { x: 0, y: 0, w: 300, h: 100 },
+        client: { left: 16, top: 16, width: 268, height: 68 },
+        offset: { width: 300, height: 100 },
+        style: { overflow: "hidden" },
+        children: [
+          legend("floated", 2, { cssFloat: "left" }),
+          legend("rendered", 3),
+          legend("second", 4),
+          row("content", { x: 20, y: 5, w: 60, h: 10 }),
+        ],
+      }),
+    ]);
+    expect(pxFrame(tree, "rendered")).toEqual({ x: 20, y: 3, w: 60, h: 10 });
+    for (const id of ["floated", "second", "content"]) expect(pxFrame(tree, id).h, id).toBe(0);
   });
 
   it("scales the padding box by the clipper's transform", () => {
@@ -1339,12 +1441,39 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     ]);
   });
 
-  it("clips to an inline <svg>'s rect", () => {
+  it("clips to an outer <svg>'s content box", () => {
+    const { tree } = run([
+      el({
+        outerSvg: true,
+        tag: "svg",
+        rect: { x: 0, y: 0, w: 150, h: 90 },
+        style: {
+          display: "inline",
+          overflow: "hidden",
+          paddingLeft: "20px",
+          paddingTop: "20px",
+          paddingRight: "20px",
+          paddingBottom: "20px",
+          borderLeftWidth: "5px",
+          borderTopWidth: "5px",
+          borderRightWidth: "5px",
+          borderBottomWidth: "5px",
+        },
+        children: [
+          row("drawn", { x: 30, y: 30, w: 10, h: 10 }),
+          row("padding", { x: 130, y: 30, w: 10, h: 10 }),
+        ],
+      }),
+    ]);
+    expect(pxFrame(tree, "drawn")).toEqual({ x: 30, y: 30, w: 10, h: 10 });
+    expect(pxFrame(tree, "padding").w).toBe(0);
+  });
+
+  it("clips to a <foreignObject>'s rect", () => {
     const { tree } = run([
       el({
         svg: true,
-        tag: "svg",
-        attrs: { id: "viewport" },
+        tag: "foreignObject",
         rect: { x: 0, y: 0, w: 300, h: 100 },
         style: { display: "inline", overflow: "hidden" },
         children: [
@@ -1387,6 +1516,27 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "svin")).toEqual({ x: 30, y: 20, w: 20, h: 20 });
     expect(pxFrame(tree, "svedge")).toEqual({ x: 120, y: 70, w: 10, h: 10 });
     expect(pxFrame(tree, "svout").w).toBe(0);
+  });
+
+  it("maps a non-square nested <svg> viewport by its own width and height", () => {
+    const { tree } = run([
+      el({
+        svg: true,
+        tag: "svg",
+        rect: { x: 0, y: 0, w: 300, h: 200 },
+        style: { display: "inline", overflow: "hidden" },
+        children: [
+          el({
+            tag: "svg",
+            nestedSvg: { viewport: { x: 0, y: 0, w: 100, h: 20 }, ctm: [1, 0, 0, 1, 0, 0] },
+            rect: { x: 0, y: 0, w: 100, h: 20 },
+            style: { display: "inline", overflow: "hidden" },
+            children: [row("wide", { x: 50, y: 5, w: 20, h: 10 })],
+          }),
+        ],
+      }),
+    ]);
+    expect(pxFrame(tree, "wide")).toEqual({ x: 50, y: 5, w: 20, h: 10 });
   });
 
   it("clips everything under an HTML clipper whose padding box is empty", () => {
