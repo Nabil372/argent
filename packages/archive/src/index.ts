@@ -144,7 +144,7 @@ async function assertSingleCompleteZstdFrame(archivePath: string): Promise<void>
         [0, 1, 2, 4][descriptor & 3]! + // dictionary id
         [singleSegment, 2, 4, 8][descriptor >> 6]!; // frame content size
       let hasData = false;
-      for (let last = 0; !last; ) {
+      for (let last = 0; !last;) {
         const block = (await read(3)).readUIntLE(0, 3);
         last = block & 1;
         const type = (block >> 1) & 3;
