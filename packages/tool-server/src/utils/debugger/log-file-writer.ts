@@ -302,7 +302,13 @@ function cutMessage(message: string, max: number): string {
   let end = max;
   const last = message.charCodeAt(end - 1);
   if (last >= 0xd800 && last <= 0xdbff) end--;
-  return `${message.slice(0, end)}…`;
+  return flatCopy(`${message.slice(0, end)}…`);
+}
+
+// V8 slices point into their parent string, so without a copy each ring entry
+// would keep the whole original message alive.
+function flatCopy(text: string): string {
+  return Buffer.from(text, "utf16le").toString("utf16le");
 }
 
 function parseFlatLine(line: string): RichLogEntry | null {
