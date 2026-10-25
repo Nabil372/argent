@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -37,7 +37,7 @@ describe("stop-metro port probe", () => {
     setPlatform(originalPlatform);
   });
 
-  it("reports stopped:false when lsof exits non-zero", async () => {
+  it("reports stopped:false when lsof exits 1", async () => {
     probeThrows({ message: "Command failed: lsof -ti tcp:8081 -sTCP:LISTEN", status: 1 });
 
     await expect(runStopMetro(8081)).resolves.toEqual({ stopped: false, port: 8081, pids: [] });
@@ -81,6 +81,18 @@ describe("stop-metro port probe", () => {
     expect(kill.mock.calls).toEqual([
       [4242, "SIGTERM"],
       [4243, "SIGTERM"],
+    ]);
+  });
+
+  it("runs lsof by absolute path, for listeners only", async () => {
+    execFileSyncMock.mockReturnValue("4242\n");
+
+    await runStopMetro(8081);
+
+    const lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].find((p) => existsSync(p)) ?? "lsof";
+    expect(execFileSyncMock.mock.calls[0].slice(0, 2)).toEqual([
+      lsof,
+      ["-ti", "tcp:8081", "-sTCP:LISTEN"],
     ]);
   });
 
@@ -147,8 +159,8 @@ describe("procListeningPids", () => {
     addProcess("200", { "5": "socket:[222]" });
     addProcess("300", { "5": "socket:[333]" });
     addProcess("400", { "7": "socket:[444]" });
-    addProcess("500", { "3": "socket:[1111]" });
-    mkdirSync(join(proc, "self"));
+    addProcess("500", { "3": "socket:[1111]", "4": "/tmp/socket:[111]" });
+    addProcess("self", { "21": "socket:[111]" });
     mkdirSync(join(proc, "600")); // fd dir unreadable: another user's process
 
     expect(procListeningPids(8081, proc).sort()).toEqual([100, 400]);
@@ -175,8 +187,29 @@ describe("procListeningPids", () => {
     mkdirSync(join(proc, "100"));
 
     expect(() => procListeningPids(8081, proc)).toThrow(
-      "no process visible to this user owns the socket listening on port 8081"
+      "no visible process owns a socket listening on port 8081; it belongs to another user or PID namespace"
     );
+  });
+
+  it("fails instead of reporting the port freed when one of its listeners is not visible", () => {
+    writeTable("tcp", [
+      row("0100007F:1F91", "00000000:0000", "0A", 111),
+      row("0200007F:1F91", "00000000:0000", "0A", 222),
+    ]);
+    writeTable("tcp6", []);
+    addProcess("100", { "3": "socket:[111]" });
+    mkdirSync(join(proc, "200"));
+
+    expect(() => procListeningPids(8081, proc)).toThrow(
+      "no visible process owns a socket listening on port 8081"
+    );
+  });
+
+  it("fails when the tcp6 table exists but cannot be read", () => {
+    writeTable("tcp", []);
+    mkdirSync(join(proc, "net", "tcp6"));
+
+    expect(() => procListeningPids(8081, proc)).toThrow(/EISDIR/);
   });
 
   it("fails when the tcp table cannot be read", () => {

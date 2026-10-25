@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync } from "node:fs";
 import type { ToolDefinition } from "@argent/registry";
 
 /**
@@ -61,6 +61,7 @@ export function procListeningPids(port: number, proc = "/proc"): number[] {
   }
   if (inodes.size === 0) return [];
 
+  const owned = new Set<string>();
   const pids: number[] = [];
   for (const entry of readdirSync(proc)) {
     if (!/^\d+$/.test(entry)) continue;
@@ -71,21 +72,33 @@ export function procListeningPids(port: number, proc = "/proc"): number[] {
       // Another user's process, or one that already exited.
       continue;
     }
-    const owns = fds.some((fd) => {
+    let owns = false;
+    for (const fd of fds) {
+      let target: string;
       try {
-        const target = readlinkSync(`${proc}/${entry}/fd/${fd}`);
-        return inodes.has(target.match(/^socket:\[(\d+)\]$/)?.[1] ?? "");
+        target = readlinkSync(`${proc}/${entry}/fd/${fd}`);
       } catch {
-        return false;
+        continue;
       }
-    });
+      const inode = target.match(/^socket:\[(\d+)\]$/)?.[1];
+      if (inode && inodes.has(inode)) {
+        owned.add(inode);
+        owns = true;
+      }
+    }
     if (owns) pids.push(parseInt(entry, 10));
   }
-  if (pids.length === 0) {
-    throw new Error(`no process visible to this user owns the socket listening on port ${port}`);
+  // Killing only the visible listeners would report the port freed while one still holds it.
+  if (owned.size < inodes.size) {
+    throw new Error(
+      `no visible process owns a socket listening on port ${port}; it belongs to another user or PID namespace`
+    );
   }
   return pids;
 }
+
+// Absolute, since an MCP client may launch the tool-server with a PATH that omits /usr/sbin.
+const LSOF_BIN = ["/usr/sbin/lsof", "/usr/bin/lsof"].find((p) => existsSync(p)) ?? "lsof";
 
 /**
  * PIDs *listening* on a TCP port, cross-platform. Only the listener (Metro) is
@@ -110,12 +123,12 @@ function listeningPids(port: number): number[] {
   if (process.platform === "linux") return procListeningPids(port);
   let output: string;
   try {
-    output = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], {
+    output = execFileSync(LSOF_BIN, ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], {
       encoding: "utf-8",
       timeout: 5_000,
     }).trim();
   } catch (error) {
-    // lsof exits 1 when nothing is listening on the port.
+    // lsof exits 1 when it finds no listener, including one owned by a user whose sockets it cannot see.
     if ((error as { status?: unknown }).status === 1) return [];
     throw error;
   }
@@ -149,7 +162,7 @@ export const stopMetroTool: ToolDefinition<
     failedMsg: ({ params, failureSignal }) =>
       `Failed to stop Metro on port ${params.port}: ${failureSignal.error_code}`,
   },
-  description: `Stop the Metro bundler process listening on a given port (default 8081). Use when the user asks to stop Metro or when Metro must be restarted - do not offer it when a task wraps up, since the next task would wait on a cold Metro start. Returns { stopped, port, pids }; stopped=false if no process is found on the port. Fails if the port lookup cannot run, times out, or cannot identify the process listening on the port. This is DESTRUCTIVE: always ask the user for confirmation before calling this tool.`,
+  description: `Stop the Metro bundler process listening on a given port (default 8081). Use when the user asks to stop Metro or when Metro must be restarted - do not offer it when a task wraps up, since the next task would wait on a cold Metro start. Returns { stopped, port, pids }; stopped=false if no listener is found on the port. Fails if the port lookup cannot run or times out, or if it finds a listener but not the process that owns it. This is DESTRUCTIVE: always ask the user for confirmation before calling this tool.`,
   zodSchema,
   services: () => ({}),
   async execute(_services, params) {
