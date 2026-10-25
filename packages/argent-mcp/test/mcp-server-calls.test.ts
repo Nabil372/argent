@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -334,6 +334,31 @@ describe("startMcpServer tool calls", () => {
       await vi.waitFor(() => expect(stub.hungUp).toEqual([route]));
     }
   );
+
+  it("skips the fallback wait for the screen once the client cancels", async () => {
+    vi.stubEnv("ARGENT_AUTO_SCREENSHOT_DELAY_MS", "60000");
+    stub.hanging.add("/tools/await-screen-idle");
+    const controller = new AbortController();
+
+    const pending = client.callTool(
+      { name: "gesture-tap", arguments: { udid: "dev-1", x: 0.5, y: 0.5 } },
+      undefined,
+      { signal: controller.signal }
+    );
+    await vi.waitFor(() =>
+      expect(requests.filter((r) => r.url === "/tools/await-screen-idle")).toHaveLength(1)
+    );
+    controller.abort("cancelled during the wait");
+
+    await expect(pending).rejects.toThrow("cancelled during the wait");
+    // The handler's last step logs the describe it skipped.
+    await vi.waitFor(() =>
+      expect(readFileSync(join(TEST_HOME, "mcp-calls.log"), "utf8")).toContain(
+        '"error":"cancelled during the wait"'
+      )
+    );
+    expect(requests.map((r) => r.url)).not.toContain("/tools/screenshot");
+  });
 
   it("puts the tool-server's note before the result", async () => {
     const result = await client.callTool({ name: "noted", arguments: {} });

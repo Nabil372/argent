@@ -149,7 +149,8 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
    * Lets the screen settle before capturing, bounded by the per-tool budget:
    * `await-screen-idle` polls the tree server-side and usually returns well
    * under the cap. If the call fails (e.g. a tool-server without that tool),
-   * falls back to sleeping the full budget. Resolves whether it settled.
+   * falls back to sleeping the full budget, unless the call was cancelled.
+   * Resolves whether it settled.
    */
   async function awaitScreenSettled(
     udid: string,
@@ -169,7 +170,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
       });
       return (idle.result as { settled?: unknown } | null)?.settled === true;
     } catch {
-      await new Promise((r) => setTimeout(r, maxWaitMs));
+      if (!signal.aborted) await new Promise((r) => setTimeout(r, maxWaitMs));
       return false;
     }
   }

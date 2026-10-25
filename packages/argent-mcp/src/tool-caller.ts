@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { createToolsClient, type ToolMeta, type ToolsServerHandle } from "@argent/tools-client";
 
 const MAX_RETRIES = 4;
@@ -50,7 +51,9 @@ export async function fetchWithReconnect(
         await reconnect();
       }
       // Exponential backoff: 250ms, 500ms, 1s, 2s (~3.75s total + reconnect time)
-      await new Promise((r) => setTimeout(r, expBackoffBase * Math.pow(2, attempt)));
+      await sleep(expBackoffBase * Math.pow(2, attempt), undefined, {
+        signal: callerSignal ?? undefined,
+      }).catch(() => callerSignal?.throwIfAborted());
     } finally {
       clearTimeout(timer);
     }
