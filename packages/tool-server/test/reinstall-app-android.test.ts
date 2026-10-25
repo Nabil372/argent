@@ -17,6 +17,8 @@ const device = {
   hidden: new Set<string>(),
   // Before API 24: a failed `adb uninstall` exits 0, and `adb shell` output ends lines with \r\n.
   legacy: false,
+  // `pm list packages` fails, e.g. the package manager is restarting.
+  pmFails: false,
   apkPackage: "",
   calls: [] as string[][],
 };
@@ -40,6 +42,7 @@ function fakeAdb(args: readonly string[]): AdbResult | Error {
   if (command === "shell") {
     const filter = /^pm list packages '(.+)'$/.exec(rest[0]!)?.[1];
     if (filter === undefined) throw new Error(`unexpected shell command: ${rest[0]}`);
+    if (device.pmFails) return failure(`shell ${rest[0]}`, "cmd: Can't find service: package\n");
     const lines = [...device.installed].filter(
       (pkg) => pkg.includes(filter) && !device.hidden.has(pkg)
     );
@@ -139,6 +142,7 @@ beforeEach(() => {
   device.updatedSystem = new Set();
   device.hidden = new Set();
   device.legacy = false;
+  device.pmFails = false;
   device.calls = [];
 });
 
@@ -197,6 +201,20 @@ describe("reinstall-app on Android", () => {
     device.system.add("com.android.settings");
 
     expectUninstallFailure(await rejection(reinstall("com.android.settings")));
+  });
+
+  it("fails without installing, saying the app may be gone, when the check after the uninstall fails", async () => {
+    device.installed.add("com.example.app");
+    device.pmFails = true;
+
+    const err = await rejection(reinstall("com.example.app"));
+
+    expect(getFailureSignal(err)).toMatchObject({
+      error_code: FAILURE_CODES.ANDROID_REINSTALL_INSTALL_FAILED,
+      failure_stage: "android_reinstall_check_uninstall",
+    });
+    expect((err as Error).message).toContain("the app may be gone");
+    expect(ran("install")).toEqual([]);
   });
 
   it("does not mistake a package whose name contains bundleId for bundleId", async () => {
