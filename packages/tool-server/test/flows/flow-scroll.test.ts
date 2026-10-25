@@ -349,6 +349,74 @@ describe("scroll-to directive", () => {
     expect(swipes).toHaveLength(1);
   });
 
+  // Without `within`, a target is measured against the innermost scroller holding
+  // it: a row cut flush at that scroller's clip edge is only partly revealed.
+  async function scrollWithoutWithin(
+    name: string,
+    nodes: (scrolled: boolean) => DescribeNode[],
+    target: string
+  ): Promise<SwipeCall[]> {
+    let scrolled = false;
+    currentTree = () => screen(nodes(scrolled));
+    const swipes: SwipeCall[] = [];
+    const registry = mockRegistry(swipes, () => {
+      scrolled = true;
+    });
+    await writeFlow(name, {
+      executionPrerequisite: "",
+      steps: [{ kind: "scroll-to", target: { identifier: target }, direction: "down" }],
+    });
+    const result = asRun(
+      await createRunFlowTool(registry).execute({}, { name, project_root: tmpDir, device: DEVICE })
+    );
+    expect(result.steps[0].status).toBe("pass");
+    return swipes;
+  }
+
+  it("measures a target without `within` against the clip window of the scroller holding it", async () => {
+    const swipes = await scrollWithoutWithin(
+      "enclosing-clip",
+      (scrolled) => [
+        n({
+          identifier: "list",
+          scrollable: true,
+          frame: { x: 0, y: 0.1, width: 1, height: 0.8 },
+          clipFrame: { x: 0, y: 0.1, width: 1, height: 0.7 },
+        }),
+        n({
+          identifier: "row",
+          frame: scrolled
+            ? { x: 0.1, y: 0.4, width: 0.8, height: 0.1 }
+            : { x: 0.1, y: 0.75, width: 0.8, height: 0.05 },
+        }),
+      ],
+      "row"
+    );
+    expect(swipes).toHaveLength(1);
+  });
+
+  it("measures a scroller target against its enclosing scroller, not its own clip window", async () => {
+    const swipes = await scrollWithoutWithin(
+      "own-clip",
+      (scrolled) => {
+        const frame = scrolled
+          ? { x: 0.1, y: 0.4, width: 0.8, height: 0.2 }
+          : { x: 0.1, y: 0.7, width: 0.8, height: 0.1 };
+        return [
+          n({
+            identifier: "list",
+            scrollable: true,
+            frame: { x: 0, y: 0.1, width: 1, height: 0.8 },
+            clipFrame: { x: 0, y: 0.1, width: 1, height: 0.7 },
+          }),
+          n({ identifier: "inner", scrollable: true, frame, clipFrame: frame }),
+        ];
+      },
+      "inner"
+    );
+    expect(swipes).toHaveLength(1);
+  });
+
   it("accepts a last item flush at the far edge once the scroll hits its end", async () => {
     // The LAST item sits flush against the container's far edge at max scroll —
     // the axis check can never clear its entry edge. Since the tree stops

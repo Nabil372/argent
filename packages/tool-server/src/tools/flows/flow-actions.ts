@@ -670,6 +670,34 @@ function anchorScrollFrames(tree: DescribeNode, anchor: { x: number; y: number }
   return frames;
 }
 
+/**
+ * The smallest content window (`clipFrame`) of another scroll container holding
+ * `target`'s frame. A target scrolled without `within` is revealed into it, and a
+ * partly revealed target's frame ends flush at its edge rather than the screen's.
+ */
+function enclosingClipFrame(tree: DescribeNode, target: DescribeNode): DescribeFrame | undefined {
+  const { frame } = target;
+  let best: DescribeFrame | undefined;
+  const walk = (node: DescribeNode): void => {
+    const c = node.clipFrame;
+    if (
+      c &&
+      node !== target &&
+      isVisible(node) &&
+      frame.x >= c.x - EDGE_EPS &&
+      frame.y >= c.y - EDGE_EPS &&
+      frame.x + frame.width <= c.x + c.width + EDGE_EPS &&
+      frame.y + frame.height <= c.y + c.height + EDGE_EPS &&
+      (!best || c.width * c.height < best.width * best.height)
+    ) {
+      best = c;
+    }
+    for (const child of node.children) walk(child);
+  };
+  walk(tree);
+  return best;
+}
+
 function collectFocused(node: DescribeNode, acc: DescribeNode[]): DescribeNode[] {
   if (node.focused) acc.push(node);
   for (const child of node.children) collectFocused(child, acc);
@@ -829,15 +857,20 @@ async function scrollToVisible(
     // Anchor the gesture inside the container (so the right nested scroller
     // moves), or over the whole screen when none is named. The axis check
     // measures the target against the window the container clips its content
-    // to, or against its frame where the source does not report one.
+    // to, or against its frame where the source does not report one. With no
+    // container named, that window is the innermost scroller holding the target.
     const container = within ? flowSelectorToNode(tree, within, orientation) : undefined;
     const region = within ? container?.frame : FULL_SCREEN;
     if (!region) {
       return { reason: `scroll container ${describeSelector(within!)} is not visible` };
     }
 
-    const frame = flowSelectorToFrame(tree, target, orientation);
-    if (frame && axisFullyInside(frame, axisDirection, container?.clipFrame ?? region)) {
+    const targetNode = flowSelectorToNode(tree, target, orientation);
+    const frame = targetNode?.frame;
+    const clip = container
+      ? (container.clipFrame ?? region)
+      : ((targetNode && enclosingClipFrame(tree, targetNode)) ?? region);
+    if (frame && axisFullyInside(frame, axisDirection, clip)) {
       return { frame, ...warnedBy(warning) };
     }
 
