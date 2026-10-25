@@ -447,7 +447,7 @@ describe("scroll-to directive", () => {
     expect(swipes[0].fromY).toBeCloseTo(0.35);
   });
 
-  it("scrolls a `within` target until the clip cutting it no longer does, in any container", async () => {
+  it("scrolls a `within` target in the scroller cutting it, not at the named container's centre", async () => {
     // A padded panel round the list, which does not scroll itself.
     const panel = n({ identifier: "panel", frame: { x: 0, y: 0.2, width: 1, height: 0.75 } });
     const swipes = await scrollTo("cut-within", (scrolled) => [panel, cutRow(scrolled)], {
@@ -455,8 +455,63 @@ describe("scroll-to directive", () => {
       within: { identifier: "panel" },
     });
     expect(swipes).toHaveLength(1);
-    // Anchored in the named container, not the clip.
+    expect(swipes[0].fromY).toBeCloseTo(0.6);
+  });
+
+  it("anchors a `within` gesture in the named container when the cut is across the axis", async () => {
+    const panel = n({ identifier: "panel", frame: { x: 0, y: 0.2, width: 1, height: 0.75 } });
+    const swipes = await scrollTo(
+      "cross-within",
+      (scrolled) => [
+        panel,
+        n({
+          identifier: "card",
+          frame: scrolled
+            ? { x: 0.6, y: 0.6, width: 0.2, height: 0.1 }
+            : { x: 0.6, y: 0.97, width: 0.2, height: 0.03 },
+          clipBounds: { x: 0.2, y: 0, width: 0.6, height: 1 },
+        }),
+      ],
+      { target: { identifier: "card" }, within: { identifier: "panel" } }
+    );
+    expect(swipes).toHaveLength(1);
+    expect(swipes[0].fromX).toBeCloseTo(0.5);
     expect(swipes[0].fromY).toBeCloseTo(0.575);
+  });
+
+  it("moves a cut target no further than its visible start is from the window's", async () => {
+    // A 0.4 window at 0.4-0.8 on the axis; the target is taller than half of it,
+    // and a 0.2 increment would carry its start past the window's.
+    const cases = [
+      { direction: "down", cut: { y: 0.5, height: 0.3 }, after: { y: 0.4, height: 0.35 } },
+      { direction: "up", cut: { y: 0.4, height: 0.3 }, after: { y: 0.45, height: 0.35 } },
+      { direction: "right", cut: { x: 0.5, width: 0.3 }, after: { x: 0.4, width: 0.35 } },
+      { direction: "left", cut: { x: 0.4, width: 0.3 }, after: { x: 0.45, width: 0.35 } },
+    ];
+    for (const { direction, cut, after } of cases) {
+      const vertical = direction === "up" || direction === "down";
+      const base = vertical ? { x: 0.6, width: 0.3 } : { y: 0.3, height: 0.1 };
+      const swipes = await scrollTo(
+        `room-${direction}`,
+        (scrolled) => [
+          n({
+            identifier: "card",
+            frame: { ...base, ...(scrolled ? after : cut) } as DescribeNode["frame"],
+            clipBounds: scrolled
+              ? undefined
+              : vertical
+                ? { x: 0, y: 0.4, width: 1, height: 0.4 }
+                : { x: 0.4, y: 0, width: 0.4, height: 1 },
+          }),
+        ],
+        { target: { identifier: "card" }, direction }
+      );
+      expect(swipes, direction).toHaveLength(1);
+      const travel = vertical
+        ? Math.abs(swipes[0].fromY - swipes[0].toY)
+        : Math.abs(swipes[0].fromX - swipes[0].toX);
+      expect(travel, direction).toBeCloseTo(0.1);
+    }
   });
 
   it("measures a `within` target against an inner scroller cutting it, not the container's window", async () => {
@@ -472,6 +527,9 @@ describe("scroll-to directive", () => {
       within: { identifier: "pane" },
     });
     expect(swipes).toHaveLength(1);
+    // In the inner list: anchored on the pane, the gesture would carry it along.
+    expect(swipes[0].fromX).toBeCloseTo(0.75);
+    expect(swipes[0].fromY).toBeCloseTo(0.6);
   });
 
   it("measures a target cut on the cross axis only against the screen along the scroll axis", async () => {

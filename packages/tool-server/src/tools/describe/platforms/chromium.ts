@@ -272,7 +272,10 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   // Whether an element is the containing block of fixed descendants. Chromium ignores
   // transforms on inline boxes, and containment wherever it ignores overflow.
   function containsFixed(el, style) {
-    const hints = (style.willChange || "").split(",").map((t) => t.trim());
+    // Computed will-change keeps the author's case and -webkit- aliases.
+    const hints = (style.willChange || "")
+      .split(",")
+      .map((t) => t.trim().toLowerCase().replace(/^-webkit-/, ""));
     const hinted = (...props) => props.some((p) => hints.includes(p));
     if (isSet(style.filter) || isSet(style.backdropFilter) || hinted("filter", "backdrop-filter")) {
       return true;
@@ -415,6 +418,10 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     if (style.display === "contents") return clips;
     let inner = clip;
     if (overflowApplies(el, style)) {
+      // content-visibility: hidden paints none of the content.
+      if (style.contentVisibility === "hidden") {
+        return clipsWithin(el, style, clips, { left: 0, top: 0, right: 0, bottom: 0 });
+      }
       const paint = paintContained(style);
       const cx = paint || style.overflowX !== "visible";
       const cy = paint || style.overflowY !== "visible";
@@ -534,9 +541,10 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     if (r.width > 0 && r.height > 0) return false;
     // Zero-area box: prune it only when it clips its overflow (a collapsed
     // overflow:hidden container genuinely hides its content). With the default
-    // overflow:visible, abs-positioned / overflowing / floated descendants still
-    // paint, so walk() must descend and promote them instead of cutting the subtree.
-    return overflowClips(style);
+    // overflow:visible, or overflow Chromium ignores, abs-positioned / overflowing /
+    // floated descendants still paint, so walk() must descend and promote them
+    // instead of cutting the subtree.
+    return overflowApplies(el, style) && overflowClips(style);
   }
 
   // Smallest normalized box covering every surviving child frame — the frame we give

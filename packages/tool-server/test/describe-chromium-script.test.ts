@@ -1035,15 +1035,59 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
       w: 1000,
       h: 98,
     });
+    expect(findById(tree({}, { x: 1, y: 1, w: 285.5, h: 20 }), "r")!.clipBounds).toBeUndefined();
+    expect(pxFrame(tree({}, { x: 1, y: 1, w: 286.5, h: 20 }), "r", "clipBounds")).toEqual({
+      x: 1,
+      y: 0,
+      w: 285,
+      h: 1000,
+    });
+    // Either edge of either axis, and overflow: scroll as well as auto.
+    const window = { x: 0, y: 1, w: 1000, h: 98 };
+    expect(pxFrame(tree({}, { x: 1, y: -19, w: 285, h: 40 }), "r", "clipBounds")).toEqual(window);
+    expect(pxFrame(tree({ overflow: "scroll" }, PART), "r", "clipBounds")).toEqual(window);
+    expect(pxFrame(tree({}, { x: -40, y: 1, w: 100, h: 20 }), "r", "clipBounds")).toEqual({
+      x: 1,
+      y: 0,
+      w: 285,
+      h: 1000,
+    });
     // Each axis by its own overflow.
     const mixed = { overflowX: "hidden", overflowY: "auto" };
     expect(findById(tree(mixed, { x: 1, y: 1, w: 400, h: 20 }), "r")!.clipBounds).toBeUndefined();
+    expect(findById(tree(mixed, { x: -40, y: 1, w: 100, h: 20 }), "r")!.clipBounds).toBeUndefined();
+    const across = { overflowX: "scroll", overflowY: "hidden" };
+    expect(
+      findById(tree(across, { x: 1, y: -19, w: 285, h: 40 }), "r")!.clipBounds
+    ).toBeUndefined();
+    expect(pxFrame(tree(across, { x: -40, y: 1, w: 100, h: 20 }), "r", "clipBounds")).toEqual({
+      x: 1,
+      y: 0,
+      w: 285,
+      h: 1000,
+    });
     expect(pxFrame(tree(mixed, { x: 1, y: 81, w: 400, h: 40 }), "r", "clipBounds")).toEqual({
       x: 0,
       y: 1,
       w: 1000,
       h: 98,
     });
+  });
+
+  it("reports the window every scroll container cutting the element leaves", () => {
+    // The inner list's window runs to 150; the outer one's stops at 99.
+    const { tree } = run([
+      scroller([
+        el({
+          rect: { x: 1, y: 50, w: 200, h: 100 },
+          client: { left: 0, top: 0, width: 200, height: 100 },
+          offset: { width: 200, height: 100 },
+          style: { overflow: "auto" },
+          children: [row("r", { x: 1, y: 80, w: 200, h: 40 })],
+        }),
+      ]),
+    ]);
+    expect(pxFrame(tree, "r", "clipBounds")).toEqual({ x: 0, y: 50, w: 1000, h: 49 });
   });
 
   it("reports the scroll container's window, not a fixed clip's inside it", () => {
@@ -1276,6 +1320,10 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
       { willChange: "filter" },
       { willChange: "backdrop-filter" },
       { willChange: "transform-style" },
+      // Computed will-change keeps the author's case and the -webkit- aliases.
+      { willChange: "TRANSFORM" },
+      { willChange: "-webkit-transform" },
+      { willChange: "Backdrop-Filter" },
     ];
     for (const style of containingBlocks) {
       const contained = run([scroller([fixed()], { style: { overflow: "hidden", ...style } })]);
@@ -1424,6 +1472,7 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     ).toBe(8);
     // overflow: hidden ignores the margin, and so does a clip on one axis only.
     expect(margin({ overflow: "hidden", overflowClipMargin: "30px" }).h).toBe(0);
+    expect(margin({ overflow: "hidden", contain: "paint", overflowClipMargin: "30px" }).h).toBe(0);
     expect(
       margin(
         { overflowX: "clip", overflowY: "visible", overflowClipMargin: "30px" },
@@ -1834,6 +1883,49 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
       ]),
     ]);
     expect(pxFrame(tree, "contents-text").h).toBe(0);
+  });
+
+  it("frames nothing inside content-visibility: hidden, which paints none of it", () => {
+    const panel = (contentVisibility: string) =>
+      el({
+        rect: { x: 0, y: 0, w: 300, h: 100 },
+        client: { left: 0, top: 0, width: 300, height: 100 },
+        offset: { width: 300, height: 100 },
+        style: { contentVisibility },
+        children: [
+          row("in", { x: 1, y: 1, w: 100, h: 20 }),
+          row("fixed", { x: 10, y: 500, w: 80, h: 20 }, { position: "fixed" }),
+        ],
+      });
+    const hidden = run([panel("hidden")]).tree;
+    expect(pxFrame(hidden, "in").h).toBe(0);
+    expect(pxFrame(hidden, "fixed").h).toBe(0);
+    expect(pxFrame(run([panel("auto")]).tree, "in")).toEqual({ x: 1, y: 1, w: 100, h: 20 });
+  });
+
+  it("keeps the content of a zero-area box whose overflow Chromium ignores", () => {
+    // A scroll-locked body whose content is all fixed, and an inline link round an icon.
+    const body = el({
+      tag: "body",
+      rect: { x: 0, y: 0, w: W, h: 0 },
+      style: { overflow: "hidden" },
+    });
+    const locked = run([row("save", { x: 10, y: 10, w: 80, h: 20 }, { position: "fixed" })], body);
+    expect(pxFrame(locked.tree, "save")).toEqual({ x: 10, y: 10, w: 80, h: 20 });
+    const link = el({
+      tag: "a",
+      rect: { x: 0, y: 0, w: 0, h: 0 },
+      style: { display: "inline", overflow: "hidden" },
+      children: [row("icon", { x: 10, y: 10, w: 20, h: 20 }, { position: "absolute" })],
+    });
+    expect(pxFrame(run([link]).tree, "icon")).toEqual({ x: 10, y: 10, w: 20, h: 20 });
+    // A block that clips its overflow still hides its content.
+    const block = el({
+      rect: { x: 0, y: 0, w: 0, h: 0 },
+      style: { overflow: "hidden" },
+      children: [row("gone", { x: 10, y: 10, w: 20, h: 20 }, { position: "absolute" })],
+    });
+    expect(findById(run([block]).tree, "gone")).toBeNull();
   });
 
   it("ignores position on a box-less element: its text is in flow, it contains nothing", () => {
