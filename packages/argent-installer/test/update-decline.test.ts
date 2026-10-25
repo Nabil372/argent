@@ -332,6 +332,38 @@ describe("update — record-only local project stays updatable", () => {
   });
 });
 
+describe("update — local mode uses the project's package manager", () => {
+  it("updates a yarn project with yarn, not the launcher's npm", async () => {
+    topologyState.globalInstalled = false;
+    fs.writeFileSync(
+      path.join(projDir, "package.json"),
+      JSON.stringify({ name: "proj", devDependencies: { "@swmansion/argent": "^1.0.0" } })
+    );
+    fs.writeFileSync(path.join(projDir, "yarn.lock"), "");
+    const pkgDir = path.join(projDir, "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    const localPkgJson = path.join(pkgDir, "package.json");
+    fs.writeFileSync(localPkgJson, JSON.stringify({ name: "@swmansion/argent", version: "1.0.0" }));
+    childProcessMock.execFileSync.mockImplementation(((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args.some((a) => a.includes("@swmansion/argent"))) {
+        fs.writeFileSync(
+          localPkgJson,
+          JSON.stringify({ name: "@swmansion/argent", version: "99.0.0" })
+        );
+      }
+      return undefined;
+    }) as never);
+
+    await update(["--yes", "--local"]);
+
+    expect(childProcessMock.execFileSync).toHaveBeenCalledWith(
+      "yarn",
+      ["add", "--dev", "@swmansion/argent@99.0.0"],
+      expect.anything()
+    );
+  });
+});
+
 describe("update — customized MCP entries survive the refresh and the sweep", () => {
   it("never rewrites (or sweeps away) a customized global-scope entry", async () => {
     // Local-mode project, no global argent on PATH — the exact setup where the
