@@ -204,7 +204,7 @@ describe("chromiumCdpBlueprint (smoke)", () => {
     }
   });
 
-  it("open-url fails with the classified error when the page rejects the navigation", async () => {
+  it("open-url fails with the classified error when Chromium rejects the navigation", async () => {
     const s = await startFakeCdp();
     servers.push(s);
     s.setReply("Page.navigate", { frameId: "F", errorText: "net::ERR_NAME_NOT_RESOLVED" });

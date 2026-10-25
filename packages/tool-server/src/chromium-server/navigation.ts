@@ -19,12 +19,13 @@ export async function navigate(cdp: CDPClient, url: string): Promise<void> {
     errorText?: string;
     isDownload?: boolean;
   };
-  // Chromium sets errorText even when the URL did take effect: an HTTP error
-  // status still loads a page, a download is saved, and a javascript: URL runs.
+  // Chromium sets errorText even when the URL took effect: the server answered
+  // with an HTTP error status, or a download started. A javascript: URL never
+  // loads a page, so its errorText says nothing about whether the script ran.
   if (
     !errorText ||
     errorText === "net::ERR_HTTP_RESPONSE_CODE_FAILURE" ||
-    isDownload ||
+    (isDownload && errorText === "net::ERR_ABORTED") ||
     isJavascriptUrl(url)
   )
     return;
@@ -32,8 +33,8 @@ export async function navigate(cdp: CDPClient, url: string): Promise<void> {
   throw new FailureError(
     `Chromium could not navigate: ${errorText}.` +
       (errorText === "net::ERR_ABORTED"
-        ? " The page did not change. Chromium aborts a URL it does not load in a page," +
-          " such as tel:, mailto:, an unknown scheme, or a response with no content."
+        ? " Chromium aborts a URL it does not load in a page, such as tel:, mailto: or an" +
+          " unknown scheme, a response with no content, and a navigation another one replaced."
         : ""),
     {
       error_code: FAILURE_CODES.CHROMIUM_NAVIGATE_FAILED,

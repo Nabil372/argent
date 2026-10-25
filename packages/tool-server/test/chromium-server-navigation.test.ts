@@ -47,9 +47,9 @@ describe("chromium-server/navigation", () => {
       "http://user:pass@h/?token=secret"
     ).catch((e: unknown) => e);
     expect((err as Error).message).toBe(
-      "Chromium could not navigate: net::ERR_ABORTED. The page did not change. Chromium aborts" +
-        " a URL it does not load in a page, such as tel:, mailto:, an unknown scheme, or a" +
-        " response with no content."
+      "Chromium could not navigate: net::ERR_ABORTED. Chromium aborts a URL it does not load in" +
+        " a page, such as tel:, mailto: or an unknown scheme, a response with no content, and a" +
+        " navigation another one replaced."
     );
   });
 
@@ -57,6 +57,15 @@ describe("chromium-server/navigation", () => {
     const send = vi.fn().mockResolvedValue({ errorText: "net::ERR_ABORTED", isDownload: true });
     await expect(navigate({ send } as unknown as CDPClient, "http://h/f.zip")).resolves.toBe(
       undefined
+    );
+  });
+
+  it("navigate: throws on a download whose response failed", async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValue({ errorText: "net::ERR_INVALID_RESPONSE", isDownload: true });
+    await expect(navigate({ send } as unknown as CDPClient, "http://h/404.zip")).rejects.toThrow(
+      "Chromium could not navigate: net::ERR_INVALID_RESPONSE."
     );
   });
 
