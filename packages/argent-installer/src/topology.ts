@@ -11,15 +11,9 @@ import { isYarnPnp } from "./preflight.js";
 // and local (project dependency, the committable "team-share" flow).
 // update/uninstall probe and handle each independently.
 
-// `which argent` also matches copies no global install owns: temp package
-// runners (npx / pnpm dlx / bunx / yarn dlx) prepend their cache's
-// `node_modules/.bin` to PATH, and so does `npx`/`npm exec` for the cwd and
-// every ancestor. A global prefix never links its bin into a `.bin` dir. The
-// `_npx`, `dlx-` and bun-cache markers catch older layouts whose bin sits
-// directly in a `bin/` dir.
+// `which argent` also matches temp package runners (npx / pnpm dlx / bunx /
+// yarn dlx), which prepend their cache .bin/ dir to PATH.
 const TEMP_RUNNER_MARKERS = [
-  "node_modules/.bin",
-  "node_modules\\.bin",
   "_npx",
   "/dlx-",
   "\\dlx-",
@@ -29,6 +23,20 @@ const TEMP_RUNNER_MARKERS = [
 
 function isTempRunnerPath(binaryPath: string): boolean {
   return TEMP_RUNNER_MARKERS.some((marker) => binaryPath.includes(marker));
+}
+
+// Binaries that must never be pinned into a global MCP entry, on top of the
+// temp runners: any `node_modules/.bin` (npx / npm exec prepend the cwd's and
+// every ancestor's, current pnpm dlx and versioned bunx use one too) and yarn
+// berry's per-command `xfs-<hash>` node wrapper. Kept out of
+// isGloballyInstalled, because yarn v1 links its global bin into a `.bin` dir.
+const UNPINNABLE_MARKERS = ["node_modules/.bin", "node_modules\\.bin", "/xfs-", "\\xfs-"];
+
+function isPinnablePath(binaryPath: string): boolean {
+  return (
+    !isTempRunnerPath(binaryPath) &&
+    !UNPINNABLE_MARKERS.some((marker) => binaryPath.includes(marker))
+  );
 }
 
 /** Every `name` on PATH, in PATH order (`which -a` / `where`). */
@@ -113,12 +121,14 @@ export function cliEntryOf(packageRoot: string | null): string | null {
  * it. Null when there is no global install or its layout can't be resolved.
  */
 export function getGloballyInstalledLaunchPaths(): { cli: string; node: string | null } | null {
-  const binaryPath = getGlobalBinaryPath();
+  const binaryPath = whichAll(MCP_BINARY_NAME).find(isPinnablePath) ?? null;
   const cli = cliEntryOf(packageRootOfBinary(binaryPath));
   if (!binaryPath || !cli) return null;
   // `which -a` echoes relative PATH entries as-is; the editor would resolve a
   // relative `node` against its own cwd, so anchor them to this one.
-  const binDirs = [binaryPath, ...whichAll("node")].map((bin) => path.dirname(path.resolve(bin)));
+  const binDirs = [binaryPath, ...whichAll("node").filter(isPinnablePath)].map((bin) =>
+    path.dirname(path.resolve(bin))
+  );
   return { cli, node: binDirs.map(nodeBeside).find((node) => node !== null) ?? null };
 }
 
