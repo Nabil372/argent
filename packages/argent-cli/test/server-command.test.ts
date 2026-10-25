@@ -119,10 +119,31 @@ describe("argent server status / stop / logs", () => {
     expect(JSON.parse(output())).toMatchObject({ running: true, pid: 4242, port: 3001 });
   });
 
-  it("reads the log", async () => {
+  it("reports the status as text without --json", async () => {
+    await server(["status"]);
+
+    expect(output()).toContain("  pid:        4242");
+  });
+
+  it("reports a missing log", async () => {
     await server(["logs"]);
 
     expect(output()).toBe(`No log file at ${path.join(home, ".argent", "tool-server.log")}`);
+  });
+
+  it("prints the log once without -f", async () => {
+    const logFile = path.join(home, ".argent", "tool-server.log");
+    fs.mkdirSync(path.dirname(logFile), { recursive: true });
+    fs.writeFileSync(logFile, "line\n");
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    try {
+      await server(["logs"]);
+    } finally {
+      fs.rmSync(logFile);
+    }
+
+    expect(write).toHaveBeenCalledWith("line\n");
+    expect(childProcess.spawn).not.toHaveBeenCalled();
   });
 
   it.each(["-f", "--follow"])("follows the log with %s", async (flag) => {

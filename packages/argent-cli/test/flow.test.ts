@@ -1402,14 +1402,14 @@ describe("argent e2e run", () => {
     expect(logs.join("\n")).toBe(".argent/e2e/linked.yaml");
   });
 
-  it("prints the help for list --help instead of listing", async () => {
+  it.each(["--help", "-h"])("prints the help for list %s instead of listing", async (flag) => {
     const listRoot = path.join(tempRoot, "list-help-project");
     await fsp.mkdir(path.join(listRoot, ".argent", "e2e"), { recursive: true });
     await fsp.writeFile(path.join(listRoot, ".argent", "e2e", "a.yaml"), "steps: []\n");
     const previousCwd = process.cwd();
     try {
       process.chdir(listRoot);
-      await flow(["list", "--help"], opts);
+      await flow(["list", flag], opts);
     } finally {
       process.chdir(previousCwd);
     }

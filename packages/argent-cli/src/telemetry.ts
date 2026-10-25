@@ -25,7 +25,8 @@ export async function telemetry(args: string[]): Promise<void> {
   const wantsHelp = args.includes("--help") || args.includes("-h");
   if (!wantsHelp) {
     try {
-      const { positionals, options } = parseCommandArgs(args.slice(1), TELEMETRY_OPTIONS);
+      const specs = sub === "status" ? {} : TELEMETRY_OPTIONS;
+      const { positionals, options } = parseCommandArgs(args.slice(1), specs);
       if (positionals.length > 0) {
         throw new UsageError(`Unexpected argument "${positionals[0]}".`);
       }

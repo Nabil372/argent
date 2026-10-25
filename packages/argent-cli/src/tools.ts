@@ -83,6 +83,7 @@ Listing tools contacts the argent tool-server, starting one if none is running.
     parsed = parseCommandArgs(argv, TOOLS_OPTIONS);
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
+    if (argv.includes("--help") || argv.includes("-h")) return printUsage();
     return usageError(err.message);
   }
   const [sub, name, extra] = parsed.positionals;

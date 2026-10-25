@@ -144,6 +144,12 @@ describe("argent secrets", () => {
     expect(out).toContain("gitignore this file");
   });
 
+  it.each([[["list", "--help"]], [["list", "-h"]]])("prints the help for %j", async (argv) => {
+    await secrets(argv);
+    expect(output()).toContain("Usage: argent secrets [list] [--json]");
+    expect(errSpy).not.toHaveBeenCalled();
+  });
+
   it.each([
     [["list", "--jsno"], "Unknown flag: --jsno"],
     [["--json", "--jsno"], "Unknown flag: --jsno"],

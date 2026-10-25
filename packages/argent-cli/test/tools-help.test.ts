@@ -51,6 +51,7 @@ describe("argent tools --help", () => {
     [["--help", "--json"]],
     [["--json", "--help"]],
     [["describe", "--help"]],
+    [["--jsno", "--help"]],
   ])("prints usage for %j without contacting the tool-server", async (argv) => {
     await invoke(argv);
 
@@ -83,6 +84,16 @@ describe("argent tools --help", () => {
   it("still lists tools when no subcommand is given", async () => {
     await invoke([]);
     expect(toolsClientMock.fetchTools).toHaveBeenCalled();
+  });
+
+  it("prints the tool list as JSON with --json", async () => {
+    await invoke(["--json"]);
+    expect(JSON.parse(output())).toEqual([{ name: "gesture-tap", description: "Tap the screen" }]);
+  });
+
+  it("prints a described tool as JSON with --json", async () => {
+    await invoke(["describe", "gesture-tap", "--json"]);
+    expect(JSON.parse(output())).toMatchObject({ name: "gesture-tap" });
   });
 
   it("still describes a named tool", async () => {
