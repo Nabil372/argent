@@ -3093,15 +3093,15 @@ function errMsg(err: unknown): string {
  * reached us, so they are reported apart from the boundary gate — a caller
  * that did use the boundary must not be told to use the boundary. A host path
  * is checked as the string execute() will open; an upload's client spelling is
- * checked as the path the caller wrote, the one every message quotes.
+ * checked as the path the client sent, the one every message quotes.
  */
 function assertFlowPathShape(flowPath: string): void {
   // Reject a relative path: this string seeds canonicalFlowPath in execute(),
   // which requires an absolute input — its realpath, the read, and every root
   // anchor derived from the one canonical result would otherwise resolve
   // against the tool server's working directory, which is not the caller's.
-  // `argent flow list` prints relative paths, so this is the spelling an agent
-  // is most likely to pass back.
+  // The argent client resolves a relative flow_path before sending it, so only
+  // a direct HTTP caller reaches this.
   const windows = windowsPathRefusal("flow_path", flowPath);
   if (windows) {
     throw new FailureError(windows, {

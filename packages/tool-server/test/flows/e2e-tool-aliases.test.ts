@@ -61,10 +61,12 @@ function runShape(result: FlowRunResult) {
 }
 
 describe("the recording tools", () => {
-  it("each declare project_root as a file input, so the client resolves a relative root", () => {
+  it("each declare project_root as a probe file input, so the client resolves a relative root", () => {
     const registry = createRegistry();
     const declaring = [...RECORDING_TOOL_IDS].filter((id) =>
-      registry.getTool(id)!.fileInputs?.some((spec) => spec.target === "project_root")
+      registry
+        .getTool(id)!
+        .fileInputs?.some((spec) => spec.target === "project_root" && spec.kind === "probe")
     );
 
     expect(declaring).toEqual([...RECORDING_TOOL_IDS]);

@@ -181,10 +181,11 @@ function interpolatePath(template: string, args: Record<string, unknown>): strin
  * `p` as an absolute path on this machine. The tool-server works in the
  * directory of whichever client spawned it, so it cannot resolve a relative
  * path. A path with a `..` segment is prefixed, not normalized: collapsing `..`
- * ignores symlinks, so it can name another file than the kernel opens.
+ * ignores symlinks, so it can name another file than the kernel opens. A
+ * Windows path on another OS is left for the tool-server to refuse.
  */
 function callerPath(p: string): string {
-  if (path.isAbsolute(p)) return p;
+  if (path.isAbsolute(p) || path.win32.isAbsolute(p)) return p;
   return p.split(/[\\/]/).includes("..") ? `${process.cwd()}${path.sep}${p}` : path.resolve(p);
 }
 

@@ -554,6 +554,20 @@ describe("prepareFileInputs — relative paths", () => {
     expect(out.project_root!.members).toEqual([]);
   });
 
+  it("sends a Windows path as written on another OS, for the tool-server to refuse", async () => {
+    const specs: FileInputSpec[] = [
+      { target: "project_root", path: "${project_root}", kind: "probe" },
+    ];
+
+    const out = (await prepareFileInputs(
+      specs,
+      { project_root: "C:\\work\\app" },
+      { includeContent: false }
+    )) as Record<string, FileInputWire>;
+
+    expect(out.project_root!.path).toBe("C:\\work\\app");
+  });
+
   it("finds a .. segment written with Windows separators", async () => {
     vi.resetModules();
     vi.doMock("node:path", () => ({ ...path.win32, default: path.win32 }));
