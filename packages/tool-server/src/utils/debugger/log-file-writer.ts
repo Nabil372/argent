@@ -45,7 +45,8 @@ export interface LogStats {
   fileSizeBytes: number;
   /**
    * Entries logged after the file stopped at MAX_ENTRIES: in no count, cluster
-   * or file line, only in tail(). Present only when non-zero.
+   * or file line; tail() keeps only the newest TAIL_MAX per level. Present only
+   * when non-zero.
    */
   droppedEntries?: number;
 }
