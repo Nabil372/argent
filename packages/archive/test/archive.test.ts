@@ -177,6 +177,20 @@ describe("trackTarEnd", () => {
     expect(ended(tar.subarray(0, dataEnd), 7)).toBe(false);
   });
 
+  it("skips the sparse-map blocks of a GNU sparse member", () => {
+    const header = Buffer.alloc(512);
+    header.write("sparse", 0);
+    header.write("00000001000\0", 124); // 512 bytes of data
+    header[156] = 0x53; // 'S'
+    header[482] = 1; // a sparse-map block follows
+    const map = Buffer.alloc(512);
+    map.write("00000000000\0", 0); // one region; byte 504 is 0, so the last block
+    const tar = Buffer.concat([header, map, Buffer.alloc(512), Buffer.alloc(1024)]);
+    expect(ended(tar.subarray(0, 512 * 3))).toBe(false);
+    expect(ended(tar.subarray(0, 512 * 4))).toBe(false);
+    expect(ended(tar)).toBe(true);
+  });
+
   it("reads a base-256 size field", () => {
     const header = Buffer.alloc(512);
     header.write("big", 0);

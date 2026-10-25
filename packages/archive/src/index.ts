@@ -89,6 +89,9 @@ export function trackTarEnd(): { push(chunk: Buffer): void; ended(): boolean } {
   let seen = 0;
   let nextHeader = 0;
   let zeroBlocks = 0;
+  let dataSize = 0;
+  // A GNU sparse ('S') header can be followed by sparse-map blocks its size omits.
+  let sparseMap = false;
   return {
     push(chunk) {
       for (let off = 0; off < chunk.length && zeroBlocks < 2;) {
@@ -104,12 +107,17 @@ export function trackTarEnd(): { push(chunk: Buffer): void; ended(): boolean } {
         off += n;
         if (filled < TAR_BLOCK) return;
         filled = 0;
-        if (header.every((b) => b === 0)) {
+        if (sparseMap) {
+          sparseMap = header[504] !== 0;
+        } else if (header.every((b) => b === 0)) {
           zeroBlocks++;
+          continue;
         } else {
           zeroBlocks = 0;
-          nextHeader = seen + Math.ceil(tarMemberSize(header) / TAR_BLOCK) * TAR_BLOCK;
+          dataSize = tarMemberSize(header);
+          sparseMap = header[156] === 0x53 && header[482] !== 0;
         }
+        if (!sparseMap) nextHeader = seen + Math.ceil(dataSize / TAR_BLOCK) * TAR_BLOCK;
       }
     },
     ended: () => zeroBlocks >= 2,
