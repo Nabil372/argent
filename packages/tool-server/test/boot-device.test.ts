@@ -294,12 +294,27 @@ describe("boot-device — iOS path", () => {
 
     it("does not open a Simulator.app on record as crashing at launch", async () => {
       launchSimulatorAppMock.mockResolvedValue(false);
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
 
       await expect(createBootDeviceTool(registry).execute!({}, { udid })).resolves.toMatchObject({
         booted: true,
       });
       expect(launchSimulatorAppMock).toHaveBeenCalledWith(SIMULATOR_APP, expect.any(Function));
       expect(openCalls()).toEqual([]);
+      expect(stderr).toHaveBeenCalledWith(
+        expect.stringContaining(
+          `not opening ${SIMULATOR_APP}: it exited right after an earlier launch`
+        )
+      );
+      stderr.mockRestore();
+    });
+
+    it("says nothing about the record when the Simulator.app opens", async () => {
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+
+      await createBootDeviceTool(registry).execute!({}, { udid });
+      expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining("simulator-app-launch.json"));
+      stderr.mockRestore();
     });
 
     it("bounds the GUI lookups with a timeout", async () => {

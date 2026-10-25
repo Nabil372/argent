@@ -11,6 +11,7 @@ vi.mock("node:child_process", async () => {
 });
 
 import { launchSimulatorApp } from "../src/utils/simulator-app-launch";
+import { PS_BIN } from "../src/utils/vega-process";
 
 const APP = "/Applications/Xcode.app/Contents/Developer/Applications/Simulator.app";
 const EXECUTABLE = `${APP}/Contents/MacOS/Simulator`;
@@ -26,7 +27,7 @@ let psExecutable: string;
 let psFails: boolean;
 let launch: Mock<() => Promise<unknown>>;
 
-const psCalls = () => mockExecFile.mock.calls.filter(([file]) => file === "ps").length;
+const psCalls = () => mockExecFile.mock.calls.filter(([file]) => file === PS_BIN).length;
 const verdicts = () =>
   JSON.parse(fs.readFileSync(path.join(home, ".argent", "simulator-app-launch.json"), "utf8"));
 
@@ -52,8 +53,12 @@ beforeEach(() => {
     const callback = args[args.length - 1] as (err: Error | null, out?: unknown) => void;
     let stdout = "";
     if (file === "plutil") {
+      if (argv[1] !== "CFBundleVersion") {
+        callback(new Error(`no ${argv[1]}`));
+        return {};
+      }
       stdout = argv.at(-1)!.startsWith(APP) ? "1042.1\n" : `${coreSimulatorBuild}\n`;
-    } else if (file === "ps") {
+    } else if (file === PS_BIN) {
       if (psFails) {
         callback(new Error("ps failed"));
         return {};
@@ -100,6 +105,16 @@ describe("launchSimulatorApp", () => {
 
     await expect(result).resolves.toBe(true);
     expect(verdicts()).toEqual({ [`${APP} 1042.1 / CoreSimulator 1166`]: "crashes" });
+  });
+
+  it("stops watching once the watch window has passed", async () => {
+    appRunning = true;
+    const result = launchSimulatorApp(APP, launch);
+    await vi.advanceTimersByTimeAsync(5_100);
+    appRunning = false;
+
+    await expect(result).resolves.toBe(true);
+    expect(verdicts()).toEqual({ [`${APP} 1042.1 / CoreSimulator 1166`]: "runs" });
   });
 
   it("launches a crashing app once for parallel callers", async () => {

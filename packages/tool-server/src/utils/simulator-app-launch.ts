@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { withKeyedLock } from "./keyed-lock";
+import { PS_BIN } from "./vega-process";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,7 +63,7 @@ async function launchKey(simulatorApp: string): Promise<string> {
 // `ps` prints the on-disk case, which a case-insensitive volume need not share
 // with the path the app was opened by.
 async function isRunning(executable: string): Promise<boolean> {
-  const { stdout } = await execFileAsync("ps", ["-axo", "comm="], { timeout: 5_000 });
+  const { stdout } = await execFileAsync(PS_BIN, ["-axo", "comm="], { timeout: 5_000 });
   const wanted = executable.toLowerCase();
   return stdout.split("\n").some((line) => line.trim().toLowerCase() === wanted);
 }
