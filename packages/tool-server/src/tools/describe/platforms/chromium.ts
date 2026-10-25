@@ -249,7 +249,9 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     return i > 0 || getTagName.call(child) !== "BUTTON";
   }
 
+  // A display: contents element has no box to position: its own text is in flow.
   function ownClip(clips, style) {
+    if (style.display === "contents") return clips.flow;
     if (style.position === "absolute") return clips.abs;
     if (style.position === "fixed") return clips.fixed;
     return clips.flow;
@@ -325,6 +327,18 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     const vp = nestedSvgViewport(el);
     if (vp) return vp;
     const r = getBCR.call(el);
+    // A quirks-mode body reports the viewport's client size, so its own borders measure it.
+    if (getTagName.call(el) === "BODY" && getOwnerDocument.call(el)?.compatMode === "BackCompat") {
+      const border = (side) => parseFloat(style["border" + side + "Width"]) || 0;
+      return {
+        left: r.left + border("Left"),
+        top: r.top + border("Top"),
+        right: r.right - border("Right"),
+        bottom: r.bottom - border("Bottom"),
+        sx: 1,
+        sy: 1,
+      };
+    }
     if (!(el instanceof HTMLElement)) {
       if (!(el instanceof SVGSVGElement)) {
         return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, sx: 1, sy: 1 };
@@ -379,8 +393,7 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
   }
 
   // The root's overflow clips the viewport, not its box, and so does the body's unless
-  // the root's is set or the body is paint-contained; the viewport is left to the clamp.
-  // A quirks-mode body's client size is the viewport's, so it is never a clipper here.
+  // the root's is set or either has containment; the viewport is left to the clamp.
   // Chromium ignores overflow on inline HTML boxes and on table rows, row groups and
   // columns.
   function overflowApplies(el, style) {
@@ -388,11 +401,11 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
     if (tag === "HTML") return false;
     if (tag === "BODY") {
       const doc = getOwnerDocument.call(el);
-      if (!doc || doc.compatMode === "BackCompat") return false;
-      const rootStyle = doc.documentElement && window.getComputedStyle(doc.documentElement);
-      const rootClips =
-        rootStyle && (rootStyle.overflowX !== "visible" || rootStyle.overflowY !== "visible");
-      if (!rootClips && !paintContained(style)) return false;
+      const rootStyle = doc && doc.documentElement && window.getComputedStyle(doc.documentElement);
+      if (!rootStyle) return false;
+      const contained = (st) => isSet(st.contain) || paintContained(st);
+      const rootClips = rootStyle.overflowX !== "visible" || rootStyle.overflowY !== "visible";
+      if (!rootClips && !contained(rootStyle) && !contained(style)) return false;
     }
     if (el.namespaceURI === "http://www.w3.org/2000/svg") return true;
     return style.display !== "inline" && !/^table-(row|column|header|footer)/.test(style.display);
@@ -409,12 +422,26 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
         const p = paddingBox(el, style);
         const ox = style.overflowX;
         const oy = style.overflowY;
-        inner = intersect(clip, {
+        const own = {
           left: cx ? p.left - clipMargin(el, style, ox, "Left", p.sx) : -Infinity,
           top: cy ? p.top - clipMargin(el, style, oy, "Top", p.sy) : -Infinity,
           right: cx ? p.right + clipMargin(el, style, ox, "Right", p.sx) : Infinity,
           bottom: cy ? p.bottom + clipMargin(el, style, oy, "Bottom", p.sy) : Infinity,
-        });
+        };
+        inner = intersect(clip, own);
+        // inner.scroll keeps only the edges a user can scroll content past.
+        const sx = ox === "auto" || ox === "scroll";
+        const sy = oy === "auto" || oy === "scroll";
+        const scroll = clip && clip.scroll;
+        inner.scroll =
+          sx || sy
+            ? intersect(scroll, {
+                left: sx ? own.left : -Infinity,
+                top: sy ? own.top : -Infinity,
+                right: sx ? own.right : Infinity,
+                bottom: sy ? own.bottom : Infinity,
+              })
+            : scroll;
       }
     }
     return clipsWithin(el, style, clips, inner);
@@ -676,17 +703,21 @@ const buildDescribeDomScript = ({ maxDepth, maxNodes }: ChromiumWalkLimits) => `
       }
     } else {
       selfFrame = frame(el, clip);
-      const whole = frame(el, null);
-      const cutX = whole.x !== selfFrame.x || whole.width !== selfFrame.width;
-      const cutY = whole.y !== selfFrame.y || whole.height !== selfFrame.height;
-      if ((cutX || cutY) && selfFrame.width > 0 && selfFrame.height > 0) {
-        const c = normRect(clip);
-        clipBounds = {
-          x: cutX ? c.x : 0,
-          y: cutY ? c.y : 0,
-          width: cutX ? c.width : 1,
-          height: cutY ? c.height : 1,
-        };
+      const sc = clip && clip.scroll;
+      if (sc && selfFrame.width > 0 && selfFrame.height > 0) {
+        const r = getBCR.call(el);
+        // Integer client sizes put a clip edge up to a pixel inside the true one.
+        const cutX = sc.left > r.left + 1 || sc.right < r.right - 1;
+        const cutY = sc.top > r.top + 1 || sc.bottom < r.bottom - 1;
+        if (cutX || cutY) {
+          const c = normRect(sc);
+          clipBounds = {
+            x: cutX ? c.x : 0,
+            y: cutY ? c.y : 0,
+            width: cutX ? c.width : 1,
+            height: cutY ? c.height : 1,
+          };
+        }
       }
     }
 

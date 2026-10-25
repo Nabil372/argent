@@ -827,9 +827,9 @@ async function scrollToVisible(
     const axisDirection = nativeDirection(direction, orientation);
 
     // Anchor the gesture inside the container (so the right nested scroller
-    // moves). With none named, a target an ancestor's clip cuts (`clipBounds`)
-    // anchors in that clip along the axis and on the target across it, so
-    // inside its scroller even when the tree has no node for it; any other
+    // moves). With none named, a target a scroll container cuts (`clipBounds`)
+    // anchors in that window along the axis and on the target across it, so
+    // inside the scroller even when the tree has no node for it; any other
     // gesture spans the whole screen. The axis check measures the target
     // against the window that cuts it, else the one the container clips its
     // content to, else the container's frame.

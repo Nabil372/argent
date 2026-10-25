@@ -27,8 +27,8 @@ export interface DescribeNode {
   // A scroll container's content window: `frame` less borders and scrollbars,
   // where the source measures it (Chromium). Its content is clipped to this.
   clipFrame?: DescribeFrame;
-  // Where an ancestor's clip cuts `frame` (Chromium): that clip's window along
-  // each axis it cuts, the whole screen along the other.
+  // Where scroll containers cut the element by more than a pixel (Chromium):
+  // their window along each axis they cut it, the whole screen along the other.
   clipBounds?: DescribeFrame;
   checkable?: boolean;
   checked?: boolean;

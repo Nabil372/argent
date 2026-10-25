@@ -1012,6 +1012,60 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "sc")).toEqual({ x: 0, y: 0, w: 300, h: 100 });
   });
 
+  it("reports clipBounds only where a scroll container cuts by more than a pixel", () => {
+    const tree = (style: Record<string, string>, rect: Rect) =>
+      run([scroller([row("r", rect)], { style })]).tree;
+    const PART = { x: 1, y: 81, w: 285, h: 40 };
+    // overflow: hidden or clip and paint containment cut for good: no gesture uncuts them.
+    const fixedClips: Record<string, string>[] = [
+      { overflow: "hidden" },
+      { overflow: "clip" },
+      { overflow: "visible", contain: "paint" },
+    ];
+    for (const style of fixedClips) {
+      const t = tree(style, PART);
+      expect(pxFrame(t, "r").h, JSON.stringify(style)).toBe(18);
+      expect(findById(t, "r")!.clipBounds, JSON.stringify(style)).toBeUndefined();
+    }
+    // A pixel or less is the rounding of the integer client size.
+    expect(findById(tree({}, { x: 1, y: 59.5, w: 285, h: 40 }), "r")!.clipBounds).toBeUndefined();
+    expect(pxFrame(tree({}, { x: 1, y: 60.5, w: 285, h: 40 }), "r", "clipBounds")).toEqual({
+      x: 0,
+      y: 1,
+      w: 1000,
+      h: 98,
+    });
+    // Each axis by its own overflow.
+    const mixed = { overflowX: "hidden", overflowY: "auto" };
+    expect(findById(tree(mixed, { x: 1, y: 1, w: 400, h: 20 }), "r")!.clipBounds).toBeUndefined();
+    expect(pxFrame(tree(mixed, { x: 1, y: 81, w: 400, h: 40 }), "r", "clipBounds")).toEqual({
+      x: 0,
+      y: 1,
+      w: 1000,
+      h: 98,
+    });
+  });
+
+  it("reports the scroll container's window, not a fixed clip's inside it", () => {
+    const card = (rect: Rect, child: MockElement) =>
+      el({
+        rect,
+        client: { left: 0, top: 0, width: rect.w, height: rect.h },
+        offset: { width: rect.w, height: rect.h },
+        style: { overflow: "hidden" },
+        children: [child],
+      });
+    const scrolled = run([
+      scroller([card({ x: 1, y: 50, w: 285, h: 100 }, row("r", { x: 1, y: 80, w: 285, h: 30 }))]),
+    ]).tree;
+    expect(pxFrame(scrolled, "r", "clipBounds")).toEqual({ x: 0, y: 1, w: 1000, h: 98 });
+    const carded = run([
+      scroller([card({ x: 1, y: 10, w: 285, h: 50 }, row("r", { x: 1, y: 40, w: 285, h: 40 }))]),
+    ]).tree;
+    expect(pxFrame(carded, "r").h).toBe(20);
+    expect(findById(carded, "r")!.clipBounds).toBeUndefined();
+  });
+
   it("clips by the padding box, so a row under the scrollbar is cut there", () => {
     const { tree } = run([scroller([row("wide", { x: 1, y: 1, w: 400, h: 20 })])]);
     expect(pxFrame(tree, "wide")).toEqual({ x: 1, y: 1, w: 285, h: 20 });
@@ -1472,18 +1526,41 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
     expect(pxFrame(tree, "far").h).toBe(0);
   });
 
-  it("treats a paint-contained body as a clip", () => {
-    const body = el({
-      tag: "body",
-      rect: { x: 0, y: 0, w: W, h: 50 },
-      client: { left: 0, top: 0, width: W, height: 50 },
-      style: { overflow: "hidden", contain: "paint" },
-    });
-    const { tree } = run([row("far", { x: 0, y: 900, w: 100, h: 20 })], body);
-    expect(pxFrame(tree, "far").h).toBe(0);
+  it("treats the body's overflow as a clip once the root or the body has containment", () => {
+    const cases: [Record<string, string>, Record<string, string>][] = [
+      [{ contain: "paint" }, {}],
+      [{ contain: "layout" }, {}],
+      [{ contain: "style" }, {}],
+      [{}, { contain: "layout" }],
+    ];
+    for (const [bodyStyle, rootStyle] of cases) {
+      const body = el({
+        tag: "body",
+        rect: { x: 0, y: 0, w: W, h: 50 },
+        client: { left: 0, top: 0, width: W, height: 50 },
+        style: { overflow: "hidden", ...bodyStyle },
+      });
+      const { tree } = run([row("far", { x: 0, y: 900, w: 100, h: 20 })], body, rootStyle);
+      expect(pxFrame(tree, "far").h, JSON.stringify([bodyStyle, rootStyle])).toBe(0);
+    }
   });
 
-  it("never treats a quirks-mode body as a clip (its client box is the viewport's)", () => {
+  it("clips by a quirks-mode body's own box, not the viewport-sized client box it reports", () => {
+    const scrolling = el({
+      tag: "body",
+      rect: { x: 0, y: 0, w: W, h: 100 },
+      client: { left: 0, top: 0, width: W, height: H },
+      style: { overflow: "hidden", borderTopWidth: "10px", borderBottomWidth: "10px" },
+    });
+    const { tree } = run(
+      [row("below", { x: 0, y: 300, w: 100, h: 20 }), row("edge", { x: 0, y: 5, w: 100, h: 90 })],
+      scrolling,
+      { overflow: "auto" },
+      "BackCompat"
+    );
+    expect(pxFrame(tree, "below").h).toBe(0);
+    expect(pxFrame(tree, "edge")).toEqual({ x: 0, y: 10, w: 100, h: 80 });
+    // Scrolled 1500px into a 3000px body, whose client box reports the viewport.
     const clippers: Record<string, string>[] = [{ overflow: "clip" }, { contain: "paint" }];
     for (const style of clippers) {
       const body = el({
@@ -1757,5 +1834,35 @@ describe("DESCRIBE_DOM_SCRIPT overflow clipping", () => {
       ]),
     ]);
     expect(pxFrame(tree, "contents-text").h).toBe(0);
+  });
+
+  it("ignores position on a box-less element: its text is in flow, it contains nothing", () => {
+    const { tree } = run([
+      el({
+        style: { position: "relative" },
+        rect: { x: 0, y: 0, w: 400, h: 400 },
+        children: [
+          scroller(
+            [
+              el({
+                attrs: { id: "contents-text" },
+                style: { display: "contents", position: "absolute" },
+                text: "far text",
+                rect: ZERO,
+                content: { x: 1, y: 150, w: 60, h: 15 },
+              }),
+              el({
+                style: { display: "contents", position: "relative" },
+                rect: ZERO,
+                children: [row("abs", { x: 10, y: 150, w: 80, h: 20 }, { position: "absolute" })],
+              }),
+            ],
+            { style: { overflow: "hidden" } }
+          ),
+        ],
+      }),
+    ]);
+    expect(pxFrame(tree, "contents-text").h).toBe(0);
+    expect(pxFrame(tree, "abs")).toEqual({ x: 10, y: 150, w: 80, h: 20 });
   });
 });

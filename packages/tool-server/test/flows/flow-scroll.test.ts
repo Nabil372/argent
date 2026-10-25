@@ -459,6 +459,21 @@ describe("scroll-to directive", () => {
     expect(swipes[0].fromY).toBeCloseTo(0.575);
   });
 
+  it("measures a `within` target against an inner scroller cutting it, not the container's window", async () => {
+    // The page pane's window runs on to 0.9; the inner list cuts the row at 0.8.
+    const pane = n({
+      identifier: "pane",
+      scrollable: true,
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      clipFrame: { x: 0, y: 0.1, width: 1, height: 0.8 },
+    });
+    const swipes = await scrollTo("inner-cut", (scrolled) => [pane, cutRow(scrolled)], {
+      target: { identifier: "row" },
+      within: { identifier: "pane" },
+    });
+    expect(swipes).toHaveLength(1);
+  });
+
   it("measures a target cut on the cross axis only against the screen along the scroll axis", async () => {
     const swipes = await scrollTo(
       "cross-cut",
