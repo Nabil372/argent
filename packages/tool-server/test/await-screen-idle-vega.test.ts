@@ -64,14 +64,25 @@ describe("await-screen-idle on Vega", () => {
     expect(result.polls).toBeGreaterThan(2);
   });
 
-  it("does not settle while the D-pad cursor is still moving", async () => {
-    const moved = PAGE_SOURCE.replace(
-      'id="163208757260" selectable="true" selected="true"',
-      'id="163208757260" selectable="true" selected="false"'
-    ).replace(
-      'id="163208757263" selectable="true" selected="false"',
-      'id="163208757263" selectable="true" selected="true"'
-    );
+  it.each([
+    [
+      "selected",
+      PAGE_SOURCE.replace(
+        'id="163208757260" selectable="true" selected="true"',
+        'id="163208757260" selectable="true" selected="false"'
+      ).replace(
+        'id="163208757263" selectable="true" selected="false"',
+        'id="163208757263" selectable="true" selected="true"'
+      ),
+    ],
+    [
+      "focused",
+      PAGE_SOURCE.replace(
+        'id="163208757263" selectable="true" selected="false" focusable="true" focused="false"',
+        'id="163208757263" selectable="true" selected="false" focusable="true" focused="true"'
+      ),
+    ],
+  ])("does not settle while the D-pad cursor is still moving (%s)", async (_attr, moved) => {
     expect(moved).not.toBe(PAGE_SOURCE);
     let call = 0;
     fetchVegaPageSource.mockImplementation(async () => (call++ % 2 ? moved : PAGE_SOURCE));
