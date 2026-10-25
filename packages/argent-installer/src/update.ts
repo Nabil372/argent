@@ -138,6 +138,13 @@ export function resolveUpdatePackageAction(
   return installed ? "standalone_update" : "standalone_install";
 }
 
+function whyNotRepinnable(installMode: InstallMode): string {
+  if (installMode === "local") return "this is a local-mode project";
+  return isGloballyInstalled()
+    ? "argent can't pin the layout of the global install on PATH (npm link, an alias install, or a Volta / pnpm shim)"
+    : "no global install on PATH";
+}
+
 export async function update(args: string[]): Promise<void> {
   const nonInteractive = args.includes("--yes") || args.includes("-y");
   const noTelemetry = args.includes("--no-telemetry");
@@ -740,7 +747,7 @@ export async function update(args: string[]): Promise<void> {
         if (isGlobalNodeEntry(existing) && next.command === MCP_BINARY_NAME) {
           results.push(
             `${pc.yellow("!")} ${adapter.name} kept the pinned global entry (this run can't ` +
-              `re-pin it: a local-mode project, or no global install on PATH) ${pc.dim(configPath)}`
+              `re-pin it: ${whyNotRepinnable(installMode)}) ${pc.dim(configPath)}`
           );
           continue;
         }
