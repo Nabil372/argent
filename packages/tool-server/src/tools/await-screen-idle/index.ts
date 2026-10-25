@@ -85,14 +85,15 @@ const capability: ToolCapability = {
 };
 
 // Frames are normalized 0..1, so rounding to 0.01 tolerates sub-pixel jitter
-// while still catching real motion (a slide/fade animation).
+// while still catching real motion (a slide/fade animation). Focus and
+// selection count too: a TV remote press may move only the cursor.
 function treeSignature(root: DescribeNode): string {
   const round = (n: number) => Math.round(n * 100) / 100;
   const parts: string[] = [];
   const walk = (node: DescribeNode): void => {
     const f = node.frame;
     parts.push(
-      `${node.role}|${node.label ?? ""}|${node.value ?? ""}|${round(f.x)},${round(f.y)},${round(f.width)},${round(f.height)}`
+      `${node.role}|${node.label ?? ""}|${node.value ?? ""}|${round(f.x)},${round(f.y)},${round(f.width)},${round(f.height)}|${node.focused ? "F" : ""}${node.selected ? "S" : ""}`
     );
     for (const child of node.children) walk(child);
   };
