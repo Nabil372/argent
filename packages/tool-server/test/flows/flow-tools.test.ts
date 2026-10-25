@@ -1456,7 +1456,7 @@ describe("flow-add-step", () => {
       {
         name: "prereq-path",
         project_root: tmpDir,
-        command: "flow-read-prerequisite",
+        command: "e2e-read-prerequisite",
         args: JSON.stringify({ flow_path: target, project_root: tmpDir }),
       }
     );
@@ -1465,7 +1465,7 @@ describe("flow-add-step", () => {
     expect(parseFlow(await onDisk("prereq-path")).steps).toEqual([
       {
         kind: "tool",
-        name: "flow-read-prerequisite",
+        name: "e2e-read-prerequisite",
         args: { flow_path: target, project_root: tmpDir },
       },
     ]);

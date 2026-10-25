@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Registry } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
-import { flowReadPrerequisiteTool } from "../../src/tools/flows/flow-read-prerequisite";
+import { X;
 
 const DEVICE = "00000000-0000-0000-0000-0000000000ab";
 const PREREQUISITE = "The QA app is open on its main screen";
@@ -21,7 +21,7 @@ function registry(): Registry {
 
 async function runOuter(steps: string): Promise<FlowRunResult> {
   await fs.writeFile(path.join(flowsDir, "outer.yaml"), `steps:\n${steps}`, "utf8");
-  return registry().invokeTool<FlowRunResult>("flow-execute", {
+  return registry().invokeTool<FlowRunResult>("e2e-execute", {
     name: "outer",
     project_root: root,
     device: DEVICE,
@@ -31,7 +31,7 @@ async function runOuter(steps: string): Promise<FlowRunResult> {
 beforeEach(async () => {
   // realpath: the tool reports a resolved path, and macOS tmpdir is a symlink.
   root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "flow-host-files-")));
-  flowsDir = path.join(root, ".argent", "flows");
+  flowsDir = path.join(root, ".argent", "e2e");
   await fs.mkdir(path.join(flowsDir, "elsewhere"), { recursive: true });
   await fs.writeFile(
     path.join(flowsDir, "elsewhere", "frag.yaml"),
@@ -45,13 +45,13 @@ afterEach(async () => {
 });
 
 describe("a tool: step with flow_path, without a link", () => {
-  it("runs the flow that a tool: flow-execute step names by flow_path", async () => {
+  it("runs the flow that a tool: e2e-execute step names by flow_path", async () => {
     const frag = path.join(flowsDir, "elsewhere", "frag.yaml");
     const result = await runOuter(
-      `  - tool: flow-execute\n    args: { flow_path: ${frag}, project_root: ${root}, prerequisiteAcknowledged: true }\n`
+      `  - tool: e2e-execute\n    args: { flow_path: ${frag}, project_root: ${root}, prerequisiteAcknowledged: true }\n`
     );
 
-    expect(result.steps[0]).toMatchObject({ kind: "tool", tool: "flow-execute", status: "pass" });
+    expect(result.steps[0]).toMatchObject({ kind: "tool", tool: "e2e-execute", status: "pass" });
     expect(result.steps[0].result).toMatchObject({
       flow: "frag",
       ok: true,
@@ -60,20 +60,20 @@ describe("a tool: step with flow_path, without a link", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("reads the prerequisite of the flow that a tool: flow-read-prerequisite step names", async () => {
+  it("reads the prerequisite of the flow that a tool: e2e-read-prerequisite step names", async () => {
     const frag = path.join(flowsDir, "elsewhere", "frag.yaml");
     const result = await runOuter(
-      `  - tool: flow-read-prerequisite\n    args: { flow_path: ${frag}, project_root: ${root} }\n`
+      `  - tool: e2e-read-prerequisite\n    args: { flow_path: ${frag}, project_root: ${root} }\n`
     );
 
-    expect(result.steps[0]).toMatchObject({ status: "pass", tool: "flow-read-prerequisite" });
+    expect(result.steps[0]).toMatchObject({ status: "pass", tool: "e2e-read-prerequisite" });
     expect(result.steps[0].result).toEqual({ flow: "frag", executionPrerequisite: PREREQUISITE });
   });
 
   it("fails a step whose flow_path names no file as a direct call does, not at the boundary gate", async () => {
     const missing = path.join(flowsDir, "elsewhere", "missing.yaml");
     const result = await runOuter(
-      `  - tool: flow-read-prerequisite\n    args: { flow_path: ${missing}, project_root: ${root} }\n`
+      `  - tool: e2e-read-prerequisite\n    args: { flow_path: ${missing}, project_root: ${root} }\n`
     );
 
     expect(result.steps[0].status).toBe("error");
@@ -86,12 +86,12 @@ describe("a tool: step with flow_path, without a link", () => {
 
   it("leaves the path that a tool builds from name to the tool itself", async () => {
     const result = await runOuter(
-      `  - tool: flow-execute\n    args: { name: nope, project_root: ${root}, prerequisiteAcknowledged: true }\n`
+      `  - tool: e2e-execute\n    args: { name: nope, project_root: ${root}, prerequisiteAcknowledged: true }\n`
     );
 
     expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toBe(
-      `[Tool:flow-execute] ENOENT: no such file or directory, open '${path.join(flowsDir, "nope.yaml")}'`
+      `[Tool:e2e-execute] ENOENT: no such file or directory, open '${path.join(flowsDir, "nope.yaml")}'`
     );
   });
 });
