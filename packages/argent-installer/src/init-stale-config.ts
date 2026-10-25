@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import pc from "picocolors";
 import { MCP_BINARY_NAME } from "./constants.js";
-import { isGloballyInstalled } from "./utils.js";
+import { isGloballyInstalled, isSamePath } from "./utils.js";
 import {
   hasCustomizingEnv,
   isGlobalNodeEntry,
@@ -205,7 +205,7 @@ export async function cleanupStaleMcpConfigs(args: {
       const globalPath = adapter.globalPath();
       // At $HOME, Cursor and Codex read one file for both scopes: the entry
       // there is the global one just written, not a project-scope rival.
-      if (!projectPath || projectPath === globalPath) continue;
+      if (!projectPath || (globalPath !== null && isSamePath(projectPath, globalPath))) continue;
       let entry: McpServerEntry | null;
       try {
         entry = adapter.getArgentEntry(projectPath);

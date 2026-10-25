@@ -11,7 +11,7 @@ import {
   type McpServerEntry,
 } from "./mcp-configs.js";
 import { MCP_BINARY_NAME } from "./constants.js";
-import { isDeclaredLocally, readInstallRecord } from "./utils.js";
+import { isDeclaredLocally, isSamePath, readInstallRecord } from "./utils.js";
 import type { InstallMode } from "./install-record.js";
 import type { Scope } from "./init-scope.js";
 
@@ -80,8 +80,12 @@ export function writeMcpConfigs(args: {
   // A global install's entry follows the file, not the scope label: for
   // Cursor, Gemini, Kiro and Codex, a project at $HOME shares its config file
   // with the global scope, so it gets the pinned global entry.
-  const scopeOfFile = (adapter: McpConfigAdapter, configPath: string): "local" | "global" =>
-    installMode === "global" && configPath === adapter.globalPath() ? "global" : normalizedScope;
+  const scopeOfFile = (adapter: McpConfigAdapter, configPath: string): "local" | "global" => {
+    const globalPath = adapter.globalPath();
+    return installMode === "global" && globalPath !== null && isSamePath(configPath, globalPath)
+      ? "global"
+      : normalizedScope;
+  };
 
   const stillLocalMode = (root: string): boolean =>
     readInstallRecord(root)?.mode === "local" || isDeclaredLocally(root);
