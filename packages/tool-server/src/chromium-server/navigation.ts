@@ -6,16 +6,42 @@ interface NavigationHistory {
   entries: Array<{ id: number; url: string; title: string }>;
 }
 
+function isJavascriptUrl(url: string): boolean {
+  try {
+    return new URL(url).protocol === "javascript:";
+  } catch {
+    return false;
+  }
+}
+
 export async function navigate(cdp: CDPClient, url: string): Promise<void> {
-  const { errorText } = (await cdp.send("Page.navigate", { url })) as { errorText?: string };
-  // An HTTP error status still got a response, so it is not a failed navigation.
-  if (errorText && errorText !== "net::ERR_HTTP_RESPONSE_CODE_FAILURE")
-    throw new FailureError(`Chromium could not navigate to ${url}: ${errorText}`, {
+  const { errorText, isDownload } = (await cdp.send("Page.navigate", { url })) as {
+    errorText?: string;
+    isDownload?: boolean;
+  };
+  // Chromium sets errorText even when the URL did take effect: an HTTP error
+  // status still loads a page, a download is saved, and a javascript: URL runs.
+  if (
+    !errorText ||
+    errorText === "net::ERR_HTTP_RESPONSE_CODE_FAILURE" ||
+    isDownload ||
+    isJavascriptUrl(url)
+  )
+    return;
+  // The url is left out so credentials and tokens in it stay out of the logs.
+  throw new FailureError(
+    `Chromium could not navigate: ${errorText}.` +
+      (errorText === "net::ERR_ABORTED"
+        ? " The page did not change. Chromium aborts a URL it does not load in a page," +
+          " such as tel:, mailto:, an unknown scheme, or a response with no content."
+        : ""),
+    {
       error_code: FAILURE_CODES.CHROMIUM_NAVIGATE_FAILED,
       failure_stage: "chromium_navigate",
       failure_area: "tool_server",
       error_kind: "unknown",
-    });
+    }
+  );
 }
 
 export async function reload(cdp: CDPClient, ignoreCache = false): Promise<void> {

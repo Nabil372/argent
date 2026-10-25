@@ -31,10 +31,40 @@ describe("chromium-server/navigation", () => {
     const err = await navigate({ send } as unknown as CDPClient, "http://x.invalid/").catch(
       (e: unknown) => e
     );
+    expect((err as Error).message).toBe("Chromium could not navigate: net::ERR_NAME_NOT_RESOLVED.");
+    expect(getFailureSignal(err)).toEqual({
+      error_code: FAILURE_CODES.CHROMIUM_NAVIGATE_FAILED,
+      failure_stage: "chromium_navigate",
+      failure_area: "tool_server",
+      error_kind: "unknown",
+    });
+  });
+
+  it("navigate: explains an aborted navigation without echoing the url", async () => {
+    const send = vi.fn().mockResolvedValue({ errorText: "net::ERR_ABORTED", isDownload: false });
+    const err = await navigate(
+      { send } as unknown as CDPClient,
+      "http://user:pass@h/?token=secret"
+    ).catch((e: unknown) => e);
     expect((err as Error).message).toBe(
-      "Chromium could not navigate to http://x.invalid/: net::ERR_NAME_NOT_RESOLVED"
+      "Chromium could not navigate: net::ERR_ABORTED. The page did not change. Chromium aborts" +
+        " a URL it does not load in a page, such as tel:, mailto:, an unknown scheme, or a" +
+        " response with no content."
     );
-    expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.CHROMIUM_NAVIGATE_FAILED);
+  });
+
+  it("navigate: resolves on a download", async () => {
+    const send = vi.fn().mockResolvedValue({ errorText: "net::ERR_ABORTED", isDownload: true });
+    await expect(navigate({ send } as unknown as CDPClient, "http://h/f.zip")).resolves.toBe(
+      undefined
+    );
+  });
+
+  it("navigate: resolves on a javascript: URL, which runs instead of loading", async () => {
+    const send = vi.fn().mockResolvedValue({ errorText: "net::ERR_ABORTED" });
+    await expect(
+      navigate({ send } as unknown as CDPClient, " JavaScript:document.title='x'")
+    ).resolves.toBe(undefined);
   });
 
   it("open-url: propagates a failed navigation without refreshing the viewport", async () => {
