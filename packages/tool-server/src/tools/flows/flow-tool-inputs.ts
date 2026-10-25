@@ -219,9 +219,8 @@ export async function prepareToolStepInputs(
  * Wraps each file argument as an unlinked argent client does (stat, no
  * content), giving the tool a direct call's `ctx.fileInputs`; `e2e-execute`
  * and `e2e-read-prerequisite` refuse a `flow_path` without them. A path
- * that is not a file fails the step, named as the client branch names it.
- * Other inputs (directories, apps, paths built from several args) stay as
- * written.
+ * that is not a file fails the step. Other inputs (directories, apps, paths
+ * built from several args) stay as written.
  */
 async function prepareHostFileArguments(
   toolId: string,
