@@ -18,6 +18,7 @@ import {
   createCompressor,
   createTarArgs,
   pickArchiveFormat,
+  trackTarEnd,
 } from "@argent/archive";
 import type { Request, Response } from "express";
 import type {
@@ -95,9 +96,6 @@ export function makeArtifactListRoute(registry: Registry) {
   };
 }
 
-/** A complete tar ends with two zero-filled 512-byte blocks. */
-const TAR_TRAILER_BYTES = 1024;
-
 /**
  * Stream a directory as a compressed tar: zstd when the request's `Accept` lists
  * `application/zstd`, else gzip. `-C <parent> <base>` keeps the bundle's own
@@ -113,6 +111,7 @@ function streamDirectoryAsArchive(
   const format = pickArchiveFormat(archiveFormatsFromAccept(req.headers.accept));
   const ext = format === "zstd" ? "tar.zst" : "tar.gz";
   res.setHeader("Content-Type", ARCHIVE_CONTENT_TYPES[format]);
+  res.setHeader("Vary", "Accept");
   res.setHeader("Content-Disposition", `attachment; filename="${entry.filename}.${ext}"`);
 
   // stderr is ignored, not piped: an unread pipe can fill its buffer (e.g.
@@ -135,23 +134,17 @@ function streamDirectoryAsArchive(
     }
   });
   // tar can exit non-zero after a whole archive (that live-trace warning), but an
-  // abandoned one lacks the trailing zero blocks. The compressor closes a valid
+  // abandoned one lacks the end-of-archive marker. The compressor closes a valid
   // frame either way, so destroy the response for the latter: the client's
   // download then fails instead of extracting a partial bundle.
-  let tail: Buffer = Buffer.alloc(0);
-  child.stdout.on("data", (chunk: Buffer) => {
-    tail =
-      chunk.length >= TAR_TRAILER_BYTES
-        ? chunk.subarray(-TAR_TRAILER_BYTES)
-        : Buffer.concat([tail, chunk]).subarray(-TAR_TRAILER_BYTES);
-  });
+  const tarEnd = trackTarEnd();
+  child.stdout.on("data", (chunk: Buffer) => tarEnd.push(chunk));
   const tarClosed = new Promise<number | null>((resolve) => child.on("close", resolve));
   const compressor = createCompressor(format);
   compressor.on("error", () => res.destroy());
   compressor.on("end", () => {
     void tarClosed.then((code) => {
-      const whole = tail.length === TAR_TRAILER_BYTES && tail.every((b) => b === 0);
-      if (code === 0 || whole) res.end();
+      if (code === 0 || tarEnd.ended()) res.end();
       else res.destroy();
     });
   });

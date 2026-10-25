@@ -2,8 +2,8 @@
  * Shared archive helpers for the file boundary: a bundle (an iOS `.app`, an
  * `.apk`/`.vpkg`, a `.trace`) moves between client and tool-server as a tar
  * compressed with zstd or gzip. The system `tar` (present on macOS/Linux and
- * Windows 10+) only packs and unpacks; compression runs in `node:zlib`, since
- * stock `tar` builds can't read zstd.
+ * Windows 10+) packs, unpacks and reads gzip; writing either format and reading
+ * zstd run in `node:zlib`, since stock `tar` builds can't read zstd.
  *
  * The archive carries the source's basename as its single top-level member, so
  * extraction recreates `<destDir>/<basename>`. Extraction is tar-slip hardened
@@ -11,15 +11,12 @@
  * uploading or a compromised tool-server serving an artifact.
  */
 
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import { open, rm, readdir } from "node:fs/promises";
 import { basename, dirname, join, posix, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { promisify } from "node:util";
 import zlib from "node:zlib";
-
-const execFileAsync = promisify(execFile);
 
 /** Thrown when an archive is empty, unreadable, or holds an unsafe (tar-slip / bad-type) member. */
 export class ArchiveError extends Error {}
@@ -70,6 +67,53 @@ export function createCompressor(format: ArchiveFormat): zlib.Gzip | zlib.ZstdCo
  */
 export function createTarArgs(sourcePath: string): string[] {
   return ["-cf", "-", "-C", dirname(sourcePath), basename(sourcePath)];
+}
+
+const TAR_BLOCK = 512;
+
+/** A tar header's size field: octal, or GNU base-256 when the high bit is set. */
+function tarMemberSize(header: Buffer): number {
+  const field = header.subarray(124, 136);
+  if (field[0]! & 0x80) return field.subarray(1).reduce((n, b) => n * 256 + b, field[0]! & 0x7f);
+  return parseInt(field.toString("latin1"), 8) || 0;
+}
+
+/**
+ * Follow a tar stream's member headers to tell whether it reached the
+ * end-of-archive marker: two zero blocks where a header is due. Zeros that end a
+ * member's data don't count.
+ */
+export function trackTarEnd(): { push(chunk: Buffer): void; ended(): boolean } {
+  const header = Buffer.alloc(TAR_BLOCK);
+  let filled = 0;
+  let seen = 0;
+  let nextHeader = 0;
+  let zeroBlocks = 0;
+  return {
+    push(chunk) {
+      for (let off = 0; off < chunk.length && zeroBlocks < 2;) {
+        if (seen < nextHeader) {
+          const skip = Math.min(nextHeader - seen, chunk.length - off);
+          seen += skip;
+          off += skip;
+          continue;
+        }
+        const n = chunk.copy(header, filled, off, off + TAR_BLOCK - filled);
+        filled += n;
+        seen += n;
+        off += n;
+        if (filled < TAR_BLOCK) return;
+        filled = 0;
+        if (header.every((b) => b === 0)) {
+          zeroBlocks++;
+        } else {
+          zeroBlocks = 0;
+          nextHeader = seen + Math.ceil(tarMemberSize(header) / TAR_BLOCK) * TAR_BLOCK;
+        }
+      }
+    },
+    ended: () => zeroBlocks >= 2,
+  };
 }
 
 /**
@@ -149,7 +193,6 @@ async function assertSingleCompleteZstdFrame(archivePath: string): Promise<void>
         last = block & 1;
         const type = (block >> 1) & 3;
         const blockSize = block >> 3;
-        if (type === 3) throw new ArchiveError("bad zstd block");
         if (blockSize > 0) hasData = true;
         pos += 3 + (type === 1 ? 1 : blockSize); // an RLE block stores one byte
       }
@@ -177,11 +220,8 @@ function isClosedPipe(err: NodeJS.ErrnoException): boolean {
  * zstd is decompressed here and piped in, since stock `tar` can't read it.
  */
 async function runTar(archive: Archive, args: string[]): Promise<string> {
-  if (archive.format === "gzip") {
-    const { stdout } = await execFileAsync("tar", [...args, "-zf", archive.path]);
-    return stdout;
-  }
-  const child = spawn("tar", [...args, "-f", "-"], { stdio: ["pipe", "pipe", "pipe"] });
+  const gzip = archive.format === "gzip";
+  const child = spawn("tar", [...args, ...(gzip ? ["-zf", archive.path] : ["-f", "-"])]);
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
@@ -190,14 +230,17 @@ async function runTar(archive: Archive, args: string[]): Promise<string> {
     child.on("error", rej);
     child.on("close", res);
   });
-  const fed = pipeline(
-    createReadStream(archive.path, { highWaterMark: CHUNK_BYTES }),
-    zlib.createZstdDecompress({ chunkSize: CHUNK_BYTES }),
-    child.stdin
-  ).then(
-    () => null,
-    (err: NodeJS.ErrnoException) => err
-  );
+  if (gzip) child.stdin.end();
+  const fed = gzip
+    ? null
+    : pipeline(
+        createReadStream(archive.path, { highWaterMark: CHUNK_BYTES }),
+        zlib.createZstdDecompress({ chunkSize: CHUNK_BYTES }),
+        child.stdin
+      ).then(
+        () => null,
+        (err: NodeJS.ErrnoException) => err
+      );
   const [code, feedError] = await Promise.all([exited, fed]);
   if (feedError && !isClosedPipe(feedError)) throw feedError;
   if (code !== 0)

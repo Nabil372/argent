@@ -14,6 +14,7 @@ import {
   createTarArgs,
   pickArchiveFormat,
   safeExtractArchive,
+  trackTarEnd,
   type ArchiveFormat,
 } from "../src/index.js";
 
@@ -134,7 +135,61 @@ describe("createArchiveFile (zstd)", () => {
     await fs.writeFile(archivePath, bytes);
     await expect(
       safeExtractArchive(archivePath, await fs.mkdtemp(path.join(tmpDir, "dest-")), "C.app")
-    ).rejects.toThrow();
+    ).rejects.toThrow(/checksum|corruption/);
+  });
+});
+
+describe("trackTarEnd", () => {
+  async function zeroFileTar(): Promise<{ tar: Buffer; dataEnd: number }> {
+    // Data that ends in 8 KiB of zeros, behind a marker byte that locates it.
+    await fs.writeFile(
+      path.join(tmpDir, "z.bin"),
+      Buffer.concat([Buffer.from("x"), Buffer.alloc(8191)])
+    );
+    const tarPath = path.join(tmpDir, "z.tar");
+    await execFileAsync("tar", ["-cf", tarPath, "-C", tmpDir, "z.bin"]);
+    const tar = await fs.readFile(tarPath);
+    let dataStart = 0;
+    while (tar[dataStart] !== 0x78 || tar.subarray(dataStart + 1, dataStart + 512).some((b) => b)) {
+      dataStart += 512;
+    }
+    return { tar, dataEnd: dataStart + 8192 };
+  }
+
+  function ended(bytes: Buffer, chunkSize = bytes.length): boolean {
+    const tracker = trackTarEnd();
+    for (let i = 0; i < bytes.length; i += chunkSize)
+      tracker.push(bytes.subarray(i, i + chunkSize));
+    return tracker.ended();
+  }
+
+  it("needs both zero blocks where a header is due", async () => {
+    const { tar, dataEnd } = await zeroFileTar();
+    expect(ended(tar)).toBe(true);
+    expect(ended(tar.subarray(0, dataEnd))).toBe(false);
+    expect(ended(tar.subarray(0, dataEnd + 512))).toBe(false);
+    expect(ended(tar.subarray(0, dataEnd + 1024))).toBe(true);
+  });
+
+  it("follows headers split across chunks", async () => {
+    const { tar, dataEnd } = await zeroFileTar();
+    expect(ended(tar, 7)).toBe(true);
+    expect(ended(tar.subarray(0, dataEnd), 7)).toBe(false);
+  });
+
+  it("reads a base-256 size field", () => {
+    const header = Buffer.alloc(512);
+    header.write("big", 0);
+    header[124] = 0x80;
+    header.writeUInt32BE(1024, 132);
+    const tar = Buffer.concat([
+      header,
+      Buffer.alloc(1024),
+      Buffer.alloc(512, 1),
+      Buffer.alloc(1024),
+    ]);
+    expect(ended(tar.subarray(0, 512 + 1024 + 512))).toBe(false);
+    expect(ended(tar)).toBe(true);
   });
 });
 
@@ -168,6 +223,62 @@ describe("safeExtractArchive zstd framing", () => {
       );
     }
   });
+
+  it("rejects a complete frame around a cut tar", async () => {
+    const cut = (await plainTar()).subarray(0, 3072);
+    const bytes = zlib.zstdCompressSync(cut, {
+      params: { [zlib.constants.ZSTD_c_checksumFlag]: 1 },
+    });
+    await expect(extract(bytes)).rejects.toThrow(
+      /^Could not read archive: tar -t exited with code [1-9]/
+    );
+  });
+
+  // One raw block (RFC 8878 §3.1.1.2) behind a header with the given field sizes.
+  function rawFrame(
+    content: Buffer,
+    singleSegment: 0 | 1,
+    fcsFlag: number,
+    dictFlag: number
+  ): Buffer {
+    const fcs = Buffer.alloc([singleSegment, 2, 4, 8][fcsFlag]!);
+    if (fcs.length === 2) fcs.writeUInt16LE(content.length - 256);
+    else if (fcs.length > 0) fcs.writeUIntLE(content.length, 0, Math.min(fcs.length, 6));
+    const block = Buffer.alloc(3);
+    block.writeUIntLE(1 | (content.length << 3), 0, 3);
+    return Buffer.concat([
+      Buffer.from([0x28, 0xb5, 0x2f, 0xfd, (fcsFlag << 6) | (singleSegment << 5) | dictFlag]),
+      Buffer.from(singleSegment ? [] : [0x50]), // window descriptor: 1 MiB
+      Buffer.alloc([0, 1, 2, 4][dictFlag]!), // dictionary id 0: none
+      fcs,
+      block,
+      content,
+    ]);
+  }
+
+  it.each([
+    [0, 0, 0],
+    [0, 0, 1],
+    [0, 0, 2],
+    [0, 0, 3],
+    [0, 1, 0],
+    [0, 2, 0],
+    [0, 3, 0],
+    [1, 1, 0],
+    [1, 2, 0],
+    [1, 3, 0],
+  ] as const)(
+    "walks a header (single segment %i, content size flag %i, dictionary flag %i)",
+    async (single, fcsFlag, dictFlag) => {
+      const dir = path.join(tmpDir, "Bundle.app");
+      await fs.mkdir(dir);
+      await fs.writeFile(path.join(dir, "f.txt"), "raw");
+      const tarPath = path.join(tmpDir, "small.tar");
+      await execFileAsync("tar", ["-cf", tarPath, "-C", tmpDir, "Bundle.app"]);
+      const member = await extract(rawFrame(await fs.readFile(tarPath), single, fcsFlag, dictFlag));
+      expect(await fs.readFile(path.join(member, "f.txt"), "utf8")).toBe("raw");
+    }
+  );
 
   it("rejects a second frame carrying data", async () => {
     const tar = await plainTar();
@@ -224,6 +335,23 @@ describe.each(ARCHIVE_FORMATS)(
 
       const member = await extractInto(tarPath, "app.apk");
       expect(await fs.readFile(member, "utf8")).toBe("apk-bytes");
+    });
+
+    it("extracts a bundle whose member listing passes 1 MiB", async () => {
+      let deep = path.join(tmpDir, "Big.app");
+      for (const c of "abcd") deep = path.join(deep, c.repeat(200));
+      await fs.mkdir(deep, { recursive: true });
+      for (let i = 0; i < 1300; i++)
+        await fs.writeFile(path.join(deep, `${i}`.padStart(40, "f")), "");
+      const tarPath = path.join(tmpDir, "big.archive");
+      await createArchiveFile(path.join(tmpDir, "Big.app"), tarPath, format);
+
+      const member = await extractInto(tarPath, "Big.app");
+      expect(
+        await fs.readdir(
+          path.join(member, "a".repeat(200), ...["b", "c", "d"].map((c) => c.repeat(200)))
+        )
+      ).toHaveLength(1300);
     });
   }
 );

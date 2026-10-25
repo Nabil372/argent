@@ -286,6 +286,7 @@ describe("GET /artifacts/:id", () => {
       expect(res.status).toBe(200);
       expect(res.headers["content-type"]).toContain("application/zstd");
       expect(res.headers["content-disposition"]).toContain("session.trace.tar.zst");
+      expect(res.headers.vary).toBe("Accept");
       const archive = join(root, "out.archive");
       await writeFile(archive, res.body);
       const dest = await mkdtemp(join(root, "dest-"));
@@ -323,10 +324,10 @@ describe("GET /artifacts/:id", () => {
       await rm(root, { recursive: true, force: true });
     });
 
-    async function download(): Promise<supertest.Response> {
+    async function download(bundle = "B.trace"): Promise<supertest.Response> {
       const registry = stubRegistry();
       const artifact = await registry.artifacts.register({
-        hostPath: join(root, "B.trace"),
+        hostPath: join(root, bundle),
         kind: "native-profile-trace",
       });
       handle = createHttpApp(registry);
@@ -340,6 +341,13 @@ describe("GET /artifacts/:id", () => {
     it("cuts the response off when tar abandoned the archive", async () => {
       process.env.FAKE_TAR_BYTES = "2560"; // a header boundary, so the cut tar still reads cleanly
       await expect(download()).rejects.toThrow();
+    });
+
+    it("cuts the response off when tar abandoned the archive after zero-filled data", async () => {
+      await mkdir(join(root, "Z.trace"));
+      await writeFile(join(root, "Z.trace", "z"), Buffer.alloc(4096));
+      process.env.FAKE_TAR_BYTES = String(512 + 512 + 4096); // ends in zeros, but no end marker
+      await expect(download("Z.trace")).rejects.toThrow();
     });
 
     it("completes the response when tar wrote the whole archive", async () => {
