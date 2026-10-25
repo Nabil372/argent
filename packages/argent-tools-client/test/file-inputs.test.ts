@@ -526,6 +526,57 @@ describe("prepareFileInputs — relative paths", () => {
       ["tool", path.join(cwd, "baseline.png")],
     ]);
   });
+
+  it("sends no step files for a project_root with a .. segment, which the tool-server refuses", async () => {
+    await fs.mkdir(path.join(cwd, "sub"));
+    await fs.writeFile(path.join(cwd, "baseline.png"), "png");
+    process.chdir(path.join(cwd, "sub"));
+    const specs: FileInputSpec[] = [
+      { target: "project_root", path: "${project_root}", kind: "probe", collect: "step" },
+    ];
+
+    const out = (await prepareFileInputs(
+      specs,
+      {
+        project_root: "..",
+        name: "rec",
+        command: "screenshot-diff",
+        args: JSON.stringify({ baselinePath: path.join(cwd, "baseline.png") }),
+      },
+      {
+        includeContent: true,
+        collectStepMembers,
+        toolFileInputs: () => [{ target: "baselinePath", path: "${baselinePath}", kind: "file" }],
+      }
+    )) as Record<string, FileInputWire>;
+
+    expect(out.project_root!.path).toBe(`${path.join(cwd, "sub")}${path.sep}..`);
+    expect(out.project_root!.members).toEqual([]);
+  });
+
+  it("finds a .. segment written with Windows separators", async () => {
+    vi.resetModules();
+    vi.doMock("node:path", () => ({ ...path.win32, default: path.win32 }));
+    vi.spyOn(process, "cwd").mockReturnValue("C:\\work\\app");
+    try {
+      const { prepareFileInputs: prepareOnWindows } = await import("../src/file-inputs.js");
+      const specs: FileInputSpec[] = [
+        { target: "appPath", path: "${appPath}", kind: "tar-upload" },
+      ];
+
+      const out = (await prepareOnWindows(
+        specs,
+        { appPath: "..\\proj\\app.apk" },
+        { includeContent: false }
+      )) as Record<string, FileInputWire>;
+
+      expect(out.appPath!.path).toBe("C:\\work\\app\\..\\proj\\app.apk");
+    } finally {
+      vi.doUnmock("node:path");
+      vi.restoreAllMocks();
+      vi.resetModules();
+    }
+  });
 });
 
 describe("applyClientFileDirectives", () => {

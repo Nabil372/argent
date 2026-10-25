@@ -3133,15 +3133,12 @@ function assertFlowPathShape(flowPath: string): void {
   // different files — or, when the directory chain is broken, slip through
   // canonicalFlowPath's verbatim fallback to fail later as a raw readFile
   // ENOENT on the unresolved spelling. Rejecting up front means every admitted
-  // flow_path has exactly one reading. The argent client rejects ".." segments
-  // before sending; only a direct MCP/HTTP caller can pass an unresolved
-  // flow_path.
+  // flow_path has exactly one reading.
   if (flowPath.split(/[\\/]+/).includes("..")) {
     throw new FailureError(
       `Invalid flow_path "${flowPath}": e2e test paths must not contain ".." segments — ` +
         `a ".." after a symlinked directory can name a different file than the spelling ` +
-        `suggests, and the argent client always sends fully resolved paths. Pass the fully ` +
-        `resolved absolute path to the e2e test's YAML.`,
+        `suggests. Pass the fully resolved absolute path to the e2e test's YAML.`,
       {
         error_code: FAILURE_CODES.FLOW_FILE_INVALID,
         failure_stage: "flow_path_dotdot",

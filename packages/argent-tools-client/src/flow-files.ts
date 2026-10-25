@@ -691,7 +691,8 @@ function recordedStep(
  * directory, or in the project's other e2e test directory) is sent under its
  * own spelling too, for the recorder's on-disk
  * spelling check, and its run as the name the recorder runs it by. Nothing
- * for a call without a valid `name` and absolute `project_root`, or whose
+ * for a call without a valid `name` and an absolute `project_root` free of
+ * `..`, which the tool-server refuses, or whose
  * step does not parse. `recordingDirFor` is where the tool-server records:
  * `.argent/flows/` for one that predates `.argent/e2e/`.
  */
@@ -705,8 +706,7 @@ export async function collectStepMembers(
   if (
     typeof name !== "string" ||
     !FLOW_NAME_PATTERN.test(name) ||
-    typeof projectRoot !== "string" ||
-    !path.isAbsolute(projectRoot) ||
+    !isResolvedAbsolute(projectRoot) ||
     step === undefined
   ) {
     return [];
