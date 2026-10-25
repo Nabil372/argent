@@ -9,6 +9,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { ARCHIVE_FORMATS } from "@argent/archive";
 import {
   FAILURE_CODES,
+  E2E_DIR_CLIENT_HEADER,
   LINKED_CALL_HEADER,
   describeParamIssues,
   getFailureSignal,
@@ -192,6 +193,8 @@ type InvocationMeta = {
 // never stored or forwarded; invalid_params carries schema-declared parameter
 // NAMES only (see deriveInvalidParams), never values or user-typed keys.
 type HttpFailureMeta = {
+  /** The call named the tool by a former id; `toolId` is the current one. */
+  alias_used?: boolean;
   device_provider?: string;
   platform?: TelemetryPlatform;
   device_kind?: TelemetryDeviceKind;
@@ -667,7 +670,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     const tools = snapshot.tools
       .map((id) => registry.getTool(id))
       .filter((def): def is NonNullable<typeof def> => isToolExposed(def))
-      .map((def) => {
+      .flatMap((def) => {
         const entry: {
           name: string;
           description: string;
@@ -678,6 +681,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           searchHint?: string;
           longRunning?: boolean;
           hideFromMcp?: boolean;
+          aliasOf?: string;
         } = {
           name: def.id,
           description: def.description ?? "",
@@ -689,7 +693,15 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         if (def.searchHint) entry.searchHint = def.searchHint;
         if (def.longRunning) entry.longRunning = true;
         if (def.hideFromMcp) entry.hideFromMcp = true;
-        return entry;
+        // A former id is listed too, so a client that calls by it finds the
+        // tool's file inputs. Hidden from MCP, so agents see one name.
+        const aliases = (def.aliases ?? []).map((alias) => ({
+          ...entry,
+          name: alias,
+          hideFromMcp: true,
+          aliasOf: def.id,
+        }));
+        return [entry, ...aliases];
       });
     // Formats `POST /upload` reads; a client sends zstd only when listed.
     res.json({ tools, uploadFormats: ARCHIVE_FORMATS });
@@ -722,9 +734,11 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         const failedDeviceArg = extractDeviceArg(parsedDataForMeta);
         const provider = failedDeviceArg ? externalProviderLabel(failedDeviceArg) : undefined;
         const attribution = inferDeviceAttribution(failedDeviceArg);
+        const toolId = registry.getTool(name)?.id ?? name;
         options.recordFailure(
-          name,
+          toolId,
           {
+            ...(toolId !== name ? { alias_used: true } : {}),
             ...(provider ? { device_provider: provider } : {}),
             ...attribution,
             ...(extraMeta?.invalid_params?.length
@@ -950,8 +964,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // through the registry inherit the same ai_client / platform instead of being
       // recorded as anonymous.
       let recordChildInvocation:
-        | ((childInvocationId: string, childArgs?: unknown) => () => void)
-        | undefined;
+        ((childInvocationId: string, childArgs?: unknown) => () => void) | undefined;
       const recordInvocation = options?.recordInvocation;
       if (recordInvocation) {
         const invocationMeta = extractInvocationMeta(Boolean(def.capability), parsedData, aiMeta);
@@ -993,6 +1006,11 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           // mark makes the recorder stricter for that caller and keeps its
           // recording in memory, sent back in client-file directives.
           ...(firstHeader(req.headers[LINKED_CALL_HEADER]) === "1" ? { linked: true } : {}),
+          // A client released before the rename writes client files only under
+          // `.argent/flows/`, so the recorder keeps its recordings there.
+          ...(firstHeader(req.headers[E2E_DIR_CLIENT_HEADER]) === "1"
+            ? {}
+            : { legacyE2eDir: true }),
           toolInvocationId,
           ...(recordChildInvocation ? { recordChildInvocation } : {}),
           ...(wantsStream
