@@ -10,7 +10,11 @@ vi.mock("node:child_process", async () => {
   return { ...actual, execFileSync: (...args: unknown[]) => execFileSyncMock(...args) };
 });
 
-import { procListeningPids, stopMetroTool } from "../src/tools/simulator/stop-metro";
+import {
+  parseDarwinNetstatHasListener,
+  procListeningPids,
+  stopMetroTool,
+} from "../src/tools/simulator/stop-metro";
 
 const runStopMetro = (port: number) => stopMetroTool.execute({}, { port });
 
@@ -37,10 +41,56 @@ describe("stop-metro port probe", () => {
     setPlatform(originalPlatform);
   });
 
-  it("reports stopped:false when lsof exits 1", async () => {
-    probeThrows({ message: "Command failed: lsof -ti tcp:8081 -sTCP:LISTEN", status: 1 });
+  // lsof finds nothing it can see; netstat prints `netstatOutput`.
+  const lsofFindsNothing = (netstatOutput: string) =>
+    execFileSyncMock.mockImplementation((bin: string) => {
+      if (bin.endsWith("netstat")) return netstatOutput;
+      throw Object.assign(new Error("Command failed: lsof -ti tcp:8081 -sTCP:LISTEN"), {
+        status: 1,
+      });
+    });
+  const NETSTAT_HEADER =
+    "Active Internet connections (including servers)\nProto Recv-Q Send-Q  Local Address          Foreign Address        (state)\n";
+
+  it("reports stopped:false when lsof exits 1 and netstat lists no listener", async () => {
+    lsofFindsNothing(
+      NETSTAT_HEADER +
+        "tcp4       0      0  127.0.0.1.8081         127.0.0.1.53412        ESTABLISHED\n" +
+        "tcp46      0      0  *.18081                *.*                    LISTEN\n"
+    );
 
     await expect(runStopMetro(8081)).resolves.toEqual({ stopped: false, port: 8081, pids: [] });
+  });
+
+  it("fails when lsof sees no listener but netstat lists one, e.g. another user's", async () => {
+    lsofFindsNothing(
+      NETSTAT_HEADER + "tcp46      0      0  *.8081                 *.*                    LISTEN\n"
+    );
+
+    await expect(runStopMetro(8081)).rejects.toThrow(
+      "Could not determine what is listening on port 8081: no visible process owns a socket listening on port 8081; it belongs to another user"
+    );
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("asks netstat only on macOS", async () => {
+    setPlatform("freebsd");
+    lsofFindsNothing(
+      NETSTAT_HEADER + "tcp46      0      0  *.8081                 *.*                    LISTEN\n"
+    );
+
+    await expect(runStopMetro(8081)).resolves.toEqual({ stopped: false, port: 8081, pids: [] });
+    expect(execFileSyncMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails when netstat cannot run after lsof exits 1", async () => {
+    execFileSyncMock.mockImplementation((bin: string) => {
+      throw Object.assign(new Error(`spawnSync ${bin} failed`), {
+        status: bin.endsWith("netstat") ? 2 : 1,
+      });
+    });
+
+    await expect(runStopMetro(8081)).rejects.toThrow(/netstat failed/);
   });
 
   it("fails instead of claiming the port is free when lsof is absent", async () => {
@@ -114,6 +164,28 @@ describe("stop-metro port probe", () => {
 
     expect(execFileSyncMock).not.toHaveBeenCalled();
     expect(kill).not.toHaveBeenCalledWith(1, "SIGTERM");
+  });
+});
+
+describe("parseDarwinNetstatHasListener", () => {
+  it("matches a LISTEN row on the port for every address family", () => {
+    for (const local of ["*.8081", "127.0.0.1.8081", "::1.8081"]) {
+      expect(parseDarwinNetstatHasListener(`tcp4  0  0  ${local}  *.*  LISTEN`, 8081)).toBe(true);
+    }
+  });
+
+  it("ignores other states, other ports and UDP", () => {
+    expect(
+      parseDarwinNetstatHasListener(
+        [
+          "tcp4  0  0  127.0.0.1.8081  127.0.0.1.53412  ESTABLISHED",
+          "tcp4  0  0  *.18081  *.*  LISTEN",
+          "tcp4  0  0  *.80810  *.*  LISTEN",
+          "udp4  0  0  *.8081  *.*  LISTEN",
+        ].join("\n"),
+        8081
+      )
+    ).toBe(false);
   });
 });
 

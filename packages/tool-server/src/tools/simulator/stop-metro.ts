@@ -99,6 +99,19 @@ export function procListeningPids(port: number, proc = "/proc"): number[] {
 
 // Absolute, since an MCP client may launch the tool-server with a PATH that omits /usr/sbin.
 const LSOF_BIN = ["/usr/sbin/lsof", "/usr/bin/lsof"].find((p) => existsSync(p)) ?? "lsof";
+const DARWIN_NETSTAT_BIN = existsSync("/usr/sbin/netstat") ? "/usr/sbin/netstat" : "netstat";
+
+/**
+ * Whether macOS `netstat -an` lists a TCP socket listening on `port`. Unlike
+ * lsof, it shows every user's sockets. Rows look like
+ * `tcp46 0 0 *.8081 *.* LISTEN`.
+ */
+export function parseDarwinNetstatHasListener(netstatOutput: string, port: number): boolean {
+  return netstatOutput.split("\n").some((line) => {
+    const cols = line.trim().split(/\s+/);
+    return cols[5] === "LISTEN" && cols[0].startsWith("tcp") && cols[3].endsWith(`.${port}`);
+  });
+}
 
 /**
  * PIDs *listening* on a TCP port, cross-platform. Only the listener (Metro) is
@@ -106,8 +119,8 @@ const LSOF_BIN = ["/usr/sbin/lsof", "/usr/bin/lsof"].find((p) => existsSync(p)) 
  * that would match the tool-server's own CDP client socket to Metro.
  *
  * Windows parses `netstat -ano`, Linux reads procfs, and other hosts ask
- * `lsof`. Neither command runs through a shell, so `port` can never be read
- * as a shell token.
+ * `lsof`. No command runs through a shell, so `port` can never be read as a
+ * shell token.
  */
 function listeningPids(port: number): number[] {
   if (process.platform === "win32") {
@@ -128,9 +141,23 @@ function listeningPids(port: number): number[] {
       timeout: 5_000,
     }).trim();
   } catch (error) {
-    // lsof exits 1 when it finds no listener, including one owned by a user whose sockets it cannot see.
-    if ((error as { status?: unknown }).status === 1) return [];
-    throw error;
+    // lsof exits 1 when it finds no listener it can see.
+    if ((error as { status?: unknown }).status !== 1) throw error;
+    // Non-root lsof cannot see another user's sockets, e.g. a Metro started with sudo.
+    if (process.platform === "darwin") {
+      const netstat = execFileSync(DARWIN_NETSTAT_BIN, ["-an", "-p", "tcp"], {
+        encoding: "utf-8",
+        timeout: 5_000,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      if (parseDarwinNetstatHasListener(netstat, port)) {
+        throw new Error(
+          `no visible process owns a socket listening on port ${port}; it belongs to another user`,
+          { cause: error }
+        );
+      }
+    }
+    return [];
   }
   if (!output) return [];
   const lines = output.split("\n").map((s) => s.trim());
