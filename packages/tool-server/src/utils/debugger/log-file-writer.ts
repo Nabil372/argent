@@ -143,7 +143,7 @@ export class LogFileWriter {
     const line = `[L:${entry.id}] ${entry.timestamp} ${levelDisplay} ${source} | ${flatMessage}\n`;
 
     // Nothing reopens the file, and readAll() serves it alone, so a line with
-    // no file has no reader: the entry lives on only in the counts and clusters.
+    // no file lives on only in the counts, clusters and tail().
     if (this.ready && this.fd !== null) {
       const buf = Buffer.from(line);
       fs.writeSync(this.fd, buf);

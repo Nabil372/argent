@@ -416,18 +416,11 @@ describe.skipIf(!CAN_MAKE_UNWRITABLE)("LogFileWriter whose log file cannot be cr
     unwritableWriter.close();
   });
 
-  it("keeps no copy of a line it could not write", () => {
+  it("writes no file and reads nothing back for a line it could not write", () => {
     unwritableWriter.write(makeEntry(0, { message: "unreadable line" }));
 
     expect(fs.existsSync(unwritableWriter.getFilePath())).toBe(false);
     expect(unwritableWriter.readAll()).toEqual([]);
-
-    const retainedLines = Object.values(unwritableWriter as unknown as Record<string, unknown>)
-      .filter((value): value is unknown[] => Array.isArray(value))
-      .flat();
-    expect(retainedLines).toEqual([]);
-
-    // The entry itself is still accounted for, through the counts and clusters.
     expect(unwritableWriter.getStats().totalEntries).toBe(1);
     expect(unwritableWriter.getClusters()[0].message).toBe("unreadable line");
   });
