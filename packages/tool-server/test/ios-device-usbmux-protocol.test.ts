@@ -174,7 +174,7 @@ describe("readUsbmuxDeviceIdForSerial", () => {
     const xml =
       "<plist><dict><key>DeviceList</key><array>" +
       "<dict><key>DeviceID</key><string>not-a-number</string></dict>" +
-      `<dict><key>DeviceID</key><integer>9</integer><key>Properties</key><dict><key>SerialNumber</key><string>${DEVICE_UDID}</string></dict></dict>` +
+      `<dict><key>DeviceID</key><integer>9</integer><key>Properties</key><dict><key>SerialNumber</key><string>${DEVICE_UDID}</string><key>ConnectionType</key><string>USB</string></dict></dict>` +
       "</array></dict></plist>";
 
     expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBe(9);
@@ -192,13 +192,25 @@ describe("readUsbmuxDeviceIdForSerial", () => {
     expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBe(13);
   });
 
-  it("falls back to the only exact match when no USB entry carries the serial", () => {
+  it("rejects Wi-Fi-only devices even when the exact serial is listed", () => {
     const xml = deviceListXml([
       { id: 12, serial: DEVICE_UDID, connection: "Network" },
       { id: 13, serial: "00008030-000000000000AAAA", connection: "USB" },
     ]);
 
-    expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBe(12);
+    expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBeUndefined();
+  });
+
+  it.each(["Unknown", null])("rejects a device with connection type %s", (connection) => {
+    const connectionXml = connection
+      ? `<key>ConnectionType</key><string>${connection}</string>`
+      : "";
+    const xml =
+      `<plist><dict><key>DeviceList</key><array><dict><key>DeviceID</key><integer>42</integer>` +
+      `<key>Properties</key><dict><key>SerialNumber</key><string>${DEVICE_UDID}</string>` +
+      `${connectionXml}</dict></dict></array></dict></plist>`;
+
+    expect(readUsbmuxDeviceIdForSerial(xml, DEVICE_UDID)).toBeUndefined();
   });
 });
 
@@ -395,7 +407,7 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
 
   it.each([
     { connection: "USB", serial: DEVICE_UDID, available: true },
-    { connection: "Network", serial: DEVICE_UDID, available: true },
+    { connection: "Network", serial: DEVICE_UDID, available: false },
     { connection: "Network", serial: "00008030-000000000000AAAA", available: false },
   ])(
     "checks live $connection availability for $serial without opening a runner port",
@@ -416,6 +428,20 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
     vi.spyOn(net, "createConnection").mockImplementationOnce(() => createConnection(socketPath));
 
     await expect(isUsbmuxDeviceAvailable(DEVICE_UDID)).resolves.toBe(false);
+  });
+
+  it("refuses a Wi-Fi-only entry before opening a runner connection", async () => {
+    const socketPath = await createSocketPath();
+    const fake = await startFakeUsbmuxd(
+      socketPath,
+      [{ id: 42, serial: DEVICE_UDID, connection: "Network" }],
+      0
+    );
+
+    await expect(
+      openUsbmuxRunnerSocket({ udid: DEVICE_UDID, port: RUNNER_PORT, socketPath })
+    ).rejects.toMatchObject({ kind: "device-unattached" });
+    expect(fake.connectRequests).toEqual([]);
   });
 
   it("resolves the mux DeviceID and connects with the port in network byte order", async () => {

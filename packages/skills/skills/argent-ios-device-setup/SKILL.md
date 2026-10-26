@@ -1,6 +1,6 @@
 ---
 name: argent-ios-device-setup
-description: Set up a physical iPhone reachable through usbmux for argent. Use when a physical iPhone is involved (a list-devices iOS entry with kind "device") and ONLY then; never for a simulator.
+description: Set up a physical iPhone connected through local or forwarded USB for argent. Use when a physical iPhone is involved (a list-devices iOS entry with kind "device") and ONLY then; never for a simulator.
 ---
 
 # Physical iPhone setup
@@ -9,7 +9,7 @@ Read this only for a physical iPhone. Simulators use `argent-ios-simulator-setup
 
 ## First run
 
-1. Connect the phone by USB cable or ensure its network connection appears in the Mac’s live usbmuxd device list. Unlock it, keep the screen awake, and turn on Developer Mode (Settings > Privacy & Security > Developer Mode). `list-devices` must show it `connected`; a cached Wi-Fi pairing without a live usbmux entry stays `paired`.
+1. Connect the phone by USB cable or a USB forwarder. Unlock it, keep the screen awake, and turn on Developer Mode (Settings > Privacy & Security > Developer Mode). `list-devices` must show it `connected`; Wi-Fi-only devices stay `paired` and are unsupported.
 2. `launch-app` only registers the app. The first `describe`, gesture or `screenshot` builds, signs and starts the on-device runner: minutes cold, tens of seconds from cache or after a tool-server restart. Build cap 15 min, runner ready 120 s.
 3. On the first install the phone asks to trust the developer (Settings > General > VPN & Device Management), and an **Argent Runner** app appears on the home screen. Tell the user it is argent's automation runner and must stay installed.
 

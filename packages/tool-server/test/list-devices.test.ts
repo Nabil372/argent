@@ -537,7 +537,7 @@ describe("list-devices", () => {
 
   it("uses wired transport or live usbmux availability and sorts connected first", async () => {
     // CoreDevice can keep a connected tunnel after unplugging. Only a live
-    // usbmux entry lets a localNetwork device pass the connection check.
+    // USB mux entry lets a forwarded device pass the connection check.
     vi.mocked(listIosPhysicalDevices).mockResolvedValueOnce([
       {
         udid: "00008120-000A44443333801E",
@@ -571,7 +571,7 @@ describe("list-devices", () => {
       },
       {
         udid: "00008120-000C66665555A01E",
-        name: "Network iPhone",
+        name: "Forwarded iPhone",
         model: "iPhone 15",
         osVersion: "18.7.8",
         developerModeEnabled: true,
@@ -604,7 +604,7 @@ describe("list-devices", () => {
     }>;
     expect(physical.map((d) => [d.name, d.state])).toEqual([
       ["Desk iPhone", "connected"],
-      ["Network iPhone", "connected"],
+      ["Forwarded iPhone", "connected"],
       ["Office iPhone", "paired"],
       ["Unplugged iPhone", "paired"],
     ]);
@@ -615,7 +615,7 @@ describe("list-devices", () => {
     // The paired phone sinks below every usable device, booted simulators
     // included; flow auto-bind keys on state "connected" and skips it.
     expect(byName("Desk iPhone")).toBeLessThan(byName("Office iPhone"));
-    expect(byName("Network iPhone")).toBeLessThan(byName("Office iPhone"));
+    expect(byName("Forwarded iPhone")).toBeLessThan(byName("Office iPhone"));
     expect(byName("iPhone 16")).toBeLessThan(byName("Office iPhone"));
     expect(isUsbmuxDeviceAvailable).toHaveBeenCalledTimes(3);
     expect(isUsbmuxDeviceAvailable).not.toHaveBeenCalledWith("00008110-000978540290401E");

@@ -36,7 +36,7 @@ interface IosPhysicalDevice {
   /** CoreDevice pairing state, e.g. "paired". */
   pairingState: string | null;
   /**
-   * CoreDevice transport. A "localNetwork" device can also be available through usbmux.
+   * CoreDevice transport. Forwarded USB can report "localNetwork" here.
    */
   transportType: string | null;
   tunnelState: string | null;
@@ -91,7 +91,7 @@ function resolveDevicectlHint(output: string, bundleId?: string): string {
   }
 
   if (lower.includes("must be paired") || lower.includes("pairing")) {
-    return "Connect the device by USB cable or restore its network connection, accept the Trust prompt, enter the device passcode, then retry.";
+    return "Connect the device by USB cable or restore its forwarded USB connection, accept the Trust prompt, enter the device passcode, then retry.";
   }
 
   // CoreDeviceError 10002 covers any failed preflight check: a locked screen
@@ -105,7 +105,7 @@ function resolveDevicectlHint(output: string, bundleId?: string): string {
   }
 
   if (lower.includes("timed out")) {
-    return "Reconnect the device by USB cable or restore its network connection, unlock it, and retry; restarting Xcode's device services can help.";
+    return "Reconnect the device by USB cable or restore its forwarded USB connection, unlock it, and retry; restarting Xcode's device services can help.";
   }
 
   return "Ensure the device is unlocked, trusted, and visible in Xcode > Devices, then retry.";
@@ -407,7 +407,7 @@ function readyFailureSignal(error_kind: FailureKind): FailureSignal {
   };
 }
 
-/** A CoreDevice network transport also needs a live usbmux entry. */
+/** CoreDevice may report forwarded USB as localNetwork; require a USB mux entry. */
 export async function isDeviceTransportAvailable(
   udid: string,
   transportType: string | null
@@ -435,7 +435,7 @@ export async function ensureDeviceReady(udid: string): Promise<void> {
       new IosDeviceControlError(
         `Device is not available through a supported usbmux connection (transport: ${info.transportType})`,
         {
-          hint: "Connect the device by USB cable or restore its network connection, unlock it, then retry.",
+          hint: "Connect the device by USB cable or restore its forwarded USB connection, unlock it, then retry.",
         }
       ),
       readyFailureSignal("not_found")
