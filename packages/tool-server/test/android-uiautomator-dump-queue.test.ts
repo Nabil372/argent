@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { describeAndroid } from "../src/tools/describe/platforms/android";
 
 const adbExecOutBinary = vi.fn();
@@ -16,23 +18,33 @@ const DUMP = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
   <node index="0" text="Continue" resource-id="" class="android.widget.Button" package="com.example" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[0,0][1080,200]" />
 </hierarchy>`;
 
-type Pending = { serial: string; finish: () => void };
+const COLD_WEBVIEW_DUMP = readFileSync(
+  join(__dirname, "fixtures", "android-webview-cold.xml"),
+  "utf-8"
+);
+
+type Pending = { serial: string; finish: (dump?: string) => void };
 
 describe("describeAndroid uiautomator fallback", () => {
   let pending: Pending[];
 
   beforeEach(() => {
+    vi.useFakeTimers();
     pending = [];
     adbExecOutBinary.mockReset();
     adbExecOutBinary.mockImplementation(
       (serial: string) =>
         new Promise<Buffer>((resolve) => {
-          pending.push({ serial, finish: () => resolve(Buffer.from(DUMP)) });
+          pending.push({ serial, finish: (dump = DUMP) => resolve(Buffer.from(dump)) });
         })
     );
   });
 
-  const tick = () => new Promise((r) => setTimeout(r, 0));
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const tick = () => vi.advanceTimersByTimeAsync(0);
 
   it("starts a dump on a device only after the running one on that device finished", async () => {
     const first = describeAndroid(undefined, "emulator-5554", undefined, false);
@@ -70,5 +82,43 @@ describe("describeAndroid uiautomator fallback", () => {
     expect(pending.map((p) => p.serial).sort()).toEqual(["emulator-5554", "emulator-5556"]);
     for (const p of pending) p.finish();
     await Promise.all([a, b]);
+  });
+
+  it("starts a dump anyway once the running one on that device took over three seconds", async () => {
+    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+    await tick();
+    expect(pending).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(pending).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(pending).toHaveLength(2);
+
+    for (const p of pending) p.finish();
+    await Promise.all([first, second]);
+  });
+
+  it("re-reads an unpublished WebView only after another dump on that device finished", async () => {
+    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
+    await tick();
+    pending[0]!.finish(COLD_WEBVIEW_DUMP);
+    await tick();
+
+    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+    await tick();
+    expect(pending).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(250);
+    expect(pending).toHaveLength(2);
+
+    pending[1]!.finish();
+    await tick();
+    expect(pending).toHaveLength(3);
+
+    pending[2]!.finish();
+    const [{ tree }] = await Promise.all([first, second]);
+    expect(JSON.stringify(tree)).toContain("Continue");
   });
 });

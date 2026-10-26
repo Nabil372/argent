@@ -3,7 +3,6 @@ import type { Registry, ToolDependency } from "@argent/registry";
 import type { DescribeNode, DescribeTreeData } from "../../contract";
 import { adbExecOutBinary, isAndroidTv } from "../../../../utils/adb";
 import { resolveDevice } from "../../../../utils/device-info";
-import { withKeyedLock } from "../../../../utils/keyed-lock";
 import {
   getAndroidScreenSize,
   orientScreenSize,
@@ -100,12 +99,30 @@ async function awaitWebViewPublished(
   return tree;
 }
 
-// A dump started while another runs on the same device kills it, so dumps on
-// one serial are serialized.
-const dumpLocks = new Map<string, Promise<unknown>>();
+// A dump started while another runs on the same device is killed (`Killed`,
+// exit 137), so a dump first waits for the previous one on that serial. The
+// wait is bounded: on a screen that never goes idle one dump takes ~11.5 s, and
+// waiting on every earlier dump would queue reads without limit.
+const DUMP_WAIT_MS = 3_000;
+const lastDumps = new Map<string, Promise<unknown>>();
 
 function uiautomatorDump(serial: string): Promise<string> {
-  return withKeyedLock(dumpLocks, serial, () => runUiautomatorDump(serial));
+  const previous = lastDumps.get(serial) ?? Promise.resolve();
+  const dump = waitAtMost(previous, DUMP_WAIT_MS).then(() => runUiautomatorDump(serial));
+  const settled = dump.catch(() => {});
+  lastDumps.set(serial, settled);
+  void settled.then(() => {
+    if (lastDumps.get(serial) === settled) lastDumps.delete(serial);
+  });
+  return dump;
+}
+
+function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, ms);
+  });
+  return Promise.race([promise.then(() => {}), timeout]).finally(() => clearTimeout(timer));
 }
 
 async function runUiautomatorDump(serial: string): Promise<string> {
