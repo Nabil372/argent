@@ -10,7 +10,7 @@ import {
   stripPackageBinDirs,
   updateCommand,
 } from "../src/doctor.js";
-import { type DoctorReport } from "../src/doctor-shared.js";
+import { type DoctorReport, permissionFix } from "../src/doctor-shared.js";
 
 /**
  * `argent doctor` is only useful if its verdicts match what actually happens
@@ -78,6 +78,21 @@ describe("stripPackageBinDirs", () => {
     const yarnGlobal = "/home/me/.config/yarn/global/node_modules/.bin";
     const input = [yarnGlobal, "/app/node_modules/.bin-tools"].join(d);
     expect(stripPackageBinDirs(input, "/app")).toBe(input);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("permissionFix", () => {
+  it("only chmods a path the user owns, and quotes it", () => {
+    const file = path.join(projectRoot, "My Proj", ".mcp.json");
+    fs.mkdirSync(path.dirname(file));
+    fs.writeFileSync(file, "{}", { mode: 0o000 });
+    expect(permissionFix(file, "u+r")).toBe(`chmod u+r '${file}'`);
+  });
+
+  it("chowns a path someone else owns before the chmod", () => {
+    expect(permissionFix("/", "u+rwx", { recursive: true })).toBe(
+      `sudo chown -R "$USER" '/' && chmod u+rwx '/'`
+    );
   });
 });
 

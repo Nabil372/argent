@@ -19,6 +19,7 @@ import {
   type ResolvedToolsUrl,
   check,
   localArgentCmd,
+  permissionFix,
   samePath,
 } from "./doctor-shared.js";
 
@@ -173,7 +174,7 @@ export async function toolServerSection(
     checks.push(
       check("error", "~/.argent is not writable, so no tool-server can start", {
         detail: "a sudo run can leave it owned by root",
-        fix: `sudo chown -R "$USER" ${argentDir}`,
+        fix: permissionFix(argentDir, "u+rwx", { recursive: true }),
       })
     );
   }

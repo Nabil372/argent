@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
 import { getResolvedToolsUrl } from "@argent/tools-client";
-import { isYarnPnp } from "@argent/installer";
+import { isYarnPnp, shellQuotePath } from "@argent/installer";
 
 // Types and helpers every `argent doctor` section shares.
 
@@ -105,6 +105,22 @@ export function isUnreadable(file: string): boolean {
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === "EACCES";
   }
+}
+
+/**
+ * The command that gives this user `mode` (`u+r`, `u+w`) on `p`. chown alone
+ * keeps the mode, so a file the user owns needs only chmod.
+ */
+export function permissionFix(p: string, mode: string, { recursive = false } = {}): string {
+  const quoted = shellQuotePath(p);
+  const chmod = `chmod ${mode} ${quoted}`;
+  let owned: boolean;
+  try {
+    owned = fs.statSync(p).uid === process.getuid?.();
+  } catch {
+    owned = false;
+  }
+  return owned ? chmod : `sudo chown ${recursive ? "-R " : ""}"$USER" ${quoted} && ${chmod}`;
 }
 
 /**

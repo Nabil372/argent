@@ -18,6 +18,7 @@ export {
   readInstallRecord,
   resolveInstallMode,
   resolveProjectRoot,
+  shellQuotePath,
   ARGENT_SKILL_PREFIX,
   RULES_DIR,
   AGENTS_DIR,

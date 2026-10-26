@@ -21,6 +21,7 @@ import {
   check,
   home,
   isUnreadable,
+  permissionFix,
   realPath,
   samePath,
 } from "./doctor-shared.js";
@@ -142,7 +143,7 @@ export function editorsSection(
       checks.push(
         check("error", `${adapter.name}: can't read its config file`, {
           detail: home(configPath),
-          fix: `sudo chown "$USER" ${configPath}`,
+          fix: permissionFix(configPath, "u+r"),
         })
       );
       unparsed.add(adapter.name);
