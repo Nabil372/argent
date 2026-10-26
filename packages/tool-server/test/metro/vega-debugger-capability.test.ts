@@ -56,7 +56,9 @@ const registry = new Registry();
  * the legacy Hermes inspector, which speaks Runtime + Debugger. Everything here
  * needs nothing beyond `Runtime.evaluate` — including the network inspector,
  * which patches `XMLHttpRequest` over `Runtime.evaluate` rather than using the
- * CDP `Network` domain. All six verified working on a live VVD.
+ * CDP `Network` domain — except `debugger-evaluate`, which also sends
+ * `Runtime.callFunctionOn` and `Runtime.getProperties` to wait on a Promise
+ * result. All six verified working on a live VVD.
  */
 const VEGA_ENABLED_TOOLS = [
   debuggerConnectTool,

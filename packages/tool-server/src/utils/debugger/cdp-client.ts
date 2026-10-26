@@ -13,8 +13,7 @@ import { sleep } from "../timing";
 import {
   readBoxError,
   readBoxValue,
-  readIfNotThenable,
-  watchThenable,
+  watchIfThenable,
   type RemoteVerdict,
   type SettleBox,
 } from "./scripts/evaluate-awaited";
@@ -147,11 +146,11 @@ interface RemoteResult {
 
 const PROMISE_POLL_INTERVAL_MS = 50;
 /**
- * How long one poll waits for its answer. The legacy Hermes inspector (Vega)
- * can leave a `Runtime.getProperties` unanswered until some evaluate reaches
- * the runtime, so a poll that times out is nudged and repeated, not fatal.
+ * How often a poll still waiting for its answer is nudged. The legacy Hermes
+ * inspector (Vega) can leave a `Runtime.getProperties` unanswered until some
+ * evaluate reaches the runtime.
  */
-const POLL_REQUEST_TIMEOUT_MS = 1000;
+const POLL_NUDGE_INTERVAL_MS = 1000;
 /**
  * The least budget a read after the expression ran gets, so a Promise that
  * settles at the deadline is still read instead of reported as unsettled.
@@ -182,6 +181,22 @@ function unsettled(timeout: number): FailureError {
   );
 }
 
+/** No answer in time, though the expression ran (or finished late). */
+function resultTimedOut(timeout: number, cause: Error): FailureError {
+  return evaluateError(
+    `The expression ran, but its result did not arrive within ${timeout}ms; a Promise it ` +
+      `returned may still be pending. Do not run it again for its side effects; to skip the ` +
+      "wait, evaluate `void (<expression>)` instead.",
+    FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
+    "timeout",
+    cause
+  );
+}
+
+function failureCode(err: unknown): FailureCode | undefined {
+  return err instanceof Error ? getFailureSignal(err)?.error_code : undefined;
+}
+
 /** A value with no JSON form; the call must not look like it returned one. */
 function unserializable(kind: string): FailureError {
   return evaluateError(
@@ -190,6 +205,19 @@ function unserializable(kind: string): FailureError {
     FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR,
     "validation"
   );
+}
+
+/** The value a `RemoteVerdict` stands for, or the failure it reports. */
+function verdictValue(verdict: RemoteVerdict | undefined): unknown {
+  if (!verdict) return undefined;
+  if ("unserializable" in verdict) throw unserializable(verdict.unserializable);
+  if ("unreadable" in verdict) {
+    throw evaluateError(
+      `The expression's result could not be serialized: ${verdict.unreadable}`,
+      FAILURE_CODES.DEBUGGER_CDP_RUNTIME_EXCEPTION
+    );
+  }
+  return verdict.json === undefined ? undefined : JSON.parse(verdict.json);
 }
 
 function runtimeException(details: CDPExceptionDetails): FailureError {
@@ -206,6 +234,8 @@ export class CDPClient {
   private nextId = 1;
   private pending = new Map<number, PendingRequest>();
   private pendingBindings = new Map<string, PendingBinding>();
+  /** Whether the runtime serves `Runtime.releaseObjectGroup`; unknown until asked. */
+  private releasesHandles: boolean | undefined;
   /** Set by addBinding when the runtime ACKs the command but installs nothing. */
   private bindingUnavailable = false;
   private scripts = new Map<string, ScriptInfo>();
@@ -486,9 +516,15 @@ export class CDPClient {
    * script. Every handle belongs to one object group, released when the call
    * ends. `timeout` bounds the expression and the wait for the Promise; the
    * reads after it keep at least `READ_GRACE_MS`.
+   *
+   * A runtime that cannot release handles (Hermes before RN 0.77 answers
+   * `Runtime.releaseObjectGroup` with "Unsupported method") would keep every
+   * result alive for the whole session, so there the expression is evaluated
+   * by value as `evaluate` does, and a Promise comes back unsettled.
    */
   async evaluateAwaited(expression: string, options?: { timeout?: number }): Promise<unknown> {
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
+    if (!(await this.canReleaseHandles())) return this.evaluate(expression, { timeout });
     const deadline = Date.now() + timeout;
     const objectGroup = `argent-await-${crypto.randomUUID()}`;
     let ran = false;
@@ -502,7 +538,14 @@ export class CDPClient {
       if (first.exceptionDetails) throw runtimeException(first.exceptionDetails);
       return await this.readRemote(first.result, objectGroup, deadline, timeout);
     } catch (err) {
-      throw ran ? this.afterExpressionRan(err) : err;
+      if (ran) throw this.afterExpressionRan(err, timeout);
+      if (
+        failureCode(err) === FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT &&
+        (await this.answers())
+      ) {
+        throw resultTimedOut(timeout, err as Error);
+      }
+      throw err;
     } finally {
       this.send("Runtime.releaseObjectGroup", { objectGroup }, 1000).catch(() => undefined);
     }
@@ -512,8 +555,15 @@ export class CDPClient {
    * Re-code a failure that came after the expression ran, so that neither
    * the registry's self-heal nor the agent runs the expression a second time.
    */
-  private afterExpressionRan(err: unknown): unknown {
-    const code = err instanceof Error ? getFailureSignal(err)?.error_code : undefined;
+  private afterExpressionRan(err: unknown, timeout: number): unknown {
+    const signal = err instanceof Error ? getFailureSignal(err) : undefined;
+    const code = signal?.error_code;
+    if (
+      code === FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT &&
+      signal?.failure_stage === "debugger_cdp_send"
+    ) {
+      return resultTimedOut(timeout, err as Error);
+    }
     if (code === FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED) {
       return evaluateError(
         "The connection closed after the expression ran, before its result was read.",
@@ -539,6 +589,34 @@ export class CDPClient {
       );
     }
     return err;
+  }
+
+  /**
+   * Whether `Runtime.releaseObjectGroup` is served, asked once per client. An
+   * answer that never came is not cached: the next call asks again.
+   */
+  private async canReleaseHandles(): Promise<boolean> {
+    if (this.releasesHandles !== undefined) return this.releasesHandles;
+    try {
+      await this.send(
+        "Runtime.releaseObjectGroup",
+        { objectGroup: "argent-release-probe" },
+        POLL_NUDGE_INTERVAL_MS
+      );
+      this.releasesHandles = true;
+    } catch (err) {
+      if (failureCode(err) !== FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR) return true;
+      this.releasesHandles = false;
+    }
+    return this.releasesHandles;
+  }
+
+  /** Whether the runtime answers a trivial evaluate, i.e. it is not frozen. */
+  private answers(): Promise<boolean> {
+    return this.send("Runtime.evaluate", { expression: "0" }, POLL_NUDGE_INTERVAL_MS).then(
+      () => true,
+      () => false
+    );
   }
 
   /** The value of an evaluate result: as is when primitive, else read in the app. */
@@ -567,18 +645,12 @@ export class CDPClient {
     timeout: number
   ): Promise<unknown> {
     const readBudget = () => Math.max(deadline - Date.now(), READ_GRACE_MS);
-    const unwrap = (verdict: RemoteVerdict | undefined): unknown => {
-      if (verdict && "unserializable" in verdict) throw unserializable(verdict.unserializable);
-      return verdict && "value" in verdict ? verdict.value : undefined;
-    };
 
-    const verdict = (
-      await this.callOn(objectId, objectGroup, readIfNotThenable, true, readBudget())
-    ).value as RemoteVerdict | undefined;
-    if (!verdict || !("pending" in verdict)) return unwrap(verdict);
-
-    const box = (await this.callOn(objectId, objectGroup, watchThenable, false, readBudget()))
-      .objectId;
+    const watched = await this.callOn(objectId, objectGroup, watchIfThenable, false, readBudget());
+    if (watched.type === "string") {
+      return verdictValue(JSON.parse(watched.value as string) as RemoteVerdict);
+    }
+    const box = watched.objectId;
     if (!box) {
       throw evaluateError(
         "The runtime returned no handle to wait on the Promise with.",
@@ -588,15 +660,15 @@ export class CDPClient {
 
     // The box is read at least once: a Promise that settled while the
     // expression used up the budget is still a result.
-    let state = await this.readBoxState(box, deadline, timeout);
+    let state = await this.readBoxState(box, readBudget(), timeout);
     while (state === "pending") {
       if (Date.now() >= deadline) throw unsettled(timeout);
       await sleep(Math.min(PROMISE_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
-      state = await this.readBoxState(box, deadline, timeout);
+      state = await this.readBoxState(box, readBudget(), timeout);
     }
 
     if (state === "fulfilled") {
-      return unwrap(
+      return verdictValue(
         (await this.callOn(box, objectGroup, readBoxValue, true, readBudget())).value as
           RemoteVerdict | undefined
       );
@@ -611,34 +683,25 @@ export class CDPClient {
   /**
    * Read the box's `state` with `Runtime.getProperties`, which runs no script
    * in the app. A paused runtime would never run the callbacks, so it fails
-   * fast. A poll that gets no answer in time is retried after a nudge: the
-   * legacy Hermes inspector only wakes the runtime for an evaluate, and can
-   * leave a `getProperties` queued behind other traffic until one arrives.
+   * fast. A slow answer is waited for until `budget` runs out, with the
+   * runtime nudged meanwhile: the legacy Hermes inspector only wakes the
+   * runtime for an evaluate, and can leave a `getProperties` queued behind
+   * other traffic until one arrives.
    */
   private async readBoxState(
     box: string,
-    deadline: number,
+    budget: number,
     timeout: number
   ): Promise<SettleBox["state"]> {
     if (this.paused) throw this.pausedError("the Promise's callbacks");
     let props: { result?: { name: string; value?: RemoteObjectLike }[] };
     try {
-      props = (await this.send(
-        "Runtime.getProperties",
-        { objectId: box, ownProperties: true },
-        POLL_REQUEST_TIMEOUT_MS
+      props = (await this.withNudges(
+        this.send("Runtime.getProperties", { objectId: box, ownProperties: true }, budget)
       )) as typeof props;
     } catch (err) {
-      const code = err instanceof Error ? getFailureSignal(err)?.error_code : undefined;
-      if (code === FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT) {
-        if (Date.now() >= deadline) throw unsettled(timeout);
-        await this.send(
-          "Runtime.evaluate",
-          { expression: "0", returnByValue: true },
-          POLL_REQUEST_TIMEOUT_MS
-        ).catch(() => undefined);
-        return "pending";
-      }
+      const code = failureCode(err);
+      if (code === FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT) throw unsettled(timeout);
       if (code !== FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR) throw err;
       throw evaluateError(
         "Lost the Promise while waiting for it: the JS context was reloaded or replaced.",
@@ -650,6 +713,16 @@ export class CDPClient {
     const state = props.result?.find((p) => p.name === "state")?.value?.value;
     if (state === "fulfilled" || state === "rejected") return state;
     return "pending";
+  }
+
+  /** Await `request`, sending a no-op evaluate every `POLL_NUDGE_INTERVAL_MS` until it settles. */
+  private async withNudges<T>(request: Promise<T>): Promise<T> {
+    const nudge = setInterval(() => void this.answers(), POLL_NUDGE_INTERVAL_MS);
+    try {
+      return await request;
+    } finally {
+      clearInterval(nudge);
+    }
   }
 
   /**

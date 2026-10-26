@@ -5,10 +5,11 @@
  * scope, no imports, nothing the app's runtime (Hermes or V8) cannot execute.
  * Type annotations are fine; `tsc` strips them and emits the body verbatim.
  *
- * None of them throws: a helper that threw would come back as
- * `exceptionDetails`, which the client could not tell from a fault in the
- * inspector. Anything that can fail is caught and reported in the return
- * value instead.
+ * None of them throws, and none returns a value the runtime could fail to
+ * serialize: a helper that threw would come back as `exceptionDetails`, which
+ * the client could not tell from a fault in the inspector. Values travel as
+ * JSON text built here, so a cyclic or BigInt value is reported in the return
+ * value instead of failing inside Hermes's own serializer.
  */
 
 /** Where a thenable ended up; `state` moves off "pending" from its callbacks. */
@@ -19,71 +20,109 @@ export interface SettleBox {
 }
 
 /**
- * What a remote value is to the caller: its JSON form, a thenable still to be
- * watched, or something with no JSON form (`unserializable` names its type).
+ * What a value is to the caller: its JSON text (absent for `undefined` and
+ * for numbers JSON cannot carry), a type with no JSON form, or the error
+ * `JSON.stringify` threw on it.
  */
-export type RemoteVerdict = { value: unknown } | { pending: true } | { unserializable: string };
+export type RemoteVerdict = { json?: string } | { unserializable: string } | { unreadable: string };
 
-/** `{ pending: true }` when `this` is a thenable, else its verdict. */
-export function readIfNotThenable(this: unknown): RemoteVerdict {
+/**
+ * Attach callbacks to `this` when it is a thenable and return the box they
+ * write to; otherwise return `this`'s `RemoteVerdict` as JSON text. `then` is
+ * read once, so a getter or Proxy trap on it runs once.
+ */
+export function watchIfThenable(this: unknown): SettleBox | string {
   const self = this as { then?: unknown } | null;
-  try {
-    if (self && typeof self.then === "function") return { pending: true };
-  } catch {
-    // A throwing `then` getter: treat it as a thenable and let the Promise
-    // machinery report the error as a rejection.
-    return { pending: true };
-  }
-  // A function sent by value reaches the client as `null` or nothing at all.
-  if (typeof self === "function") return { unserializable: "function" };
-  return { value: typeof self === "symbol" ? String(self) : self };
-}
-
-/** Attach callbacks to the thenable `this` and return the box they write to. */
-export function watchThenable(this: unknown): SettleBox {
   const box: SettleBox = { state: "pending" };
   const reject = (error: unknown) => {
     box.error = error;
     box.state = "rejected";
   };
+  let then: unknown;
   try {
-    Promise.resolve(this).then((value) => {
-      box.value = value;
-      box.state = "fulfilled";
-    }, reject);
+    then = self && self.then;
   } catch (error) {
-    // A Promise whose own `then` throws synchronously.
     reject(error);
+    return box;
   }
-  return box;
+  if (typeof then === "function") {
+    const subscribe = then;
+    new Promise((resolve, rejectWith) => subscribe.call(self, resolve, rejectWith)).then(
+      (value) => {
+        box.value = value;
+        box.state = "fulfilled";
+      },
+      reject
+    );
+    return box;
+  }
+  if (typeof self === "function") return JSON.stringify({ unserializable: "function" });
+  try {
+    const json = JSON.stringify(self);
+    return JSON.stringify(json === undefined ? {} : { json });
+  } catch (error) {
+    try {
+      return JSON.stringify({ unreadable: String(error) });
+    } catch {
+      return JSON.stringify({ unreadable: "the value could not be serialized" });
+    }
+  }
 }
 
 /** The fulfilled value's verdict. */
 export function readBoxValue(this: SettleBox): RemoteVerdict {
   const value = this.value;
   if (typeof value === "function") return { unserializable: "function" };
-  return { value: typeof value === "symbol" ? String(value) : value };
+  if (typeof value === "symbol") return { json: JSON.stringify(String(value)) };
+  // A bare NaN, Infinity or -0 result also comes back without a value.
+  if (typeof value === "number" && (!isFinite(value) || Object.is(value, -0))) return {};
+  try {
+    const json = JSON.stringify(value);
+    return json === undefined ? {} : { json };
+  } catch (error) {
+    try {
+      return { unreadable: String(error) };
+    } catch {
+      return { unreadable: "the value could not be serialized" };
+    }
+  }
 }
 
 /**
  * The rejection reason as text: an Error's stack, else `name: message` (what
- * a DOMException or an Error without a stack has), else JSON, else `String()`.
+ * a DOMException or an Error without a stack has), each followed by the
+ * reason's other own fields as JSON; else JSON; else `String()`.
  */
 export function readBoxError(this: SettleBox): string {
   const error = this.error as
     { stack?: unknown; name?: unknown; message?: unknown } | null | undefined;
+  let head: string | undefined;
   try {
-    if (error && typeof error.stack === "string" && error.stack) return error.stack;
+    if (error && typeof error.stack === "string" && error.stack) head = error.stack;
   } catch {
     // A throwing `stack` getter; fall through to the other renderings.
   }
   try {
-    if (error && typeof error.message === "string") {
-      const name = typeof error.name === "string" && error.name ? error.name : "Error";
-      return name + ": " + error.message;
+    if (head === undefined && error && typeof error.message === "string") {
+      const name = error.name;
+      if (typeof name === "string") head = name ? name + ": " + error.message : error.message;
     }
   } catch {
     // Throwing getters; fall through.
+  }
+  if (head !== undefined) {
+    try {
+      const fields: Record<string, unknown> = {};
+      let any = false;
+      for (const key of Object.keys(error as object)) {
+        if (key === "stack" || key === "message" || key === "name") continue;
+        fields[key] = (error as Record<string, unknown>)[key];
+        any = true;
+      }
+      return any ? head + "\n" + JSON.stringify(fields) : head;
+    } catch {
+      return head;
+    }
   }
   try {
     const json = JSON.stringify(error);
