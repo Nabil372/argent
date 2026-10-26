@@ -200,6 +200,8 @@ describe("run-sequence", () => {
       minStableMs: 100,
       signal: undefined,
       stopOnReadError: true,
+      emptyTreeIsStable: true,
+      androidHelperOnly: true,
     });
     expect(registry.invokeTool).toHaveBeenNthCalledWith(2, "keyboard", { text: "hi", udid: IOS });
     expect(invokedTools(registry)).toEqual(["gesture-tap", "await-screen-idle", "keyboard"]);
@@ -307,6 +309,39 @@ describe("run-sequence", () => {
     ).toEqual(["gesture-swipe", "shake"]);
   });
 
+  it.each(["tv-remote", "shake"])("does not settle after %s", async (step) => {
+    expect(
+      await settledAfter([
+        { tool: step, args: {} },
+        { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+      ])
+    ).toEqual([step, "gesture-tap"]);
+  });
+
+  it("does not settle between consecutive swipe, scroll and drag steps", async () => {
+    expect(
+      await settledAfter([
+        { tool: "gesture-swipe", args: {} },
+        { tool: "gesture-swipe", args: {} },
+        { tool: "gesture-scroll", args: {} },
+        { tool: "gesture-drag", args: {} },
+        { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } },
+      ])
+    ).toEqual([
+      "gesture-swipe",
+      "gesture-swipe",
+      "gesture-scroll",
+      "gesture-drag",
+      "await-screen-idle",
+      "gesture-tap",
+    ]);
+  });
+
+  it("does not settle on HarmonyOS, where one tree read outlasts the cap", async () => {
+    const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 } };
+    expect(await settledAfter([tap, tap], HARMONY)).toEqual(["gesture-tap", "gesture-tap"]);
+  });
+
   it("does not settle on a device the idle tool does not support", async () => {
     const registry = {
       getTool: vi.fn((id: string) =>
@@ -352,48 +387,33 @@ describe("run-sequence", () => {
   const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 }, delayMs: 0 };
 
   it.each([
-    ["a read fails", () => Promise.resolve({ ...CAPPED, polls: 1, readError: "no page" })],
-    ["one read takes the whole cap", () => Promise.resolve({ ...CAPPED, polls: 2 })],
-    ["the wait throws", () => Promise.reject(new Error("no tree"))],
-  ])("stops settling for the rest of the sequence once %s", async (_label, outcome) => {
+    [
+      "a read fails",
+      () => Promise.resolve({ ...CAPPED, polls: 1, readError: "Target closed" }),
+      "the element tree could not be read (Target closed)",
+    ],
+    [
+      "a read fails after several good reads",
+      () => Promise.resolve({ ...CAPPED, polls: 5, readError: "Target closed" }),
+      "the element tree could not be read (Target closed)",
+    ],
+    [
+      "one read takes the whole cap",
+      () => Promise.resolve({ ...CAPPED, polls: 2 }),
+      "the element tree could not be read twice within 1000ms",
+    ],
+    [
+      "two reads differ",
+      () => Promise.resolve({ ...CAPPED, polls: 3 }),
+      "the screen was still changing at the 1000ms cap",
+    ],
+    [
+      "the wait throws",
+      () => Promise.reject(new Error("no tree")),
+      "the element tree could not be read (no tree)",
+    ],
+  ])("stops settling after two waits in a row where %s", async (_label, outcome, reason) => {
     idle.mockImplementation(outcome);
-    const registry = mockRegistry();
-
-    const result = await createRunSequenceTool(registry).execute(
-      {},
-      { udid: IOS, steps: [tap, tap, tap] }
-    );
-
-    expect(invokedTools(registry)).toEqual([
-      "gesture-tap",
-      "await-screen-idle",
-      "gesture-tap",
-      "gesture-tap",
-    ]);
-    expect(result.note).toMatch(/after step 1: the element tree could not be read/);
-  });
-
-  it("keeps settling after one capped wait, so a later transition is still caught", async () => {
-    idle.mockResolvedValueOnce(CAPPED);
-    const registry = mockRegistry();
-
-    const result = await createRunSequenceTool(registry).execute(
-      {},
-      { udid: IOS, steps: [tap, tap, tap] }
-    );
-
-    expect(invokedTools(registry)).toEqual([
-      "gesture-tap",
-      "await-screen-idle",
-      "gesture-tap",
-      "await-screen-idle",
-      "gesture-tap",
-    ]);
-    expect(result.note).toBeUndefined();
-  });
-
-  it("stops settling after two capped waits in a row and says so", async () => {
-    idle.mockResolvedValue(CAPPED);
     const registry = mockRegistry();
 
     const result = await createRunSequenceTool(registry).execute(
@@ -409,16 +429,65 @@ describe("run-sequence", () => {
       "gesture-tap",
       "gesture-tap",
     ]);
-    expect(result.note).toMatch(/after step 2: the screen was still changing/);
+    expect(result.note).toBe(
+      `Stopped waiting for the screen to settle after step 2: 2 waits in a row did not settle, the last because ${reason}. Later steps ran without the wait.`
+    );
   });
 
-  it("resets the capped count when a wait settles", async () => {
-    idle.mockResolvedValueOnce(CAPPED).mockResolvedValueOnce(SETTLED).mockResolvedValueOnce(CAPPED);
+  it.each([
+    ["capped", CAPPED],
+    ["unreadable", { ...CAPPED, polls: 1, readError: "slow read" }],
+  ])(
+    "keeps settling after one %s wait, so a later transition is still caught",
+    async (_, first) => {
+      idle.mockResolvedValueOnce(first);
+      const registry = mockRegistry();
+
+      const result = await createRunSequenceTool(registry).execute(
+        {},
+        { udid: IOS, steps: [tap, tap, tap] }
+      );
+
+      expect(invokedTools(registry)).toEqual([
+        "gesture-tap",
+        "await-screen-idle",
+        "gesture-tap",
+        "await-screen-idle",
+        "gesture-tap",
+      ]);
+      expect(result.note).toBeUndefined();
+    }
+  );
+
+  it("resets the count when a wait settles", async () => {
+    idle
+      .mockResolvedValueOnce(CAPPED)
+      .mockResolvedValueOnce(SETTLED)
+      .mockResolvedValueOnce(CAPPED)
+      .mockResolvedValueOnce(CAPPED);
     const registry = mockRegistry();
 
-    await createRunSequenceTool(registry).execute({}, { udid: IOS, steps: [tap, tap, tap, tap] });
+    const result = await createRunSequenceTool(registry).execute(
+      {},
+      { udid: IOS, steps: [tap, tap, tap, tap, tap] }
+    );
+
+    expect(idle).toHaveBeenCalledTimes(4);
+    expect(result.note).toMatch(/after step 4:/);
+  });
+
+  it("does not count a wait after a swipe that hits the cap", async () => {
+    idle.mockResolvedValue(CAPPED);
+    const swipe = { tool: "gesture-swipe", args: {}, delayMs: 0 };
+    const registry = mockRegistry();
+
+    const result = await createRunSequenceTool(registry).execute(
+      {},
+      { udid: IOS, steps: [tap, swipe, tap, tap] }
+    );
 
     expect(idle).toHaveBeenCalledTimes(3);
+    expect(result.note).toMatch(/after step 3:/);
   });
 
   it("does not record a settle wait as a tool invocation", async () => {

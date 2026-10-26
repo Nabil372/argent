@@ -17,7 +17,11 @@ import { pollDescribeTree } from "../../utils/poll-describe-tree";
 import type { DescribeNode, DescribeTreeData } from "../describe/contract";
 import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeIosDevice } from "../describe/platforms/ios-device";
-import { describeAndroid, androidRequires } from "../describe/platforms/android";
+import {
+  describeAndroid,
+  describeAndroidWithHelper,
+  androidRequires,
+} from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
 import { pollHarmonyTree, harmonyRequires } from "../describe/platforms/harmony";
 
@@ -104,6 +108,7 @@ function fetchTree(
   chromium: ChromiumCdpApi | undefined,
   isTvOs: boolean,
   androidIsTv: boolean,
+  androidHelperOnly: boolean,
   budgetMs: number
 ): Promise<DescribeTreeData> {
   // ios-remote reads the same AX tree through describeIos: the ax-service
@@ -117,6 +122,7 @@ function fetchTree(
     return describeIos(registry, device, {}, { isTvOs });
   }
   if (device.platform === "android") {
+    if (androidHelperOnly) return describeAndroidWithHelper(registry, device.id);
     return describeAndroid(registry, device.id, undefined, androidIsTv);
   }
   if (device.platform === "harmony") {
@@ -140,6 +146,10 @@ export interface ScreenIdleWait {
   minStableMs: number;
   signal?: AbortSignal;
   stopOnReadError?: boolean;
+  /** Two equal empty trees count as still, instead of a screen yet to render. */
+  emptyTreeIsStable?: boolean;
+  /** Fail the read when the Android helper is unavailable instead of running `uiautomator dump`. */
+  androidHelperOnly?: boolean;
   /** Resolved here for a Chromium target when absent. */
   chromium?: ChromiumCdpApi;
 }
@@ -175,14 +185,23 @@ export async function waitForScreenIdle(
   let stableSince = 0;
 
   const poll = await pollDescribeTree<true>({
-    fetchTree: (budgetMs) => fetchTree(registry, device, chromium, isTvOs, androidIsTv, budgetMs),
+    fetchTree: (budgetMs) =>
+      fetchTree(
+        registry,
+        device,
+        chromium,
+        isTvOs,
+        androidIsTv,
+        wait.androidHelperOnly === true,
+        budgetMs
+      ),
     timeoutMs: wait.timeoutMs,
     pollIntervalMs: wait.pollIntervalMs,
     signal: wait.signal,
     stopOnError: wait.stopOnReadError,
     onSample: (data, nowMs) => {
       // An empty tree (blank/loading, or a degraded AX read) is not settled.
-      if (data.tree.children.length === 0) {
+      if (data.tree.children.length === 0 && !wait.emptyTreeIsStable) {
         stableSignature = undefined;
         stableSince = 0;
         return { done: false };

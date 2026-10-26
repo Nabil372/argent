@@ -79,7 +79,7 @@ const zodSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Applies to the whole sequence; a step's own settle:false skips it after that step only. Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements are already moving, but not motion that starts more than ~100ms after the step (a sheet opened after a fetch) or animations that leave the tree unchanged (a native iOS push), so keep await-ui-element gates for those. A wait can hit the 1s cap after a momentum swipe, a push or a spinner. The rest of the sequence skips the wait once two waits in a row hit the cap, or the tree cannot be read within it, and the result's note says so. Set false for timing-critical input (games, double-taps split across steps)."
+      "Applies to the whole sequence; a step's own settle:false skips it after that step only. Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements are already moving, but not motion that starts more than ~100ms after the step (a sheet opened after a fetch) or animations that leave the tree unchanged (a native iOS push), so keep await-ui-element gates for those. There is no wait between two consecutive swipe, scroll or drag steps. A wait can hit the 1s cap after a push or on a spinner, or when the tree cannot be read within it (a slow page, an alert). The rest of the sequence skips the wait once two waits in a row end that way, and the result's note says so; a wait after a swipe, scroll or drag is not counted, since momentum often outlasts the cap. No wait on HarmonyOS, where one tree read takes longer than the cap. Set false for timing-critical input (games, double-taps split across steps)."
     ),
 });
 
@@ -99,10 +99,12 @@ const SETTLE_AFTER = new Set([
   // `visible` holds as soon as an element has a frame, which can be mid slide-in.
   AWAIT_UI_ELEMENT_TOOL_ID,
 ]);
+// Momentum can outlast the cap, so a wait after these says little about the screen.
+const SCROLL_TOOLS = new Set(["gesture-swipe", "gesture-scroll", "gesture-drag"]);
 const SETTLE_KEYS = new Set(["enter", "return", "escape", "esc"]);
 const SETTLE_IDLE_TOOL_ID = "await-screen-idle";
 const SETTLE_TIMEOUT_MS = 1000;
-const MAX_CAPPED_SETTLES_IN_A_ROW = 2;
+const MAX_FAILED_SETTLES_IN_A_ROW = 2;
 
 type Params = z.infer<typeof zodSchema>;
 type Step = Params["steps"][number];
@@ -115,6 +117,7 @@ function keyMayMoveUi(args: Record<string, unknown> | undefined): boolean {
 }
 
 function canSettle(registry: Registry, device: DeviceInfo): boolean {
+  if (device.platform === "harmony") return false;
   try {
     assertSupported(SETTLE_IDLE_TOOL_ID, registry.getTool(SETTLE_IDLE_TOOL_ID)?.capability, device);
     return true;
@@ -128,13 +131,19 @@ function settlesBetween(step: Step, next: Step | undefined): boolean {
     next !== undefined &&
     next.tool !== AWAIT_UI_ELEMENT_TOOL_ID &&
     next.tool !== "shake" &&
+    !(SCROLL_TOOLS.has(step.tool) && SCROLL_TOOLS.has(next.tool)) &&
     step.settle !== false &&
     SETTLE_AFTER.has(step.tool) &&
     (step.tool !== "keyboard" || keyMayMoveUi(step.args))
   );
 }
 
-type SettleVerdict = "settled" | "aborted" | "capped" | "unreadable";
+type SettleVerdict =
+  { kind: "settled" | "aborted" | "capped" } | { kind: "unreadable"; error?: string };
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 async function settleScreen(
   registry: Registry,
@@ -148,24 +157,31 @@ async function settleScreen(
       minStableMs: 100,
       signal,
       stopOnReadError: true,
+      emptyTreeIsStable: true,
+      androidHelperOnly: true,
     });
-    if (idle.settled) return "settled";
-    if (idle.aborted) return "aborted";
+    if (idle.settled) return { kind: "settled" };
+    if (idle.aborted) return { kind: "aborted" };
+    if (idle.readError !== undefined) return { kind: "unreadable", error: idle.readError };
     // Two polls fit only one complete read, so no two reads could have matched.
-    if (idle.readError !== undefined || idle.polls <= 2) return "unreadable";
-    return "capped";
-  } catch {
-    return "unreadable";
+    if (idle.polls <= 2) return { kind: "unreadable" };
+    return { kind: "capped" };
+  } catch (err) {
+    return { kind: "unreadable", error: errorMessage(err) };
   }
 }
 
-const SETTLE_STOPPED_REASON: Record<"capped" | "unreadable", string> = {
-  capped: `the screen was still changing when ${MAX_CAPPED_SETTLES_IN_A_ROW} waits in a row hit their ${SETTLE_TIMEOUT_MS}ms cap`,
-  unreadable: `the element tree could not be read within ${SETTLE_TIMEOUT_MS}ms`,
-};
+function settleStoppedReason(verdict: SettleVerdict): string {
+  if (verdict.kind === "unreadable") {
+    return verdict.error === undefined
+      ? `the element tree could not be read twice within ${SETTLE_TIMEOUT_MS}ms`
+      : `the element tree could not be read (${verdict.error})`;
+  }
+  return `the screen was still changing at the ${SETTLE_TIMEOUT_MS}ms cap`;
+}
 
-function settleStoppedNote(afterStep: number, reason: "capped" | "unreadable"): string {
-  return `Stopped waiting for the screen to settle after step ${afterStep}: ${SETTLE_STOPPED_REASON[reason]}. Later steps ran without the wait.`;
+function settleStoppedNote(afterStep: number, verdict: SettleVerdict): string {
+  return `Stopped waiting for the screen to settle after step ${afterStep}: ${MAX_FAILED_SETTLES_IN_A_ROW} waits in a row did not settle, the last because ${settleStoppedReason(verdict)}. Later steps ran without the wait.`;
 }
 
 type StepResult = { tool: string; result: unknown } | { tool: string; error: string };
@@ -279,7 +295,7 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
       const device = resolveDevice(udid);
       const results: StepResult[] = [];
       let settle = params.settle !== false;
-      let cappedInARow = 0;
+      let failedInARow = 0;
       let note: string | undefined;
       // The HTTP layer aborts `signal` on client disconnect, and `longRunning`
       // drops the MCP adapter's own fetch timeout — so honour the signal between
@@ -345,16 +361,11 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
 
         if (settle && settlesBetween(step, steps[results.length]) && canSettle(registry, device)) {
           const verdict = await settleScreen(registry, device, signal);
-          cappedInARow = verdict === "capped" ? cappedInARow + 1 : 0;
-          const stopReason =
-            verdict === "unreadable"
-              ? "unreadable"
-              : cappedInARow >= MAX_CAPPED_SETTLES_IN_A_ROW
-                ? "capped"
-                : undefined;
-          if (stopReason) {
+          if (verdict.kind === "settled") failedInARow = 0;
+          else if (verdict.kind !== "aborted" && !SCROLL_TOOLS.has(step.tool)) failedInARow += 1;
+          if (failedInARow >= MAX_FAILED_SETTLES_IN_A_ROW) {
             settle = false;
-            note = settleStoppedNote(results.length, stopReason);
+            note = settleStoppedNote(results.length, verdict);
           }
         }
 
