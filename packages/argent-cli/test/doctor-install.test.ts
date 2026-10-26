@@ -122,6 +122,11 @@ describe.skipIf(process.platform === "win32")("runGlobalShim", () => {
     expect(Date.now() - started).toBeLessThan(5_000);
   });
 
+  it("gives up on a hanging shim after 5s by default", async () => {
+    const bin = shim("sleep 30");
+    expect((await run(bin)).runError).toBe("`argent --version` timed out after 5s");
+  }, 15_000);
+
   it("does not run an install whose package root is known", async () => {
     const bin = shim("exit 1");
     const global = { bin, root: projectRoot, version: "1.0.0" };
@@ -159,9 +164,9 @@ describe.skipIf(process.platform === "win32")("collectDoctorReport with a failin
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  it("fails the install and the entry, and never offers the failing `argent` as a fix", async () => {
+  const collect = () => {
     const pkg = path.join(home, "pkg");
-    const report = await collectDoctorReport({
+    return collectDoctorReport({
       paths: {
         bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
         simulatorServerDir: path.join(pkg, "bin"),
@@ -170,6 +175,27 @@ describe.skipIf(process.platform === "win32")("collectDoctorReport with a failin
       },
       offline: true,
     });
+  };
+
+  it("does not let `npx --no-install argent` fall back to the failing `argent`", async () => {
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: { argent: { command: "npx", args: ["--no-install", "argent", "mcp"] } },
+      })
+    );
+    const report = await collect();
+    const entry = report.sections
+      .find((s) => s.title === "Editors (MCP config)")!
+      .checks.find((c) => c.label.startsWith("Claude Code"));
+    expect(entry).toMatchObject({
+      status: "error",
+      label: expect.stringContaining("no local @swmansion/argent to run"),
+    });
+  });
+
+  it("fails the install and the entry, and never offers the failing `argent` as a fix", async () => {
+    const report = await collect();
     const checks = (title: string) => report.sections.find((s) => s.title === title)!.checks;
     expect(checks("Install").find((c) => /fails to run/.test(c.label))?.status).toBe("error");
     const entry = checks("Editors (MCP config)").find((c) => c.label.startsWith("Claude Code"));
@@ -353,6 +379,15 @@ describe("probeProjectInstall", () => {
       JSON.stringify({ name: "app", devDependencies: { "@swmansion/argent": "0.30.0" } })
     );
     expect(probeProjectInstall(dir)).toEqual({ installed: true, version: "0.30.0" });
+  });
+
+  it("counts nothing as installed under Yarn PnP once the dependency is removed", () => {
+    const dir = app();
+    fs.writeFileSync(path.join(dir, ".pnp.cjs"), "");
+    fs.mkdirSync(path.join(dir, ".argent"));
+    fs.writeFileSync(path.join(dir, ".argent", "install.json"), '{"mode":"local"}');
+    fs.writeFileSync(path.join(dir, "package.json"), '{"name":"app"}');
+    expect(probeProjectInstall(dir)).toEqual({ installed: false, version: null });
   });
 
   it("accepts a copy hoisted to a workspace root", () => {

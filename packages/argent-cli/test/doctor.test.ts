@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as http from "node:http";
+import { execFileSync } from "node:child_process";
+import { resolveInstallableUpdateTarget } from "@argent/installer";
 import {
   collectDoctorReport,
   doctor,
@@ -13,6 +15,11 @@ import {
   updateCommand,
 } from "../src/doctor.js";
 import { type DoctorReport, permissionFix } from "../src/doctor-shared.js";
+
+vi.mock("@argent/installer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/installer")>()),
+  resolveInstallableUpdateTarget: vi.fn(async () => null),
+}));
 
 /**
  * `argent doctor` is only useful if its verdicts match what actually happens
@@ -183,9 +190,11 @@ describe("collectDoctorReport", () => {
     fs.rmSync(home, { recursive: true, force: true });
   });
 
-  const collect = (installKind?: "local" | "global") => {
-    const pkg = path.join(home, "pkg");
-    return collectDoctorReport({
+  const collect = (
+    installKind?: "local" | "global",
+    { pkg = path.join(home, "pkg"), offline = true } = {}
+  ) =>
+    collectDoctorReport({
       paths: {
         bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
         simulatorServerDir: path.join(pkg, "bin"),
@@ -193,11 +202,24 @@ describe("collectDoctorReport", () => {
         version: "1.0.0",
         installKind,
       },
-      offline: true,
+      offline,
     });
+  const section = (report: DoctorReport, title: string) =>
+    report.sections.find((s) => s.title === title)!.checks;
+  const toolServer = async () => section(await collect(), "Tool-server");
+  const depsCheckFix = (report: DoctorReport) =>
+    section(report, "Platforms").find((c) => /dependency check/.test(c.label))?.fix;
+  const writeShim = (dir: string, body: string) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "argent"), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
   };
-  const toolServer = async () =>
-    (await collect()).sections.find((s) => s.title === "Tool-server")!.checks;
+  const gitInit = (dir: string) =>
+    execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+  const declareArgent = () =>
+    fs.writeFileSync(
+      path.join(projectRoot, "package.json"),
+      JSON.stringify({ devDependencies: { "@swmansion/argent": "0.30.0" } })
+    );
 
   it("does not take ~ for the project just because ~/.claude exists", async () => {
     fs.rmSync(path.join(projectRoot, ".git"), { recursive: true });
@@ -206,6 +228,139 @@ describe("collectDoctorReport", () => {
     fs.mkdirSync(path.join(home, ".claude"));
     process.chdir(app);
     expect((await collect()).projectRoot).toBe(fs.realpathSync(app));
+  });
+
+  it("does not take ~ for the project when ~ is itself a git repo", async () => {
+    fs.rmSync(path.join(projectRoot, ".git"), { recursive: true });
+    gitInit(home);
+    const app = path.join(home, "work", "myapp");
+    fs.mkdirSync(app, { recursive: true });
+    fs.mkdirSync(path.join(home, ".claude"));
+    process.chdir(app);
+    expect((await collect()).projectRoot).toBe(fs.realpathSync(app));
+  });
+
+  it("reports this run's version, Node, platform, project and every section", async () => {
+    const report = await collect();
+    expect(report).toMatchObject({
+      version: "1.0.0",
+      node: process.versions.node,
+      platform: `${process.platform} ${process.arch}`,
+      projectRoot: fs.realpathSync(projectRoot),
+    });
+    expect(report.sections.map((s) => s.title)).toEqual([
+      "Install",
+      "Editors (MCP config)",
+      "Skills & rules",
+      "Tool-server",
+      "Platforms",
+      "Other",
+    ]);
+  });
+
+  it("looks up Claude Code's and Codex's project config at the git root above a package", async () => {
+    fs.rmSync(path.join(projectRoot, ".git"), { recursive: true });
+    gitInit(projectRoot);
+    const root = fs.realpathSync(projectRoot);
+    const pkg = path.join(root, "packages", "app");
+    fs.mkdirSync(path.join(pkg, ".vscode"), { recursive: true });
+    fs.mkdirSync(path.join(pkg, "src"));
+    const argent = { command: "argent", args: ["mcp"] };
+    fs.writeFileSync(
+      path.join(home, ".claude.json"),
+      JSON.stringify({ projects: { [root]: { mcpServers: { argent } } } })
+    );
+    fs.mkdirSync(path.join(root, ".codex"));
+    fs.writeFileSync(
+      path.join(root, ".codex", "config.toml"),
+      '[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n'
+    );
+    process.chdir(path.join(pkg, "src"));
+    const report = await collect();
+    expect(report.projectRoot).toBe(pkg);
+    expect(section(report, "Editors (MCP config)").map((c) => c.label)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Claude Code: argent mcp/),
+        expect.stringMatching(/^Codex: argent mcp/),
+      ])
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "does not take the project's own node_modules/.bin argent for a global install",
+    async () => {
+      const projectBin = path.join(fs.realpathSync(projectRoot), "node_modules", ".bin");
+      writeShim(projectBin, "echo 9.9.9");
+      vi.stubEnv("PATH", `${projectBin}:/usr/bin:/bin`);
+      const report = await collect();
+      expect(section(report, "Install").map((c) => c.label)).toContain("No global install on PATH");
+      expect(
+        section(report, "Editors (MCP config)").find((c) => /not configured/.test(c.label))?.fix
+      ).toBe("npx @swmansion/argent init");
+    }
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "runs a global shim from the project root, on the PATH an editor sees",
+    async () => {
+      const shims = path.join(home, "shims");
+      const root = fs.realpathSync(projectRoot);
+      writeShim(
+        shims,
+        `case "$PATH" in *node_modules/.bin*) exit 1 ;; esac\n[ "$(pwd -P)" = "${root}" ] && echo 2.0.0 || exit 2`
+      );
+      vi.stubEnv("PATH", `${path.join(root, "node_modules", ".bin")}:${shims}:/usr/bin:/bin`);
+      fs.mkdirSync(path.join(projectRoot, "src"));
+      process.chdir(path.join(projectRoot, "src"));
+      const labels = section(await collect(), "Install").map((c) => c.label);
+      expect(labels).toContain("Global install v2.0.0 on PATH");
+    }
+  );
+
+  it.skipIf(process.platform !== "darwin")(
+    "notes a global bin dir that apps started from the Dock don't get",
+    async () => {
+      const shims = path.join(home, "shims");
+      writeShim(shims, "echo 2.0.0");
+      vi.stubEnv("PATH", `${shims}:/usr/bin:/bin`);
+      const labels = section(await collect(), "Install").map((c) => c.label);
+      expect(labels).toContain("Apps started from the Dock don't get this shell's PATH");
+    }
+  );
+
+  it("spells fixes as `yarn argent` in a Yarn PnP project", async () => {
+    fs.writeFileSync(path.join(projectRoot, ".pnp.cjs"), "");
+    declareArgent();
+    const fixes = (await collect()).sections.flatMap((s) => s.checks.map((c) => c.fix ?? ""));
+    expect(fixes).toContain("yarn argent init");
+    expect(fixes.filter((f) => f.startsWith("npx "))).toEqual([]);
+  });
+
+  it("asks a pnpm project that declares argent to install it with pnpm", async () => {
+    fs.writeFileSync(path.join(projectRoot, "pnpm-lock.yaml"), "");
+    declareArgent();
+    expect(
+      section(await collect(), "Install").find((c) => /not installed/.test(c.label))
+    ).toMatchObject({ status: "error", fix: "pnpm install" });
+  });
+
+  it("reinstalls the running copy where it lives, with the package manager that owns it", async () => {
+    expect(depsCheckFix(await collect("local"))).toBe(
+      "Reinstall argent: delete ~/pkg, then npm install"
+    );
+    const pnpmGlobal = path.join(home, "Library", "pnpm", "global", "5", "node_modules");
+    expect(
+      depsCheckFix(await collect("global", { pkg: path.join(pnpmGlobal, "@swmansion", "argent") }))
+    ).toBe("Reinstall argent: pnpm add -g @swmansion/argent");
+  });
+
+  it("checks for updates with the package manager that owns the running copy", async () => {
+    fs.writeFileSync(path.join(projectRoot, "pnpm-lock.yaml"), "");
+    await collect("local", { offline: false });
+    expect(vi.mocked(resolveInstallableUpdateTarget)).toHaveBeenLastCalledWith("pnpm", "1.0.0");
+    const bunGlobal = path.join(home, ".bun", "install", "global", "node_modules");
+    await collect("global", { pkg: path.join(bunGlobal, "@swmansion", "argent"), offline: false });
+    expect(vi.mocked(resolveInstallableUpdateTarget)).toHaveBeenLastCalledWith("bun", "1.0.0");
   });
 
   it("checks the tool-server an entry points at through its own env", async () => {
