@@ -161,6 +161,30 @@ describe("classifyMcpEntry", () => {
     expect(classifyMcpEntry({ ...entry, cwd: "${env:APP}" }, ctx()).status).toBe("info");
   });
 
+  it("applies an entry's cwd only the way its editor does", () => {
+    const rel = "node_modules/@swmansion/argent/dist/cli.js";
+    const app = path.join(projectRoot, "apps", "mobile");
+    fs.mkdirSync(path.dirname(path.join(app, rel)), { recursive: true });
+    fs.writeFileSync(path.join(app, rel), "");
+    const entry = { command: "node", args: [rel, "mcp"], cwd: "apps/mobile" };
+    const status = (cwdSupport: EntryContext["cwdSupport"], cwd = entry.cwd) =>
+      classifyMcpEntry({ ...entry, cwd }, ctx({ cwdSupport })).status;
+    expect(status("ignored")).toBe("error");
+    expect(status("literal")).toBe("ok");
+    expect(status("literal", "${workspaceFolder}/apps/mobile")).toBe("info");
+    expect(status("absolute-only")).toBe("info");
+    expect(status("absolute-only", app)).toBe("ok");
+  });
+
+  it("fails an entry whose cwd does not exist", () => {
+    const entry = { command: "argent", args: ["mcp"], cwd: "/nonexistent-dir" };
+    expect(classifyMcpEntry(entry, ctx({ cwdSupport: "literal" }))).toMatchObject({
+      status: "error",
+      label: expect.stringContaining("cwd /nonexistent-dir does not exist"),
+    });
+    expect(classifyMcpEntry(entry, ctx({ cwdSupport: "ignored" })).status).toBe("ok");
+  });
+
   it("does not judge a command that uses an editor variable", () => {
     const entry = { command: "${HOME}/.local/bin/argent", args: ["mcp"] };
     expect(classifyMcpEntry(entry, ctx()).status).toBe("info");

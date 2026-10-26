@@ -24,9 +24,19 @@ import {
   samePath,
 } from "./doctor-shared.js";
 import { probeProjectInstall } from "./doctor-install.js";
-import { classifyMcpEntry, formatEntry } from "./doctor-entries.js";
+import { type CwdSupport, classifyMcpEntry, formatEntry } from "./doctor-entries.js";
 
 // `argent doctor`: the Editors section.
+
+// Checked against each editor's spawn code; the others keep the default.
+const CWD_SUPPORT: Record<string, CwdSupport> = {
+  "VS Code": "expands",
+  "Gemini": "literal",
+  "Claude Code": "ignored",
+  "Cursor": "ignored",
+  "Zed": "ignored",
+  "Kiro": "absolute-only",
+};
 
 // Claude Code starts one entry per name: local scope wins over project, project over user.
 const CLAUDE_SCOPE_RANK = { local: 2, project: 1, global: 0 } as const;
@@ -249,6 +259,7 @@ export function editorsSection(
       ...entryCtx,
       scope: f.scope,
       claudeLocal: f.claudeScope === "local",
+      cwdSupport: CWD_SUPPORT[f.adapterName],
     });
     checks.push({
       ...result,

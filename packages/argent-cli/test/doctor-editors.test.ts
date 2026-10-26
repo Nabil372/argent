@@ -117,6 +117,17 @@ describe("editor and skill sections", () => {
     );
   });
 
+  it("ignores the cwd of a Claude Code entry, which Claude Code never applies", () => {
+    const rel = "node_modules/@swmansion/argent/dist/cli.js";
+    fs.mkdirSync(path.dirname(path.join(projectRoot, "apps", "mobile", rel)), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "apps", "mobile", rel), "");
+    writeJson(path.join(projectRoot, ".mcp.json"), {
+      mcpServers: { argent: { command: "node", args: [rel, "mcp"], cwd: "apps/mobile" } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.label.startsWith("Claude Code"))?.status).toBe("error");
+  });
+
   it("flags a .mcp.json Claude Code cannot parse", () => {
     fs.writeFileSync(
       path.join(projectRoot, ".mcp.json"),

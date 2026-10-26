@@ -24,7 +24,17 @@ export interface EntryContext {
   claudeLocal?: boolean;
   /** Bin dir of a global install that is not on PATH. */
   offPathGlobalBin?: string | null;
+  /** How the editor treats the entry's `cwd`; "expands" when unknown. */
+  cwdSupport?: CwdSupport;
 }
+
+/**
+ * expands: spawns in the cwd, with ${workspaceFolder} expanded (VS Code).
+ * literal: spawns in the cwd as written (Gemini).
+ * ignored: never reads it (Claude Code, Cursor, Zed).
+ * absolute-only: a relative cwd resolves against the editor's own process dir (Kiro).
+ */
+export type CwdSupport = "expands" | "literal" | "ignored" | "absolute-only";
 
 export function formatEntry(entry: McpServerEntry): string {
   return [entry.command, ...entry.args].join(" ");
@@ -112,12 +122,27 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
         : `Point the entry at an existing argent, or remove it and run ${ctx.argentCmd} init`,
     });
   const scopeBase = ctx.scope === "project" ? ctx.projectRoot : ctx.cwd;
-  // An entry's own cwd: VS Code and Cursor expand ${workspaceFolder} in it.
-  const entryCwd = entry.cwd?.replace(/\$\{workspace(Folder|Root)\}/g, ctx.projectRoot);
+  const cwdSupport = ctx.cwdSupport ?? "expands";
+  const rawCwd = cwdSupport === "ignored" ? undefined : entry.cwd;
+  const entryCwd =
+    cwdSupport === "expands"
+      ? rawCwd?.replace(/\$\{workspace(Folder|Root)\}/g, ctx.projectRoot)
+      : rawCwd;
   if (entryCwd?.includes("${")) {
     return check("info", `${cmd} (runs in ${entry.cwd}, an editor variable, not verified)`);
   }
+  if (entryCwd && cwdSupport === "absolute-only" && !path.isAbsolute(entryCwd)) {
+    return check(
+      "info",
+      `${cmd} (runs in ${entryCwd}, relative to the editor's own directory, not verified)`
+    );
+  }
   const base = entryCwd ? path.resolve(scopeBase, entryCwd) : scopeBase;
+  if (entryCwd && !fs.existsSync(base)) {
+    return check("error", `${cmd} — its cwd ${entryCwd} does not exist`, {
+      fix: "Point the entry's cwd at an existing directory, or remove it",
+    });
+  }
   const absolute = path.isAbsolute(entry.command);
   const pathLike = absolute || /[\\/]/.test(entry.command);
   const fileName = path.basename(entry.command);
