@@ -2,11 +2,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { describeAndroid } from "../src/tools/describe/platforms/android";
+import { androidTvControlBlueprint } from "../src/blueprints/android-tv-control";
 
 const adbExecOutBinary = vi.fn();
 vi.mock("../src/utils/adb", () => ({
   adbExecOutBinary: (...args: unknown[]) => adbExecOutBinary(...args),
   isAndroidTv: async () => false,
+  getAndroidRuntimeKind: async () => "tv",
 }));
 vi.mock("../src/utils/android-screen", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/android-screen")>()),
@@ -22,6 +24,8 @@ const COLD_WEBVIEW_DUMP = readFileSync(
   join(__dirname, "fixtures", "android-webview-cold.xml"),
   "utf-8"
 );
+
+const NEVER_IDLE = "ERROR: could not get idle state.";
 
 type Pending = { serial: string; finish: (dump?: string) => void };
 
@@ -156,5 +160,34 @@ describe("describeAndroid uiautomator fallback", () => {
     pending[2]!.finish();
     const [{ tree }] = await Promise.all([first, second]);
     expect(JSON.stringify(tree)).toContain("Continue");
+  });
+
+  it("fails a read queued behind a dump that could not get an idle screen", async () => {
+    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const firstFailed = expect(first).rejects.toThrow("could not get idle state");
+    const secondFailed = expect(second).rejects.toThrow("could not get idle state");
+    await tick();
+
+    pending[0]!.finish(NEVER_IDLE);
+    await Promise.all([firstFailed, secondFailed]);
+    expect(pending).toHaveLength(1);
+  });
+
+  it("starts an Android TV dump only after the describe dump on that device finished", async () => {
+    const device = { id: "emulator-5554", platform: "android" as const, kind: "emulator" as const };
+    const { api } = await androidTvControlBlueprint.factory({}, device, { device });
+    const read = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const tv = api.describe();
+    await tick();
+    expect(pending).toHaveLength(1);
+
+    pending[0]!.finish();
+    await read;
+    await tick();
+    expect(pending).toHaveLength(2);
+
+    pending[1]!.finish();
+    await expect(tv).resolves.toMatchObject({ focusable: [{ label: "Continue" }] });
   });
 });

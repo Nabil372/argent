@@ -8,6 +8,7 @@ import {
 import { adbExecOutBinary, adbShell, getAndroidRuntimeKind } from "../utils/adb";
 import { assertTypeableAndroidText, injectAndroidText } from "../utils/android-input";
 import { UnsupportedOperationError } from "../utils/capability";
+import { queueUiautomatorDump } from "../utils/uiautomator-dump-queue";
 import {
   parseUiAutomatorXml,
   attrIsTrue,
@@ -180,7 +181,11 @@ export const androidTvControlBlueprint: ServiceBlueprint<TvControlApi, DeviceInf
 
     const events = new TypedEventEmitter<ServiceEvents>();
 
-    async function dumpHierarchy(): Promise<string> {
+    function dumpHierarchy(): Promise<string> {
+      return queueUiautomatorDump(serial, runDumpHierarchy);
+    }
+
+    async function runDumpHierarchy(): Promise<string> {
       // Per-call dump path so concurrent calls on the same serial don't race on
       // a shared /sdcard file. `uiautomator` rejects unwritable paths, hence
       // /data/local/tmp; trailing `; rm -f` so cleanup fires even when it fails.

@@ -8,6 +8,7 @@ import {
   orientScreenSize,
   parseDumpRotation,
 } from "../../../../utils/android-screen";
+import { queueUiautomatorDump } from "../../../../utils/uiautomator-dump-queue";
 import { parseUiAutomatorDump } from "./uiautomator-parser";
 import {
   androidDevtoolsRef,
@@ -99,47 +100,8 @@ async function awaitWebViewPublished(
   return tree;
 }
 
-// A dump started while another runs on the same device is killed (`Killed`,
-// exit 137). Reads requested while a dump runs share one queued dump that starts
-// when the running one finishes, or after DUMP_WAIT_MS: on a screen that never
-// goes idle one dump takes ~11.5 s.
-const DUMP_WAIT_MS = 3_000;
-const runningDumps = new Map<string, Promise<string>>();
-const queuedDumps = new Map<string, Promise<string>>();
-
 function uiautomatorDump(serial: string): Promise<string> {
-  const queued = queuedDumps.get(serial);
-  if (queued) return queued;
-  const running = runningDumps.get(serial);
-  if (!running) return startDump(serial);
-  const next = waitAtMost(running, DUMP_WAIT_MS).then(() => {
-    queuedDumps.delete(serial);
-    return startDump(serial);
-  });
-  queuedDumps.set(serial, next);
-  return next;
-}
-
-function startDump(serial: string): Promise<string> {
-  const dump = runUiautomatorDump(serial);
-  runningDumps.set(serial, dump);
-  const forget = () => {
-    if (runningDumps.get(serial) === dump) runningDumps.delete(serial);
-  };
-  dump.then(forget, forget);
-  return dump;
-}
-
-function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, ms);
-  });
-  const settled = promise.then(
-    () => {},
-    () => {}
-  );
-  return Promise.race([settled, timeout]).finally(() => clearTimeout(timer));
+  return queueUiautomatorDump(serial, () => runUiautomatorDump(serial));
 }
 
 async function runUiautomatorDump(serial: string): Promise<string> {
