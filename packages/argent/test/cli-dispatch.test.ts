@@ -78,10 +78,11 @@ interface RunResult {
 function runCli(
   args: string[],
   markerPath: string,
-  env: Record<string, string> = {}
+  env: Record<string, string> = {},
+  node = process.execPath
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cliEntry, ...args], {
+    const child = spawn(node, [cliEntry, ...args], {
       cwd: stageRoot,
       // stdin is /dev/null: a real interactive uninstall prompt would read EOF
       // here, so a regression can't silently hang the suite.
@@ -196,7 +197,28 @@ describe("cli dispatcher: installer-help guard", () => {
       .split(path.delimiter);
     expect(recorded.slice(0, 2)).toEqual(["/usr/bin", "/bin"]);
     expect(recorded).toContain(path.dirname(process.execPath));
+    for (const dir of ["/opt/homebrew/bin", "/usr/local/bin"].filter((d) => fs.existsSync(d))) {
+      expect(recorded).toContain(dir);
+    }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "`mcp` appends the node dir the entry names, not the resolved execPath (Homebrew keg)",
+    async () => {
+      const marker = freshMarker();
+      const linkDir = path.join(stageRoot, "brew-bin");
+      fs.mkdirSync(linkDir, { recursive: true });
+      const linkedNode = path.join(linkDir, "node");
+      fs.symlinkSync(process.execPath, linkedNode);
+      await runCli(["mcp"], marker, { PATH: "/usr/bin" }, linkedNode);
+      const recorded = fs
+        .readFileSync(marker, "utf8")
+        .slice("startMcpServer:".length)
+        .split(path.delimiter);
+      expect(recorded).toContain(linkDir);
+      expect(recorded).not.toContain(path.dirname(fs.realpathSync(process.execPath)));
+    }
+  );
 
   it("`mcp` leaves a PATH that already has its node alone", async () => {
     const marker = freshMarker();
