@@ -1,3 +1,5 @@
+import type { TailEntry } from "./debugger/log-file-writer";
+
 /**
  * Process-global record of capture sessions a teardown reaped while they still
  * held data nobody had retrieved.
@@ -18,7 +20,7 @@
 /** Scopes the key, so two kinds on one device can't collide. */
 type ReapedSessionKind = "screen-recording" | "native-profiler" | "js-runtime-debugger";
 
-interface ReapedSession {
+export interface ReapedSession {
   kind: ReapedSessionKind;
   deviceId: string;
   /** Every id it is filed under; taking it by one spends them all. */
@@ -32,6 +34,8 @@ interface ReapedSession {
   salvage?: string;
   /** The session ended because its connection dropped, not by a teardown call. */
   connectionLost?: boolean;
+  /** The newest console entries of a reaped JS-runtime debugger, for a read that asks for tail. */
+  logTail?: TailEntry[];
 }
 
 const reaped = new Map<string, ReapedSession>();
@@ -49,12 +53,14 @@ export function recordReapedSession(
   kind: ReapedSessionKind,
   deviceIds: string | Array<string | undefined>,
   salvage?: string,
-  connectionLost = false
+  connectionLost = false,
+  logTail?: TailEntry[]
 ): void {
   const ids = [deviceIds].flat().filter((id): id is string => id !== undefined);
   const entry: ReapedSession = { kind, deviceId: ids[0]!, ids, atMs: Date.now() };
   if (salvage) entry.salvage = salvage;
   if (connectionLost) entry.connectionLost = true;
+  if (logTail?.length) entry.logTail = logTail;
   for (const id of ids) reaped.set(key(kind, id), entry);
 }
 

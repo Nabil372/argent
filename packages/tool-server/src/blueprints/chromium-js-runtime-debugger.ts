@@ -247,7 +247,8 @@ export const chromiumJsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebug
               ? `The log file with its ${entries} is kept at ${logWriter.getFilePath()}.`
               : `The ${entries} went with it — the log file is deleted on teardown, so this ` +
                   `registry starts empty rather than the app having logged nothing.`,
-            keepFile
+            keepFile,
+            logWriter.retainedTail()
           );
         }
         logWriter.close({ keepFile });

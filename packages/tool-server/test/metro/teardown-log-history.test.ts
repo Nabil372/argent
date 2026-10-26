@@ -148,6 +148,34 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     expect(result.note).toContain("torn down");
   });
 
+  it("returns the newest lines of the torn-down session to a read with tail", async () => {
+    await registry.disposeService(await connectAndCapture(LOGICAL_ID, 5));
+
+    const result = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: LOGICAL_ID,
+      tail: 2,
+    })) as { totalEntries: number; previousSessionEntries?: Array<{ message: string }> };
+
+    expect(result.totalEntries).toBe(0);
+    expect(result.previousSessionEntries?.map((e) => e.message)).toEqual([
+      "captured 3",
+      "captured 4",
+    ]);
+  });
+
+  it("leaves the torn-down session's lines out when tail is not passed", async () => {
+    await registry.disposeService(await connectAndCapture(LOGICAL_ID, 5));
+
+    const result = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: LOGICAL_ID,
+    })) as { note?: string; previousSessionEntries?: unknown };
+
+    expect(result.note).toBeDefined();
+    expect(result.previousSessionEntries).toBeUndefined();
+  });
+
   it("stays silent when the previous session had captured nothing", async () => {
     // A teardown that destroyed no history has nothing to explain, and saying
     // otherwise would make every empty registry look like a lost one.
@@ -318,6 +346,27 @@ describe("a debugger session whose app crashed", () => {
     expect(result.note).not.toContain("stop-all-simulator-servers");
   });
 
+  it("returns the newest lines from before the crash once, with the note", async () => {
+    await crash(await connectAndCapture(LOGICAL_ID, 3));
+    const read = () =>
+      registry.invokeTool("debugger-log-registry", {
+        port: mockPort,
+        device_id: LOGICAL_ID,
+        tail: 2,
+        levels: ["log"],
+      }) as Promise<{ status: string; previousSessionEntries?: Array<{ message: string }> }>;
+
+    const first = await read();
+    const second = await read();
+
+    expect(first.status).toBe("not_connected");
+    expect(first.previousSessionEntries?.map((e) => e.message)).toEqual([
+      "captured 1",
+      "captured 2",
+    ]);
+    expect(second.previousSessionEntries).toBeUndefined();
+  });
+
   it("names the kept file on the next debugger-connect", async () => {
     const file = await crash(await connectAndCapture(LOGICAL_ID, 3));
     appRunning = true;
@@ -452,6 +501,17 @@ describe("debugger-log-registry tail", () => {
     expect(result.entries).toEqual([
       expect.objectContaining({ message: "a\r\nb", sourceFile: "src/app.js", sourceLine: 7 }),
     ]);
+  });
+
+  it("accepts tail sent as a string, like the other numeric debugger parameters", async () => {
+    await connectWith([
+      { level: "log", message: "a" },
+      { level: "log", message: "b" },
+    ]);
+
+    const result = await read({ tail: "1" });
+
+    expect(result.entries?.map((e) => e.message)).toEqual(["b"]);
   });
 
   it("leaves entries out when tail is not passed", async () => {

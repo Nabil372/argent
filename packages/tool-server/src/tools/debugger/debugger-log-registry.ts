@@ -3,6 +3,7 @@ import type { Registry, ToolDefinition } from "@argent/registry";
 import {
   TAIL_MAX,
   TAIL_MESSAGE_CHARS,
+  selectTail,
   type LogStats,
   type MessageCluster,
   type TailEntry,
@@ -10,7 +11,11 @@ import {
 import { DEBUGGER_TOOL_CAPABILITY } from "./debugger-service-ref";
 import { metroPortField } from "../../utils/debugger/metro-port";
 import { canonicalDeviceId } from "../../utils/debugger/device-alias";
-import { describeReapedSession, takeReapedSessionAnyId } from "../../utils/reaped-sessions";
+import {
+  describeReapedSession,
+  takeReapedSessionAnyId,
+  type ReapedSession,
+} from "../../utils/reaped-sessions";
 import {
   buildNotConnected,
   classifyNotConnected,
@@ -19,7 +24,18 @@ import {
   type DebuggerNotConnectedResult,
 } from "./not-connected";
 
-interface LogRegistryResponse extends LogStats {
+interface ReapedNote {
+  /**
+   * Set only when a teardown reaped the previous debugger session while it held
+   * captured console output. Without it an empty registry reads as "the app
+   * logged nothing".
+   */
+  note?: string;
+  /** The reaped session's newest entries, for a call that passed `tail`. */
+  previousSessionEntries?: TailEntry[];
+}
+
+interface LogRegistryResponse extends LogStats, ReapedNote {
   status: "connected";
   clusters: MessageCluster[];
   /** The newest `tail` entries (optionally filtered by level), oldest first. */
@@ -27,12 +43,6 @@ interface LogRegistryResponse extends LogStats {
   deviceName: string;
   appName: string;
   logicalDeviceId: string | undefined;
-  /**
-   * Set only when a teardown reaped the previous debugger session while it held
-   * captured console output. Without it an empty registry reads as "the app
-   * logged nothing".
-   */
-  note?: string;
 }
 
 const CONSOLE_LEVELS = [
@@ -64,14 +74,14 @@ const zodSchema = z
       .describe(
         "Device id from list-devices: the SAME id you passed to debugger-connect (iOS simulator UDID, Android serial, Vega serial, or Chromium device id). The logicalDeviceId debugger-connect returns also resolves here, but prefer the stable list-devices id."
       ),
-    tail: z
+    tail: z.coerce
       .number()
       .int()
       .min(1)
       .max(TAIL_MAX)
       .optional()
       .describe(
-        `Also return the newest N entries (oldest first, each message cut at ${TAIL_MESSAGE_CHARS} chars, with sourceFile and a 0-based sourceLine, like clusters, when the call frame has a source path; React Native frames point at the Metro bundle, so their entries carry no source), so you can read the logs without opening the file. At most ${TAIL_MAX}.`
+        `Also return the newest N entries (oldest first, each message cut at ${TAIL_MESSAGE_CHARS} chars, with sourceFile and a 0-based sourceLine when the call frame has a source path; React Native frames point at the Metro bundle, so their entries carry no source, while their clusters carry only a sourceLine into that bundle), so you can read the logs without opening the file. At most ${TAIL_MAX}.`
       ),
     levels: z
       .array(z.enum(CONSOLE_LEVELS))
@@ -98,7 +108,7 @@ export function createDebuggerLogRegistryTool(
     },
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
-Use when investigating warnings, errors, or unexpected output. Call this first for an overview. Pass tail (and optionally levels) to get the newest entries in the result itself, since the log file may sit outside the directories you can read; read the returned file only when you need more than that. The file, totalEntries, byLevel and clusters stop at 50,000 entries; past that, { droppedEntries } counts the later entries, of which tail returns only the newest 100 per level. Returns empty stats if no log data has been captured yet, but check { note }, which is present only when the stats are empty BECAUSE the previous debugger session ended: torn down (e.g. by stop-all-simulator-servers) with its log file deleted, or cut off by the app crashing with its log file kept at the path the note names. Absent that note, empty really does mean the app has logged nothing.
+Use when investigating warnings, errors, or unexpected output. Call this first for an overview. Pass tail (and optionally levels) to get the newest entries in the result itself, since the log file may sit outside the directories you can read; read the returned file only when you need more than that. The file, totalEntries, byLevel and clusters stop at 50,000 entries; past that, { droppedEntries } counts the later entries, of which tail returns only the newest 100 per level. Returns empty stats if no log data has been captured yet, but check { note }, which is present only when the stats are empty BECAUSE the previous debugger session ended: torn down (e.g. by stop-all-simulator-servers) with its log file deleted, or cut off by the app crashing with its log file kept at the path the note names. Absent that note, empty really does mean the app has logged nothing. With tail, a note also brings { previousSessionEntries }: the newest entries of that ended session, filtered by levels, on this one call only, since the note is spent once read.
 When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } with NO log file. Follow the guidance (do not retry in a loop). Read a log file in this state only when a { note } names one kept from before the app crashed. A "connected" result's stats may come from a session whose socket has since died. Use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
@@ -142,14 +152,14 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
             params.device_id,
             api.logicalDeviceId,
           ]);
-          if (reaped) response.note = describeReapedSession(reaped, "JS-runtime debugger session");
+          if (reaped) Object.assign(response, explainReaped(reaped, params));
         }
         return response;
       } catch (err) {
         const reason = classifyNotConnected(err);
         if (!reason) throw err;
         trackDebuggerOutcome("debugger-log-registry", reason, params, ctx);
-        const result: DebuggerNotConnectedResult & { note?: string } = buildNotConnected(
+        const result: DebuggerNotConnectedResult & ReapedNote = buildNotConnected(
           reason,
           err,
           params
@@ -158,9 +168,19 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           canonicalDeviceId(params.device_id),
           params.device_id,
         ]);
-        if (reaped) result.note = describeReapedSession(reaped, "JS-runtime debugger session");
+        if (reaped) Object.assign(result, explainReaped(reaped, params));
         return result;
       }
     },
   };
+}
+
+function explainReaped(reaped: ReapedSession, params: z.infer<typeof zodSchema>): ReapedNote {
+  const note = describeReapedSession(reaped, "JS-runtime debugger session");
+  if (params.tail === undefined || !reaped.logTail) return { note };
+  const previousSessionEntries = selectTail(reaped.logTail, {
+    levels: params.levels,
+    limit: params.tail,
+  });
+  return { note, previousSessionEntries };
 }

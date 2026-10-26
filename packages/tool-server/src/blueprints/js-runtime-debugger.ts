@@ -397,7 +397,8 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
             "js-runtime-debugger",
             [deviceId, api.logicalDeviceId],
             salvage,
-            keepFile
+            keepFile,
+            logWriter.retainedTail()
           );
         }
         forgetDeviceAlias(api.logicalDeviceId);

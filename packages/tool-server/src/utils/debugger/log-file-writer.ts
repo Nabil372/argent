@@ -73,6 +73,24 @@ const LINE_RE = /^\[L:(\d+)\] (\S+) (\S+)\s+(\S+) \| (.*)$/;
 
 const liveLogFiles = new Set<string>();
 
+export interface TailOptions {
+  levels?: readonly string[];
+  limit: number;
+}
+
+const byId = (a: TailEntry, b: TailEntry) => a.id - b.id;
+
+export function selectTail(
+  entries: readonly TailEntry[],
+  { levels, limit }: TailOptions
+): TailEntry[] {
+  const wanted = levels ? new Set(levels) : undefined;
+  return entries
+    .filter((entry) => !wanted || wanted.has(entry.level))
+    .sort(byId)
+    .slice(-limit);
+}
+
 export class LogFileWriter {
   private filePath: string;
   private fd: number | null = null;
@@ -217,14 +235,13 @@ export class LogFileWriter {
   }
 
   /** The newest `limit` entries (at most TAIL_MAX), of `levels` if given, oldest first. */
-  tail({ levels, limit }: { levels?: readonly string[]; limit: number }): TailEntry[] {
-    const rings = levels
-      ? [...new Set(levels)].map((l) => this.recent.get(l) ?? [])
-      : [...this.recent.values()];
-    return rings
-      .flat()
-      .sort((a, b) => a.id - b.id)
-      .slice(-limit);
+  tail(options: TailOptions): TailEntry[] {
+    return selectTail([...this.recent.values()].flat(), options);
+  }
+
+  /** Every entry tail() can still return, oldest first; it outlives close(). */
+  retainedTail(): TailEntry[] {
+    return [...this.recent.values()].flat().sort(byId);
   }
 
   /** `keepFile` leaves the log to the sweep, 24h after the close. */
