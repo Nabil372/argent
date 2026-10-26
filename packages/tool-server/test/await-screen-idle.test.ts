@@ -267,6 +267,14 @@ describe("await-screen-idle tool", () => {
       expect(result.ambientMotion).toBeUndefined();
     });
 
+    it("waits out a one-time shake that swings at a constant amplitude", async () => {
+      const ys = [0.5, 0.52, 0.5, 0.52, 0.5];
+      const result = await run(ys.map((y) => screen({ label: "field", y })));
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBeUndefined();
+    });
+
     it("keeps waiting when a reload jumps a slide back and replays it", async () => {
       const ys = [0.9, 0.88, 0.86, ...Array.from({ length: 200 }, (_, i) => 0.9 - i * 0.012)];
       const result = await run(ys.map((y) => screen({ label: "sheet", y })));
@@ -386,6 +394,35 @@ describe("await-screen-idle tool", () => {
           ),
         ],
         { timeoutMs: 600, minStableMs: 200 }
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting while a looping spinner has a progress role", async () => {
+      const node = (role: string, label: string, y: number) => ({
+        role,
+        label,
+        frame: { x: 0.4, y, width: 0.1, height: 0.05 },
+        children: [],
+      });
+      const tree = (i: number) => ({
+        role: "html",
+        frame: { x: 0, y: 0, width: 1, height: 1 },
+        children: [node("h1", "Products", 0.1), node("progressbar", "Loading", bobY(i))],
+      });
+      let i = 0;
+      const chromium = {
+        refreshViewport: async () => {},
+        cdp: {
+          send: async () => ({ result: { value: JSON.stringify({ tree: tree(i++) }) } }),
+        },
+      };
+      const tool = createAwaitScreenIdleTool(iosRegistry({} as AXServiceApi));
+
+      const result = await tool.execute(
+        { chromium },
+        { udid: "chromium-cdp-9222", timeoutMs: 300, pollIntervalMs: 10, minStableMs: 30 }
       );
 
       expect(result.settled).toBe(false);

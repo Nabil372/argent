@@ -73,8 +73,8 @@ interface IdleResult {
   /**
    * Settled although some elements are still moving: only looping animations
    * (a bobbing coach mark, a pulsing badge) were left, which never go still.
-   * A looping loading indicator counts too, so check for the destination
-   * content before trusting the screen is loaded.
+   * A spinner the tree does not mark as a progress indicator counts too, so
+   * check for the destination content before trusting the screen is loaded.
    */
   ambientMotion?: true;
 }
@@ -161,16 +161,34 @@ function sharedMoved(prev: Map<string, string>, next: Map<string, string>): bool
  */
 const MAX_AMBIENT_MOVERS = 3;
 
+/**
+ * Poll intervals a node must keep swinging, counted from its first turn, before
+ * it counts as a loop. A one-time spin or shake swings at a constant amplitude
+ * too, but ends within about a second.
+ */
+const MIN_LOOP_POLLS = 7;
+
+/** Roles of a progress bar or spinner on Chromium, Android and iOS devices. */
+const PROGRESS_ROLE = /progress|activityindicator/i;
+
+function showsProgressIndicator(node: DescribeNode): boolean {
+  return node.children.some(
+    (child) => PROGRESS_ROLE.test(child.role) || showsProgressIndicator(child)
+  );
+}
+
 interface AxisMotion {
   /** Last non-zero direction; 0 while the axis never moved. */
   sign: number;
   /** Values where the axis last turned around, oldest first. */
   turns: number[];
+  /** When the axis first turned since its turns were last cleared. */
+  swingSince: number;
   lastMovedAt: number;
 }
 
 function newAxis(): AxisMotion {
-  return { sign: 0, turns: [], lastMovedAt: -Infinity };
+  return { sign: 0, turns: [], swingSince: Infinity, lastMovedAt: -Infinity };
 }
 
 /**
@@ -205,8 +223,14 @@ function trackAxis(axis: AxisMotion, from: number, to: number, nowMs: number): v
   if (sign === 0) return;
   // An axis coming to rest (a diagonal ease-out whose smaller axis stops first)
   // keeps its last direction, so only a real sign flip is a turn.
-  if (axis.sign !== 0 && axis.sign !== sign) axis.turns = [...axis.turns, from].slice(-3);
-  if (swingRepeats(axis) && !insideSwing(axis, to)) axis.turns = [];
+  if (axis.sign !== 0 && axis.sign !== sign) {
+    if (axis.turns.length === 0) axis.swingSince = nowMs;
+    axis.turns = [...axis.turns, from].slice(-3);
+  }
+  if (swingRepeats(axis) && !insideSwing(axis, to)) {
+    axis.turns = [];
+    axis.swingSince = Infinity;
+  }
   axis.sign = sign;
   axis.lastMovedAt = nowMs;
 }
@@ -251,7 +275,13 @@ class AmbientMotion {
   }
 
   /** Feed one sample; true once only loops have moved for the last `windowMs`. */
-  sample(root: DescribeNode, nowMs: number, minStableMs: number, windowMs: number): boolean {
+  sample(
+    root: DescribeNode,
+    nowMs: number,
+    minStableMs: number,
+    windowMs: number,
+    minLoopMs: number
+  ): boolean {
     const snap = frameSnapshot(root);
     if (snap.structure !== this.structure) {
       this.reset();
@@ -287,10 +317,13 @@ class AmbientMotion {
 
     if (nowMs - this.structureSince < minStableMs) return false;
     if (nowMs - this.sharedMovedAt < windowMs) return false;
+    if (showsProgressIndicator(root)) return false;
     const movedRecently = (axis: AxisMotion) => nowMs - axis.lastMovedAt < windowMs;
     const recent = [...this.motion].filter(([, axes]) => axes.some(movedRecently));
     if (recent.length === 0) return false;
-    const isLoop = (axes: AxisMotion[]) => axes.filter(movedRecently).every(swingRepeats);
+    const keepsLooping = (axis: AxisMotion) =>
+      swingRepeats(axis) && nowMs - axis.swingSince >= minLoopMs;
+    const isLoop = (axes: AxisMotion[]) => axes.filter(movedRecently).every(keepsLooping);
     if (!recent.every(([, axes]) => isLoop(axes))) return false;
     const animations = new Set(recent.map(([id]) => this.path.get(id)));
     return animations.size <= MAX_AMBIENT_MOVERS;
@@ -337,7 +370,8 @@ Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (de
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
 ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }; settled=false means the screen never went
 still before the timeout. A screen where only up to ${MAX_AMBIENT_MOVERS} looping animations keep moving (a bobbing hint, a
-pulsing badge) counts as settled and adds ambientMotion: true; those elements are still moving. A loop that changes a
+pulsing badge), each swinging for at least ${MIN_LOOP_POLLS} poll intervals, counts as settled and adds ambientMotion: true;
+those elements are still moving. A screen that shows a progress bar or spinner role is waited out. A loop that changes a
 label or value (an animated "Loading..." label) is a content change and is waited out. Use after a launch/navigation to
 wait for the UI to render before screenshotting or tapping.`,
     searchHint:
@@ -373,6 +407,7 @@ wait for the UI to render before screenshotting or tapping.`,
       // one-time slide that has held still for it no longer blocks the
       // ambient path. Two polls at least, so a loop seen every poll stays in.
       const ambientWindowMs = Math.max(minStableMs, 2 * pollIntervalMs);
+      const minLoopMs = MIN_LOOP_POLLS * pollIntervalMs;
       const ambientMotion = new AmbientMotion();
 
       const poll = await pollDescribeTree<true>({
@@ -397,7 +432,7 @@ wait for the UI to render before screenshotting or tapping.`,
             if (minStableMs === 0) return { done: true, result: true };
           }
 
-          if (ambientMotion.sample(data.tree, nowMs, minStableMs, ambientWindowMs)) {
+          if (ambientMotion.sample(data.tree, nowMs, minStableMs, ambientWindowMs, minLoopMs)) {
             ambient = true;
             return { done: true, result: true };
           }
