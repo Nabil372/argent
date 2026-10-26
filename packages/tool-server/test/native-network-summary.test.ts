@@ -267,6 +267,23 @@ describe("native-network-logs execute", () => {
     expect(cleared.clearNetworkLog).toHaveBeenCalledWith(BUNDLE);
   });
 
+  it("returns every request when there are fewer than limit", async () => {
+    const many = Array.from({ length: 30 }, (_, i) => request(`r${i}`, `http://x/${i}`, i)).flat();
+    const out = await run(many).result;
+    expect(out).toMatchObject({ count: 30, totalRequests: 30 });
+    expect(out.requests[0].url).toBe("http://x/0");
+  });
+
+  it("orders overlapping requests by when they started", async () => {
+    const [startA, responseA, finishA] = request("a", "http://x/a", 1);
+    const [startB, responseB, finishB] = request("b", "http://x/b", 2);
+    const overlapping = [startA, startB, responseB, finishB, responseA, finishA];
+    const all = await run(overlapping).result;
+    expect(all.requests.map((r: { url: string }) => r.url)).toEqual(["http://x/a", "http://x/b"]);
+    const latest = await run(overlapping, { limit: 1 }).result;
+    expect(latest.requests.map((r: { url: string }) => r.url)).toEqual(["http://x/b"]);
+  });
+
   it("returns no rows for limit 0 but still counts them", async () => {
     expect(await run(log, { limit: 0 }).result).toMatchObject({
       count: 0,
