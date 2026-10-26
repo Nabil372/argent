@@ -92,7 +92,9 @@ describe("renderDoctorReport", () => {
         },
       ],
     });
-    expect(out).not.toMatch(/[\r\u009b]|\u001b\[(2K|8m)/);
+    for (const raw of ["\r", "\u009b", "\u001b[2K", "\u001b[8m"]) {
+      expect(out).not.toContain(raw);
+    }
     expect(out).toContain("http://h/x\\x0d\\x1b[2K  ✓ fake row\\x0anext");
   });
 });
