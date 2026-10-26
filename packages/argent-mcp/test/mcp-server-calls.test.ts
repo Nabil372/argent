@@ -64,6 +64,7 @@ const LISTING = {
     { name: "reject", description: "Reject", inputSchema: { type: "object", properties: {} } },
     { name: "noted", description: "Noted", inputSchema: { type: "object", properties: {} } },
     { name: "e2e-execute", description: "Run", inputSchema: { type: "object", properties: {} } },
+    { name: "keyboard", description: "Type", inputSchema: { type: "object", properties: {} } },
     // A former id, as the tool-server lists it.
     {
       name: "flow-execute",
@@ -116,6 +117,11 @@ async function startStub(token?: string): Promise<Stub> {
         (reqUrl === "/tools/e2e-execute" || reqUrl === "/tools/flow-execute")
       ) {
         return json(200, { data: RUN_REPORT });
+      }
+      if (req.method === "POST" && reqUrl === "/tools/keyboard") return json(200, { data: {} });
+      if (req.method === "POST" && reqUrl === "/tools/await-screen-idle") {
+        const ambient = JSON.parse(body).udid === "looping";
+        return json(200, { data: { settled: true, ...(ambient ? { ambientMotion: true } : {}) } });
       }
       if (req.method === "POST" && reqUrl === "/tools/noted") {
         return json(200, { data: { ok: true }, note: "a note" });
@@ -191,7 +197,13 @@ describe("startMcpServer tool calls", () => {
 
   it("lists the tools of the tool-server", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(["reinstall-app", "reject", "noted", "e2e-execute"]);
+    expect(tools.map((t) => t.name)).toEqual([
+      "reinstall-app",
+      "reject",
+      "noted",
+      "e2e-execute",
+      "keyboard",
+    ]);
   });
 
   it("renders a run report the same whether called as flow-execute or e2e-execute", async () => {
@@ -259,6 +271,15 @@ describe("startMcpServer tool calls", () => {
     const content = result.content as Array<{ type: string; text?: string }>;
     expect(content[0]).toEqual({ type: "text", text: "a note" });
     expect(textOf(result)).toContain('"ok": true');
+  });
+
+  it.each([
+    ["adds", "looping", true],
+    ["does not add", "still", false],
+  ])("%s the ambient motion note when the screen settled that way", async (_, udid, noted) => {
+    const result = await client.callTool({ name: "keyboard", arguments: { udid } });
+
+    expect(textOf(result).includes("(ambientMotion)")).toBe(noted);
   });
 });
 

@@ -36,6 +36,8 @@ import {
   autoDescribeEnabled,
   shouldAutoDescribe,
   AUTO_DESCRIBE_HEADER,
+  AMBIENT_MOTION_NOTE,
+  hasAmbientMotion,
 } from "./auto-capture.js";
 import { toMcpToolList } from "./tool-mapping.js";
 import { getInstalledVersion } from "./installed-version.js";
@@ -251,6 +253,9 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
               maxWaitMs,
               ...(idle.result as Record<string, unknown>),
             });
+            if (hasAmbientMotion(idle.result)) {
+              content = [...content, { type: "text" as const, text: AMBIENT_MOTION_NOTE }];
+            }
           } catch {
             await new Promise((r) => setTimeout(r, maxWaitMs));
           }
