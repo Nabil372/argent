@@ -417,6 +417,21 @@ describe("listAndroidDevices runtime-kind cache", () => {
     expect(shellCalls("pm list features")).toHaveLength(0);
   });
 
+  it("re-probes a reused emulator slot when a different AVD that answers takes it", async () => {
+    const serial = "emulator-5554";
+    let occupant: "tv" | "phone" = "tv";
+    mockEmulator(serial, (shell) => {
+      if (shell.includes("avd_name")) return out(occupant === "tv" ? "TV_API_34" : "Pixel_API_34");
+      if (shell === "pm list features")
+        return out(occupant === "tv" ? LEANBACK_FEATURES : PHONE_FEATURES);
+      return out("1");
+    });
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("tv");
+
+    occupant = "phone";
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("mobile");
+  });
+
   it("does not cache an indeterminate verdict, so a booting TV is found on the next listing", async () => {
     const serial = "emulator-5576";
     let booted = false;
