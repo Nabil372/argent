@@ -122,7 +122,11 @@ function renderFlat(
     .map((n) => formatLine(n, 1, notes.get(n)));
 }
 
-function renderNested(root: DescribeNode, contentRoles: ReadonlySet<string>): string[] {
+function renderNested(
+  root: DescribeNode,
+  contentRoles: ReadonlySet<string>,
+  notes: Map<DescribeNode, string>
+): string[] {
   const lines: string[] = [];
   // Iterative DFS so very deep Compose / RN trees can't overflow the stack.
   // Start at depth 1: the header already prints the root as its ROOT line.
@@ -134,7 +138,7 @@ function renderNested(root: DescribeNode, contentRoles: ReadonlySet<string>): st
   while (stack.length > 0) {
     const { node, depth } = stack.pop()!;
     if (shouldEmit(node, contentRoles) || node.children.length > 0) {
-      lines.push(formatLine(node, depth));
+      lines.push(formatLine(node, depth, notes.get(node)));
     }
     for (let i = node.children.length - 1; i >= 0; i--) {
       stack.push({ node: node.children[i]!, depth: depth + 1 });
@@ -148,11 +152,50 @@ interface FormatDescribeOptions {
 }
 
 const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable"]);
-// Text over text is a layout quirk, not a tap trap.
-const PASSIVE_ROLES = new Set(["AXStaticText", "AXImage", "AXHeading"]);
-// WebKit gives each inline run of a wrapped paragraph the box of every line it
-// spans, so neighbouring runs overlap while nothing covers anything.
-const TEXT_RUN_ROLES = new Set(["AXStaticText", "AXLink"]);
+// Text over text is a layout quirk, not a tap trap. Lists the iOS AX roles,
+// the Android parser's roles and the DOM tags and ARIA roles of text and images.
+const PASSIVE_ROLES = new Set([
+  "AXStaticText",
+  "AXImage",
+  "AXHeading",
+  "StaticText",
+  "Image",
+  "p",
+  "span",
+  "label",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "small",
+  "img",
+  "svg",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "heading",
+  "text",
+]);
+// A browser gives each inline run of a wrapped paragraph the box of every line
+// it spans, so neighbouring runs overlap while nothing covers anything.
+const TEXT_RUN_ROLES = new Set([
+  "AXStaticText",
+  "AXLink",
+  "StaticText",
+  "a",
+  "link",
+  "span",
+  "strong",
+  "em",
+  "b",
+  "i",
+  "small",
+  "code",
+  "label",
+]);
 // ax-service reports UIKit scroll indicators as labelled AXGroups. They sit
 // over the content they scroll, alert button stacks included, and no scroll
 // can separate an indicator from its own content.
@@ -162,6 +205,14 @@ const OVERLAP_MIN_RATIO = 0.25;
 const OVERLAP_MAX_RATIO = 0.95;
 const OVERLAP_NAME_MAX = 40;
 const OVERLAP_PARTNERS_MAX = 3;
+
+// `start`/`end` span the node's subtree in pre-order, so a pair whose ranges
+// nest is an ancestor and its descendant.
+interface OverlapCandidate {
+  node: DescribeNode;
+  start: number;
+  end: number;
+}
 
 interface OverlapPartner {
   other: DescribeNode;
@@ -204,6 +255,49 @@ function withoutSharedOrigins(nodes: DescribeNode[]): DescribeNode[] {
   return nodes.filter((n) => counts.get(originKey(n)) === 1);
 }
 
+function flatCandidates(root: DescribeNode): OverlapCandidate[] {
+  return withoutSharedOrigins(root.children.filter(isOverlapCandidate)).map((node, i) => ({
+    node,
+    start: i,
+    end: i,
+  }));
+}
+
+interface CandidateWalkEntry {
+  node: DescribeNode;
+  closes?: OverlapCandidate;
+}
+
+function nestedCandidates(root: DescribeNode): OverlapCandidate[] {
+  const candidates: OverlapCandidate[] = [];
+  const stack: CandidateWalkEntry[] = root.children
+    .slice()
+    .reverse()
+    .map((node) => ({ node }));
+  let index = 0;
+  while (stack.length > 0) {
+    const { node, closes } = stack.pop()!;
+    if (closes) {
+      closes.end = index - 1;
+      continue;
+    }
+    const start = index++;
+    if (isOverlapCandidate(node)) {
+      const candidate = { node, start, end: start };
+      candidates.push(candidate);
+      stack.push({ node, closes: candidate });
+    }
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({ node: node.children[i]! });
+    }
+  }
+  return candidates;
+}
+
+function isAncestorPair(a: OverlapCandidate, b: OverlapCandidate): boolean {
+  return (a.start <= b.start && b.start <= a.end) || (b.start <= a.start && a.start <= b.end);
+}
+
 function overlapName(n: DescribeNode): string {
   // Cut by code point: a lone surrogate left by a UTF-16 slice makes strict
   // JSON parsers reject the whole MCP message.
@@ -213,10 +307,10 @@ function overlapName(n: DescribeNode): string {
   return `"${escapeForLine(raw).replace(/"/g, "'")}"`;
 }
 
-// Partly overlapping elements (a tab bar over a list row) have no stacking
-// order in the flat iOS list, so a tap at either centre may hit the other.
-function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
-  const candidates = withoutSharedOrigins(root.children.filter(isOverlapCandidate));
+// Partly overlapping elements (a tab bar over a list row) carry no stacking
+// order in the element list, so a tap at either centre may hit the other.
+// Ancestors overlap their descendants by design, so those pairs are skipped.
+function overlapNotes(candidates: OverlapCandidate[]): Map<DescribeNode, string> {
   const partners = new Map<DescribeNode, OverlapPartner[]>();
   const addPartner = (self: DescribeNode, other: DescribeNode, ratio: number) => {
     const list = partners.get(self) ?? [];
@@ -224,8 +318,11 @@ function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
     partners.set(self, list);
   };
 
-  candidates.forEach((a, i) => {
-    for (const b of candidates.slice(i + 1)) {
+  candidates.forEach((first, i) => {
+    for (const second of candidates.slice(i + 1)) {
+      if (isAncestorPair(first, second)) continue;
+      const a = first.node;
+      const b = second.node;
       const ratio = overlapRatio(a.frame, b.frame);
       if (ratio <= OVERLAP_MIN_RATIO || ratio >= OVERLAP_MAX_RATIO) continue;
       if (bothIn(PASSIVE_ROLES, a, b) || bothIn(TEXT_RUN_ROLES, a, b)) continue;
@@ -293,13 +390,13 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
 
   // Vega's lowercase toolkit roles count as content only for its own source.
   const contentRoles = isVega ? VEGA_CONTENT_ROLES : CONTENT_ROLES;
-  // Overlap notes run on the flat iOS simulator lists only. Nested trees
-  // (Android, Chromium, Vega, physical iOS) can have the same sibling overlap,
-  // but parent/child frames overlap there by design and the check does not
-  // tell the two apart yet.
+  // Vega has no tap, so the note's advice does not apply there.
+  const notes = isVega
+    ? new Map<DescribeNode, string>()
+    : overlapNotes(mode === "flat" ? flatCandidates(root) : nestedCandidates(root));
   const body =
     mode === "flat"
-      ? renderFlat(root, contentRoles, overlapNotes(root))
-      : renderNested(root, contentRoles);
+      ? renderFlat(root, contentRoles, notes)
+      : renderNested(root, contentRoles, notes);
   return [...header, ...body].join("\n").replace(/\n+$/, "\n");
 }

@@ -27,7 +27,7 @@ The agent does not read coordinates from a screenshot. Before a tap, the agent h
 - the React component tree in React Native apps,
 - the DOM in Chromium and Electron apps.
 
-The element list on an iOS simulator does not show which element is on top. When two labelled elements partly overlap, for example a list row under a tab bar, both elements get a note. A tap at the position of the covered element can reach the other element, so the agent checks a screenshot before the tap. Physical iPhones and other platforms get no such note.
+The element list does not show which element is on top. When two labelled elements partly overlap, for example a list row under a tab bar, both elements get a note. A tap at the position of the covered element can reach the other element, so the agent checks a screenshot before the tap. An element and its own parent or child never get the note. Vega devices have no tap and get no such note.
 
 After a screen change, the action returns the new screen: a screenshot and the element tree. The next tap needs no extra call. The `disable-auto-describe` flag stops the element tree.
 

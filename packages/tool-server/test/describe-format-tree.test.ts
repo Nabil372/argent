@@ -767,19 +767,75 @@ describe("formatDescribeTree — overlapping elements", () => {
   });
 });
 
-describe("formatDescribeTree — overlap notes are iOS-flat only", () => {
-  it("adds no overlap notes to a nested Android tree", () => {
-    const leaf = (label: string, x: number, y: number) => ({
-      role: "Button",
-      label,
-      frame: { x, y, width: 0.8, height: 0.09 },
-      children: [],
+describe("formatDescribeTree — overlap notes in nested trees", () => {
+  const node = (
+    role: string,
+    label: string,
+    [x, y, width, height]: number[],
+    children: unknown[] = []
+  ) => ({ role, label, frame: { x, y, width, height }, children });
+  const screen = (...children: unknown[]) =>
+    ({ role: "Screen", frame: { x: 0, y: 0, width: 1, height: 1 }, children }) as any;
+  const lineOf = (out: string, label: string) =>
+    out.split("\n").find((l) => new RegExp(`^\\s+\\S+ "${label}"`).test(l))!;
+
+  // A list row slid under a sticky footer: the two sit in sibling subtrees.
+  const sources = [
+    { source: "xcuitest-runner", row: "AXButton", button: "AXButton", group: "Other" },
+    { source: "uiautomator", row: "Button", button: "Button", group: "ViewGroup" },
+    { source: "android-devtools", row: "Button", button: "Button", group: "ViewGroup" },
+    { source: "cdp-dom", row: "li", button: "button", group: "footer" },
+  ] as const;
+
+  for (const { source, row, button, group } of sources) {
+    it(`marks a row under a footer in a ${source} tree`, () => {
+      const tree = screen(
+        node("List", "", [0, 0.1, 1, 0.9], [node(row, "Add Player", [0.055, 0.845, 0.891, 0.09])]),
+        node(group, "", [0, 0.85, 1, 0.15], [node(button, "Continue", [0.055, 0.86, 0.891, 0.088])])
+      );
+      const out = formatDescribeTree(tree, { source });
+      expect(lineOf(out, "Add Player")).toMatch(
+        /^ {4}\S+ "Add Player" \[overlaps "Continue": either may be on top, check a screenshot before tapping\] {2}\(/
+      );
+      expect(lineOf(out, "Continue")).toContain(`[overlaps "Add Player":`);
     });
-    const root = {
-      role: "Screen",
-      frame: { x: 0, y: 0, width: 1, height: 1 },
-      children: [leaf("Add Player", 0.055, 0.845), leaf("Continue", 0.055, 0.86)],
-    };
-    expect(formatDescribeTree(root as any, { source: "uiautomator" })).not.toContain("overlaps");
+
+    it(`ignores a child that sticks out of its parent in a ${source} tree`, () => {
+      const tree = screen(
+        node(group, "Card", [0.1, 0.1, 0.4, 0.1], [node(button, "Close", [0.1, 0.15, 0.4, 0.1])])
+      );
+      expect(formatDescribeTree(tree, { source })).not.toContain("overlaps");
+    });
+  }
+
+  it("ignores overlapping text and images in an Android tree", () => {
+    const tree = screen(
+      node("StaticText", "Title", [0.1, 0.1, 0.5, 0.05]),
+      node("Image", "Avatar", [0.1, 0.12, 0.5, 0.05])
+    );
+    expect(formatDescribeTree(tree, { source: "uiautomator" })).not.toContain("overlaps");
+  });
+
+  it("ignores runs of a wrapped paragraph in a DOM tree", () => {
+    const tree = screen(
+      node(
+        "p",
+        "",
+        [0.05, 0.3, 0.9, 0.1],
+        [
+          node("a", "Baltic Sea", [0.05, 0.3, 0.9, 0.06]),
+          node("span", "and the", [0.05, 0.32, 0.9, 0.06]),
+        ]
+      )
+    );
+    expect(formatDescribeTree(tree, { source: "cdp-dom" })).not.toContain("overlaps");
+  });
+
+  it("adds no overlap notes to a Vega tree, which has no tap", () => {
+    const tree = screen(
+      node("button", "Add Player", [0.055, 0.845, 0.891, 0.09]),
+      node("button", "Continue", [0.055, 0.86, 0.891, 0.088])
+    );
+    expect(formatDescribeTree(tree, { source: "vega-automation" })).not.toContain("overlaps");
   });
 });
