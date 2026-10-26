@@ -7,9 +7,10 @@
  *
  * None of them throws, and none returns a value the runtime could fail to
  * serialize: a helper that threw would come back as `exceptionDetails`, which
- * the client could not tell from a fault in the inspector. Values travel as
- * JSON text built here, so a cyclic or BigInt value is reported in the return
- * value instead of failing inside Hermes's own serializer.
+ * the client could not tell from a fault in the inspector. A value is passed
+ * through `JSON.stringify` here and returned as the parsed copy, so a cyclic or
+ * BigInt value is reported in the verdict instead of failing inside Hermes's
+ * own serializer, and the copy is encoded only once, by the protocol.
  */
 
 /** Where a thenable ended up; `state` moves off "pending" from its callbacks. */
@@ -20,18 +21,19 @@ export interface SettleBox {
 }
 
 /**
- * What a value is to the caller: its JSON text (absent for `undefined` and
- * for numbers JSON cannot carry), a type with no JSON form, or the error
+ * What a value is to the caller: its JSON copy (absent for `undefined` and for
+ * numbers JSON cannot carry), a type with no JSON form, or the error
  * `JSON.stringify` threw on it.
  */
-export type RemoteVerdict = { json?: string } | { unserializable: string } | { unreadable: string };
+export type RemoteVerdict =
+  { value?: unknown } | { unserializable: string } | { unreadable: string };
 
 /**
  * Attach callbacks to `this` when it is a thenable and return the box they
- * write to; otherwise return `this`'s `RemoteVerdict` as JSON text. `then` is
- * read once, so a getter or Proxy trap on it runs once.
+ * write to; otherwise return `undefined`. `then` is read once, so a getter or
+ * Proxy trap on it runs once.
  */
-export function watchIfThenable(this: unknown): SettleBox | string {
+export function watchIfThenable(this: unknown): SettleBox | undefined {
   const self = this as { then?: unknown } | null;
   const box: SettleBox = { state: "pending" };
   const reject = (error: unknown) => {
@@ -45,40 +47,40 @@ export function watchIfThenable(this: unknown): SettleBox | string {
     reject(error);
     return box;
   }
-  if (typeof then === "function") {
-    const subscribe = then;
-    new Promise((resolve, rejectWith) => subscribe.call(self, resolve, rejectWith)).then(
-      (value) => {
-        box.value = value;
-        box.state = "fulfilled";
-      },
-      reject
-    );
-    return box;
-  }
-  if (typeof self === "function") return JSON.stringify({ unserializable: "function" });
+  if (typeof then !== "function") return undefined;
+  const subscribe = then;
+  new Promise((resolve, rejectWith) => subscribe.call(self, resolve, rejectWith)).then((value) => {
+    box.value = value;
+    box.state = "fulfilled";
+  }, reject);
+  return box;
+}
+
+/** The verdict on `this`, a result that is not a thenable. */
+export function readValue(this: unknown): RemoteVerdict {
+  if (typeof this === "function") return { unserializable: "function" };
   try {
-    const json = JSON.stringify(self);
-    return JSON.stringify(json === undefined ? {} : { json });
+    const json = JSON.stringify(this);
+    return json === undefined ? {} : { value: JSON.parse(json) };
   } catch (error) {
     try {
-      return JSON.stringify({ unreadable: String(error) });
+      return { unreadable: String(error) };
     } catch {
-      return JSON.stringify({ unreadable: "the value could not be serialized" });
+      return { unreadable: "the value could not be serialized" };
     }
   }
 }
 
-/** The fulfilled value's verdict. */
+/** The verdict on the fulfilled value. */
 export function readBoxValue(this: SettleBox): RemoteVerdict {
   const value = this.value;
   if (typeof value === "function") return { unserializable: "function" };
-  if (typeof value === "symbol") return { json: JSON.stringify(String(value)) };
+  if (typeof value === "symbol") return { value: String(value) };
   // A bare NaN, Infinity or -0 result also comes back without a value.
   if (typeof value === "number" && (!isFinite(value) || Object.is(value, -0))) return {};
   try {
     const json = JSON.stringify(value);
-    return json === undefined ? {} : { json };
+    return json === undefined ? {} : { value: JSON.parse(json) };
   } catch (error) {
     try {
       return { unreadable: String(error) };
@@ -136,6 +138,11 @@ export function readBoxError(this: SettleBox): string {
     // eslint-disable-next-line @typescript-eslint/no-base-to-string
     return String(error);
   } catch {
+    // A throwing toString; fall through.
+  }
+  try {
     return Object.prototype.toString.call(error);
+  } catch {
+    return "a reason that could not be read";
   }
 }
