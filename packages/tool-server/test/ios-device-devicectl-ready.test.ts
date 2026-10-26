@@ -49,7 +49,7 @@ describe("ensureDeviceReady requires wired transport or a live usbmux entry", ()
     expect((error as Error).name).toBe("IosDeviceControlError");
     expect((error as Error).message).toBe(
       "Device is not available through a supported usbmux connection (transport: localNetwork). " +
-        "Hint: Connect the device by USB cable or through usbfluxd, unlock it, then retry."
+        "Hint: Connect the device by USB cable or restore its network connection, unlock it, then retry."
     );
     // The verdict bypasses runDevicectl's stamp (devicectl itself succeeded),
     // so it carries its own: the registry must not file a pulled cable as
@@ -121,7 +121,7 @@ describe("ensureDeviceReady requires wired transport or a live usbmux entry", ()
     expect(isUsbmuxDeviceAvailable).not.toHaveBeenCalled();
   });
 
-  it("rejects a detached usbfluxd device after the readiness memo expires", async () => {
+  it("rejects a detached network device after the readiness memo expires", async () => {
     fake.connectionProperties = { transportType: "localNetwork", tunnelState: "connected" };
     const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
     vi.mocked(isUsbmuxDeviceAvailable).mockResolvedValue(true);

@@ -36,10 +36,9 @@ interface IosPhysicalDevice {
   /** CoreDevice pairing state, e.g. "paired". */
   pairingState: string | null;
   /**
-   * CoreDevice transport. usbfluxd can report "localNetwork" for a live usbmux device.
+   * CoreDevice transport. A "localNetwork" device can also be available through usbmux.
    */
   transportType: string | null;
-  availableThroughUsbmux: boolean;
   tunnelState: string | null;
 }
 
@@ -92,7 +91,7 @@ function resolveDevicectlHint(output: string, bundleId?: string): string {
   }
 
   if (lower.includes("must be paired") || lower.includes("pairing")) {
-    return "Connect the device by USB cable or through usbfluxd, accept the Trust prompt, enter the device passcode, then retry.";
+    return "Connect the device by USB cable or restore its network connection, accept the Trust prompt, enter the device passcode, then retry.";
   }
 
   // CoreDeviceError 10002 covers any failed preflight check: a locked screen
@@ -106,7 +105,7 @@ function resolveDevicectlHint(output: string, bundleId?: string): string {
   }
 
   if (lower.includes("timed out")) {
-    return "Reconnect the device by USB cable or through usbfluxd, unlock it, and retry; restarting Xcode's device services can help.";
+    return "Reconnect the device by USB cable or restore its network connection, unlock it, and retry; restarting Xcode's device services can help.";
   }
 
   return "Ensure the device is unlocked, trusted, and visible in Xcode > Devices, then retry.";
@@ -282,17 +281,9 @@ export async function listIosPhysicalDevices(): Promise<IosPhysicalDevice[]> {
           : d.deviceProperties.developerModeStatus === "enabled",
       pairingState: d.connectionProperties?.pairingState ?? null,
       transportType: d.connectionProperties?.transportType ?? null,
-      availableThroughUsbmux: false,
       tunnelState: d.connectionProperties?.tunnelState ?? null,
     });
   }
-  await Promise.all(
-    out.map(async (device) => {
-      if (device.transportType === "localNetwork") {
-        device.availableThroughUsbmux = await isUsbmuxDeviceAvailable(device.udid);
-      }
-    })
-  );
   return out;
 }
 
@@ -416,9 +407,18 @@ function readyFailureSignal(error_kind: FailureKind): FailureSignal {
   };
 }
 
-/**
- * Ensure the device is reachable through usbmux and its CoreDevice tunnel is ready.
- */
+/** A CoreDevice network transport also needs a live usbmux entry. */
+export async function isDeviceTransportAvailable(
+  udid: string,
+  transportType: string | null
+): Promise<boolean> {
+  return (
+    transportType === "wired" ||
+    (transportType === "localNetwork" && (await isUsbmuxDeviceAvailable(udid)))
+  );
+}
+
+/** Ensure the device transport is available and its CoreDevice tunnel is ready. */
 export async function ensureDeviceReady(udid: string): Promise<void> {
   // Memoized for 5s. Callers hit this on the hot path.
   const at = readyMemo.get(udid);
@@ -429,17 +429,14 @@ export async function ensureDeviceReady(udid: string): Promise<void> {
 
   const info = await deviceInfoDetails(udid, { timeoutSeconds: 15 });
 
-  // A network tunnel alone can be stale; usbfluxd must also expose a live usbmux entry.
   // Older toolchains omit transportType, which remains accepted.
-  if (
-    info.transportType != null &&
-    info.transportType !== "wired" &&
-    !(info.transportType === "localNetwork" && (await isUsbmuxDeviceAvailable(udid)))
-  ) {
+  if (info.transportType != null && !(await isDeviceTransportAvailable(udid, info.transportType))) {
     throw withFailureSignal(
       new IosDeviceControlError(
         `Device is not available through a supported usbmux connection (transport: ${info.transportType})`,
-        { hint: "Connect the device by USB cable or through usbfluxd, unlock it, then retry." }
+        {
+          hint: "Connect the device by USB cable or restore its network connection, unlock it, then retry.",
+        }
       ),
       readyFailureSignal("not_found")
     );

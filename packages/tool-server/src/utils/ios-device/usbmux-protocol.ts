@@ -216,8 +216,8 @@ export function readUsbmuxResultCode(xml: string): number | undefined {
  * Resolve a mux DeviceID from a `ListDevices` response by exact serial match.
  *
  * A phone paired for Wi-Fi sync is listed once per transport, and usbmuxd
- * makes no promise about the order. The `USB` entry wins so every runner
- * command rides the cable; any other exact match is the fallback.
+ * makes no promise about the order. Prefer the `USB` entry when available;
+ * otherwise use the network entry for the same device.
  */
 export function readUsbmuxDeviceIdForSerial(xml: string, serial: string): number | undefined {
   const root = parsePlistOrUndefined(xml);

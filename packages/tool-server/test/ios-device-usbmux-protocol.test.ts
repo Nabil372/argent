@@ -182,9 +182,8 @@ describe("readUsbmuxDeviceIdForSerial", () => {
 
   it("prefers the USB entry when Wi-Fi sync lists the same phone twice, Network first", () => {
     // A phone paired for Wi-Fi sync shows up once per transport, and usbmuxd
-    // may list the Network entry first. Taking the first exact match would
-    // route every runner command over Wi-Fi on a feature that promises the
-    // cable, so the USB entry must win wherever it sits in the list.
+    // may list the Network entry first. Prefer the cable when both transports
+    // are available, regardless of list order.
     const xml = deviceListXml([
       { id: 12, serial: DEVICE_UDID, connection: "Network" },
       { id: 13, serial: DEVICE_UDID, connection: "USB" },
@@ -347,7 +346,7 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
 
   const startFakeUsbmuxd = async (
     socketPath: string,
-    devices: Array<{ id: number; serial: string }>,
+    devices: Array<{ id: number; serial: string; connection?: string }>,
     connectResult: number,
     options: { listDevicesDelayMs?: number } = {}
   ): Promise<{ connectRequests: string[] }> => {
@@ -362,7 +361,8 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
             .map(
               (device) =>
                 `<dict><key>DeviceID</key><integer>${device.id}</integer>` +
-                `<key>Properties</key><dict><key>SerialNumber</key><string>${device.serial}</string></dict></dict>`
+                `<key>Properties</key><dict><key>SerialNumber</key><string>${device.serial}</string>` +
+                `<key>ConnectionType</key><string>${device.connection ?? "USB"}</string></dict></dict>`
             )
             .join("");
           const reply = () =>
@@ -393,15 +393,19 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
     return { connectRequests };
   };
 
-  it.each([DEVICE_UDID, "00008030-000000000000AAAA"])(
-    "checks live availability by exact UDID against %s without opening a runner port",
-    async (listedUdid) => {
+  it.each([
+    { connection: "USB", serial: DEVICE_UDID, available: true },
+    { connection: "Network", serial: DEVICE_UDID, available: true },
+    { connection: "Network", serial: "00008030-000000000000AAAA", available: false },
+  ])(
+    "checks live $connection availability for $serial without opening a runner port",
+    async ({ connection, serial, available }) => {
       const socketPath = await createSocketPath();
-      const fake = await startFakeUsbmuxd(socketPath, [{ id: 42, serial: listedUdid }], 0);
+      const fake = await startFakeUsbmuxd(socketPath, [{ id: 42, serial, connection }], 0);
       const createConnection = net.createConnection.bind(net);
       vi.spyOn(net, "createConnection").mockImplementationOnce(() => createConnection(socketPath));
 
-      expect(await isUsbmuxDeviceAvailable(DEVICE_UDID)).toBe(listedUdid === DEVICE_UDID);
+      expect(await isUsbmuxDeviceAvailable(DEVICE_UDID)).toBe(available);
       expect(fake.connectRequests).toEqual([]);
     }
   );

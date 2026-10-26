@@ -84,6 +84,10 @@ vi.mock("../src/utils/chromium-discovery", async () => {
 // is deterministic. Defaults to none; the dedicated test overrides per-call.
 vi.mock("../src/utils/vega-sdk", () => ({ listVvdImages: vi.fn(async () => []) }));
 
+vi.mock("../src/utils/ios-device/usbmux", () => ({
+  isUsbmuxDeviceAvailable: vi.fn(async () => false),
+}));
+
 // Physical-device discovery shells out to `xcrun devicectl` with a JSON output
 // file; mock the module seam and feed rows directly. Defaults to none; the
 // physical-device test overrides per-call.
@@ -104,6 +108,7 @@ import * as path from "node:path";
 import type { AddressInfo } from "node:net";
 import { listDevicesTool } from "../src/tools/devices/list-devices";
 import { listIosPhysicalDevices } from "../src/utils/ios-device/devicectl";
+import { isUsbmuxDeviceAvailable } from "../src/utils/ios-device/usbmux";
 import {
   __resetExternalDeviceCacheForTesting,
   __resetProviderWarningsForTesting,
@@ -152,6 +157,7 @@ function simctlJson(): string {
 
 beforeEach(() => {
   execFileMock.mockReset();
+  vi.mocked(isUsbmuxDeviceAvailable).mockReset().mockResolvedValue(false);
 });
 
 describe("list-devices", () => {
@@ -531,7 +537,7 @@ describe("list-devices", () => {
 
   it("uses wired transport or live usbmux availability and sorts connected first", async () => {
     // CoreDevice can keep a connected tunnel after unplugging. Only a live
-    // usbmux entry makes a localNetwork device usable, as with usbfluxd.
+    // usbmux entry lets a localNetwork device pass the connection check.
     vi.mocked(listIosPhysicalDevices).mockResolvedValueOnce([
       {
         udid: "00008120-000A44443333801E",
@@ -541,7 +547,6 @@ describe("list-devices", () => {
         developerModeEnabled: true,
         pairingState: "paired",
         transportType: "localNetwork",
-        availableThroughUsbmux: false,
         tunnelState: "disconnected",
       },
       {
@@ -552,7 +557,6 @@ describe("list-devices", () => {
         developerModeEnabled: true,
         pairingState: "paired",
         transportType: "wired",
-        availableThroughUsbmux: false,
         tunnelState: "connected",
       },
       {
@@ -563,21 +567,22 @@ describe("list-devices", () => {
         developerModeEnabled: true,
         pairingState: "paired",
         transportType: "localNetwork",
-        availableThroughUsbmux: false,
         tunnelState: "connected",
       },
       {
         udid: "00008120-000C66665555A01E",
-        name: "usbfluxd iPhone",
+        name: "Network iPhone",
         model: "iPhone 15",
         osVersion: "18.7.8",
         developerModeEnabled: true,
         pairingState: "paired",
         transportType: "localNetwork",
-        availableThroughUsbmux: true,
         tunnelState: "connected",
       },
     ]);
+    vi.mocked(isUsbmuxDeviceAvailable).mockImplementation(
+      async (udid) => udid === "00008120-000C66665555A01E"
+    );
     execFileMock.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === "xcrun" && args[0] === "simctl" && args[1] === "list") {
         return { stdout: simctlJson(), stderr: "" };
@@ -599,7 +604,7 @@ describe("list-devices", () => {
     }>;
     expect(physical.map((d) => [d.name, d.state])).toEqual([
       ["Desk iPhone", "connected"],
-      ["usbfluxd iPhone", "connected"],
+      ["Network iPhone", "connected"],
       ["Office iPhone", "paired"],
       ["Unplugged iPhone", "paired"],
     ]);
@@ -610,8 +615,10 @@ describe("list-devices", () => {
     // The paired phone sinks below every usable device, booted simulators
     // included; flow auto-bind keys on state "connected" and skips it.
     expect(byName("Desk iPhone")).toBeLessThan(byName("Office iPhone"));
-    expect(byName("usbfluxd iPhone")).toBeLessThan(byName("Office iPhone"));
+    expect(byName("Network iPhone")).toBeLessThan(byName("Office iPhone"));
     expect(byName("iPhone 16")).toBeLessThan(byName("Office iPhone"));
+    expect(isUsbmuxDeviceAvailable).toHaveBeenCalledTimes(3);
+    expect(isUsbmuxDeviceAvailable).not.toHaveBeenCalledWith("00008110-000978540290401E");
   });
 });
 
