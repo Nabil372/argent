@@ -114,10 +114,10 @@ function isWritableDir(dir: string): boolean {
   }
 }
 
-// The tools client appends `/tools` to the URL as given, so probe the same URL.
+// The tools client strips trailing slashes before appending `/tools`, so probe the same URL.
 async function remoteStatus(url: string, token?: string): Promise<number | null> {
   try {
-    const res = await fetch(`${url}/tools`, {
+    const res = await fetch(`${url.replace(/\/+$/, "")}/tools`, {
       signal: AbortSignal.timeout(2_000),
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });

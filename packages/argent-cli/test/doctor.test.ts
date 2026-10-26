@@ -472,9 +472,9 @@ describe("collectDoctorReport", () => {
     }
   });
 
-  it("probes a linked URL as given, trailing slash included, like the tools client", async () => {
+  it("probes a linked URL without its trailing slash, like the tools client", async () => {
     server = http.createServer((req, res) => {
-      res.statusCode = req.url === "//tools" ? 200 : 404;
+      res.statusCode = req.url === "/tools" ? 200 : 404;
       res.end("[]");
     });
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
