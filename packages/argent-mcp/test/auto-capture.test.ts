@@ -393,6 +393,13 @@ describe("compactAutoDescribe", () => {
     }
   );
 
+  it.each([2, 3, 4])("leaves the header unchanged when line %i gains extra text", (index) => {
+    const lines = formatDescribeTree(root, { source: "ax-service" }).split("\n");
+    lines[index] += " Extra clause.";
+    const extended = lines.join("\n");
+    expect(compactAutoDescribe(extended)).toBe(extended);
+  });
+
   it("leaves output without the preamble unchanged", () => {
     const hint = "Hint: the tree is empty\n\nROOT  AXGroup (0, 0, 1, 1)";
     expect(compactAutoDescribe(hint)).toBe(hint);

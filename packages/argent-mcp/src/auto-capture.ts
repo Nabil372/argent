@@ -110,9 +110,9 @@ const DESCRIBE_SOURCE_AND_MODE = [/^Source: \S+$/, /^Mode: (flat|nested)$/];
 // They repeat the coordinate contract that the describe tool description and
 // the argent rule already carry, so the appended tree gets the legend instead.
 const DESCRIBE_COORDINATE_LINES = [
-  /^Coordinates are normalized \[0,1\] fractions of the screen /,
+  /^Coordinates are normalized \[0,1\] fractions of the screen \(x, y, width, height\), not pixels\.$/,
   /^Pass them straight to gesture-tap \/ gesture-swipe \/ gesture-pinch, which expect this same space\.$/,
-  /^To tap an element, use its centre: /,
+  /^To tap an element, use its centre: tap_x = frame\.x \+ frame\.width \/ 2, tap_y = frame\.y \+ frame\.height \/ 2\.$/,
 ];
 
 const DESCRIBE_PREAMBLE = [...DESCRIBE_SOURCE_AND_MODE, ...DESCRIBE_COORDINATE_LINES];
