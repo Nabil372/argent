@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
@@ -352,6 +352,40 @@ const { formatDescribeTree } = (await import(
   new URL("../../tool-server/src/tools/describe/format-tree.ts", import.meta.url).href
 )) as { formatDescribeTree: (root: unknown, opts: { source: string }) => string };
 
+// Android TV's empty-focus fallback reads uiautomator through describeAndroid.
+vi.mock("../../tool-server/src/tools/describe/platforms/android", () => ({
+  describeAndroid: async () => ({
+    tree: { role: "AXGroup", frame: { x: 0, y: 0, width: 1, height: 1 }, children: [] },
+    source: "uiautomator",
+  }),
+}));
+
+const { describeTv } = (await import(
+  new URL("../../tool-server/src/tools/describe/platforms/tv.ts", import.meta.url).href
+)) as { describeTv: (registry: unknown, device: unknown) => Promise<{ description: string }> };
+
+async function describeTvScreen(device: { id: string; platform: string }, focused: boolean) {
+  const play = { label: "Play", isFocused: true };
+  const api = {
+    describe: async () => ({
+      bundleId: "com.example.tv",
+      focused: focused ? play : null,
+      focusable: focused ? [play] : [],
+    }),
+    recycleAx: async () => {},
+  };
+  const registry = { resolveService: async () => api };
+  return (await describeTv(registry, device)).description;
+}
+
+const APPLE_TV = { id: "DDDDDDDD-DDDD-DDDD-DDDD-DDDDDDDDDDDD", platform: "ios" };
+const ANDROID_TV = { id: "emulator-5556", platform: "android" };
+const appleTvOutputs = [await describeTvScreen(APPLE_TV, true)];
+const androidTvOutputs = [
+  await describeTvScreen(ANDROID_TV, true),
+  await describeTvScreen(ANDROID_TV, false),
+];
+
 describe("compactAutoDescribe", () => {
   const root = {
     role: "AXGroup",
@@ -407,7 +441,6 @@ describe("compactAutoDescribe", () => {
 
   describe("matches the attached tree the argent rule describes", () => {
     const rule = fs.readFileSync(new URL("../../skills/rules/argent.md", import.meta.url), "utf8");
-    const focusView = 'App: com.example.tv\nFocused: AXButton "Play"';
     const describeOutputsByTarget: Record<string, string[]> = {
       "iOS simulators": [
         formatDescribeTree(root, { source: "ax-service" }),
@@ -421,14 +454,11 @@ describe("compactAutoDescribe", () => {
       "HarmonyOS": [formatDescribeTree(root, { source: "harmony-uitest" })],
       "physical iPhone": [formatDescribeTree(root, { source: "xcuitest-runner" })],
       "Vega": [formatDescribeTree(root, { source: "vega-automation" })],
-      "Apple TV": [focusView],
-      "Android TV": [
-        focusView,
-        `The Android TV focus engine reported no focusable elements.\n\n${formatDescribeTree(root, { source: "uiautomator" })}`,
-      ],
+      "Apple TV": appleTvOutputs,
+      "Android TV": androidTvOutputs,
     };
     const legendSentence = rule.match(
-      /On (.+?), the legend `(.+?)` replaces the coordinate lines that follow `describe`'s `Source:` and `Mode:` lines \(`Source: native-devtools` means an app-scoped iOS tree without system UI\); on (.+?), the tree comes through exactly as `describe` prints it/
+      /On (.+?), the legend `(.+?)` replaces the coordinate lines that follow `describe`'s `Source:` and `Mode:` lines \(`Source: native-devtools` means an app-scoped iOS tree without system UI\); on (.+?), the tree comes through exactly as `describe` prints it, platform notes included\. The attached tree leaves out the separate `hint` that `describe` returns/
     );
     const splitTargets = (list: string) => list.replace(/ and (?!.* and )/, ", ").split(", ");
     const compactedTargets = splitTargets(legendSentence?.[1] ?? "");

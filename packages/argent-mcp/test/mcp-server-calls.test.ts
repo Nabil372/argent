@@ -91,6 +91,7 @@ const DESCRIBE_TREE = [
   '  AXButton "General"  (0.040, 0.300, 0.920, 0.050)',
   "",
 ].join("\n");
+const DESCRIBE_HINT = "The tree may be incomplete; retry after the UI settles.";
 
 const RUN_REPORT = {
   ok: true,
@@ -158,7 +159,9 @@ async function startStub({
         return json(422, { error: "no screen" });
       }
       if (req.method === "POST" && reqUrl === "/tools/describe") {
-        return json(200, { data: { description: `${DESCRIBE_PREAMBLE}\n${DESCRIBE_TREE}` } });
+        return json(200, {
+          data: { description: `${DESCRIBE_PREAMBLE}\n${DESCRIBE_TREE}`, hint: DESCRIBE_HINT },
+        });
       }
       json(404, { error: "not found" });
     });
@@ -292,7 +295,7 @@ describe("startMcpServer tool calls", () => {
     expect(requests.filter((r) => r.url === "/tools/reject")).toHaveLength(1);
   });
 
-  it("attaches the compacted element tree after an action and logs its size", async () => {
+  it("attaches the compacted element tree without describe's hint and logs its size", async () => {
     const result = await client.callTool({
       name: "gesture-tap",
       arguments: { udid: "u", x: 0.5, y: 0.3 },
@@ -302,6 +305,7 @@ describe("startMcpServer tool calls", () => {
     const content = result.content as Array<{ type: string; text?: string }>;
     const tree = `Source: ax-service\nMode: flat\n${AUTO_DESCRIBE_LEGEND}\n${DESCRIBE_TREE}`;
     expect(content.at(-1)).toEqual({ type: "text", text: `${AUTO_DESCRIBE_HEADER}\n${tree}` });
+    expect(JSON.stringify(content)).not.toContain(DESCRIBE_HINT);
 
     const logged = readFileSync(join(TEST_HOME, "mcp-calls.log"), "utf8")
       .trim()
