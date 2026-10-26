@@ -24,7 +24,6 @@ export {
 } from "./utils.js";
 // Read-only probes `argent doctor` (in @argent/cli) reports from.
 export { isTempRunnerPath, readManifestDeclaration } from "./topology.js";
-export { NPM_REGISTRY } from "./constants.js";
 export { resolveInstallableUpdateTarget } from "./update-target.js";
 export {
   ALL_ADAPTERS,
