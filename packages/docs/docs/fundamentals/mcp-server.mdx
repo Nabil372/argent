@@ -37,9 +37,13 @@ The wizard writes these entries:
 | Global  | `node` and the Argent CLI, as absolute paths | `argent`                                                |
 | Local   | Not written                                  | `node` and the path to the Argent CLI in `node_modules` |
 
-The wizard cannot find the absolute paths for some installs, for example when Volta or pnpm installed Argent. Then the wizard writes the `argent` command and shows a warning. Project config files do not get absolute paths, because your team shares them.
+The wizard cannot find the absolute paths for some installs, for example when Volta or pnpm installed Argent, or for a global install older than 0.27.0. Then the wizard writes the `argent` command and shows a warning. Project config files do not get absolute paths, because your team shares them.
 
-If you remove the Node version that the global config file names, run `npx @swmansion/argent@latest init` again. At the prompt `Install MCP server globally or locally?`, select **Global**. The wizard writes the new paths to the global config file.
+The `node` path names the `node` next to the global install. When that `node` is missing or too old for Argent, the path names the first `node` on your `PATH`. Under nvm, fnm or mise, this path names one exact Node version. If you remove the Node version that the global config file names, run `npx @swmansion/argent@latest init` again. At the prompt `Install MCP server globally or locally?`, select **Global**. The wizard writes the new paths to the global config file.
+
+The first `argent update` from a version that writes only the `argent` command keeps that command, because the old version runs the update. Run `argent update` once more to write the absolute paths.
+
+The absolute paths belong to one machine. If you sync a global config file such as `~/.cursor/mcp.json` between machines, `argent update` on each machine rewrites it with the paths of that machine.
 
 ## Add the MCP server by hand
 
