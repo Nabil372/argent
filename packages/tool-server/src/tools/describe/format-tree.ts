@@ -150,6 +150,9 @@ interface FormatDescribeOptions {
 const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable"]);
 // Text over text is a layout quirk, not a tap trap.
 const PASSIVE_ROLES = new Set(["AXStaticText", "AXImage", "AXHeading"]);
+// WebKit gives each inline run of a wrapped paragraph the box of every line it
+// spans, so neighbouring runs overlap while nothing covers anything.
+const TEXT_RUN_ROLES = new Set(["AXStaticText", "AXLink"]);
 // ax-service reports UIKit scroll indicators as labelled AXGroups. They sit
 // over the content they scroll, alert button stacks included, and no scroll
 // can separate an indicator from its own content.
@@ -181,10 +184,24 @@ function isOverlapCandidate(n: DescribeNode): boolean {
     Boolean(n.label || n.identifier || n.value) &&
     !OVERLAP_SKIP_ROLES.has(n.role) &&
     !SCROLL_INDICATOR_LABEL.test(n.label ?? "") &&
-    n.frame.width > 0 &&
-    n.frame.height > 0 &&
     frameArea(n.frame) < OVERLAP_MAX_ELEMENT_AREA
   );
+}
+
+function bothIn(roles: Set<string>, a: DescribeNode, b: DescribeNode): boolean {
+  return roles.has(a.role) && roles.has(b.role);
+}
+
+function originKey(n: DescribeNode): string {
+  return `${n.frame.x},${n.frame.y}`;
+}
+
+// ax-service parks below-the-fold rows at one shared origin where nothing is
+// drawn, so elements stacked on the same origin are dropped.
+function withoutSharedOrigins(nodes: DescribeNode[]): DescribeNode[] {
+  const counts = new Map<string, number>();
+  for (const n of nodes) counts.set(originKey(n), (counts.get(originKey(n)) ?? 0) + 1);
+  return nodes.filter((n) => counts.get(originKey(n)) === 1);
 }
 
 function overlapName(n: DescribeNode): string {
@@ -199,7 +216,7 @@ function overlapName(n: DescribeNode): string {
 // Partly overlapping elements (a tab bar over a list row) have no stacking
 // order in the flat iOS list, so a tap at either centre may hit the other.
 function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
-  const candidates = root.children.filter(isOverlapCandidate);
+  const candidates = withoutSharedOrigins(root.children.filter(isOverlapCandidate));
   const partners = new Map<DescribeNode, OverlapPartner[]>();
   const addPartner = (self: DescribeNode, other: DescribeNode, ratio: number) => {
     const list = partners.get(self) ?? [];
@@ -211,7 +228,7 @@ function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
     for (const b of candidates.slice(i + 1)) {
       const ratio = overlapRatio(a.frame, b.frame);
       if (ratio <= OVERLAP_MIN_RATIO || ratio >= OVERLAP_MAX_RATIO) continue;
-      if (PASSIVE_ROLES.has(a.role) && PASSIVE_ROLES.has(b.role)) continue;
+      if (bothIn(PASSIVE_ROLES, a, b) || bothIn(TEXT_RUN_ROLES, a, b)) continue;
       addPartner(a, b, ratio);
       addPartner(b, a, ratio);
     }
@@ -225,10 +242,7 @@ function overlapNotes(root: DescribeNode): Map<DescribeNode, string> {
       .slice(0, OVERLAP_PARTNERS_MAX)
       .map((p) => overlapName(p.other))
       .join(", ");
-    notes.set(
-      self,
-      `overlaps ${names}: one covers the other — scroll to separate them before tapping`
-    );
+    notes.set(self, `overlaps ${names}: either may be on top, check a screenshot before tapping`);
   }
   return notes;
 }

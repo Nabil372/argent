@@ -628,7 +628,7 @@ describe("formatDescribeTree — overlapping elements", () => {
   it("marks both elements of a partial overlap", () => {
     const out = formatDescribeTree(root as any, { source: "ax-service" });
     expect(lineOf(out, "Add Player")).toContain(
-      `overlaps "Continue": one covers the other — scroll to separate them before tapping`
+      `overlaps "Continue": either may be on top, check a screenshot before tapping`
     );
     expect(lineOf(out, "Continue")).toContain(`overlaps "Add Player"`);
   });
@@ -703,6 +703,25 @@ describe("formatDescribeTree — overlapping elements", () => {
     }
   });
 
+  it("ignores runs of a wrapped web paragraph", () => {
+    expect(
+      render(
+        node("AXStaticText", "is a country in", 0.05, 0.3, 0.9, 0.06),
+        node("AXLink", "Baltic Sea", 0.05, 0.32, 0.9, 0.06),
+        node("AXLink", "Carpathian Mountains", 0.05, 0.34, 0.9, 0.06)
+      )
+    ).not.toContain("overlaps");
+  });
+
+  it("skips rows parked off-screen at a shared origin", () => {
+    const out = render(
+      node("AXButton", "Keyboards", 0.045, 0.123, 0.909, 0.046),
+      node("AXButton", "Show Predictions Inline", 0, 0.105, 0.909, 0.05),
+      node("AXButton", "Space Confirmation", 0, 0.105, 0.909, 0.07)
+    );
+    expect(out).not.toContain("overlaps");
+  });
+
   it("skips unlabelled elements", () => {
     const blank = {
       role: "AXButton",
@@ -725,7 +744,7 @@ describe("formatDescribeTree — overlapping elements", () => {
       node("AXButton", "Continue", 0.05, 0.84, 0.9, 0.08),
       node("AXButton", "Save", 0.1, 0.77, 0.3, 0.06)
     );
-    expect(lineOf(out, "Toast")).toContain(`overlaps "Save", "Continue": one covers the other`);
+    expect(lineOf(out, "Toast")).toContain(`overlaps "Save", "Continue": either may be on top`);
     expect(lineOf(out, "Save")).toContain(`overlaps "Toast":`);
     expect(lineOf(out, "Continue")).toContain(`overlaps "Toast":`);
   });
