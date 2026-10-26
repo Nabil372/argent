@@ -22,53 +22,77 @@ const developerDir = path.join(fixture, "Xcode.app", "Contents", "Developer");
 fs.mkdirSync(path.join(developerDir, "usr", "bin"), { recursive: true });
 fs.writeFileSync(path.join(developerDir, "usr", "bin", "simctl"), "");
 
+// Resolvers named here throw the way the real ones do for a missing artifact.
+const missing = vi.hoisted(() => new Set<string>());
+function resolveArtifact(name: string, p: string): string {
+  if (missing.has(name)) throw new Error(`${name} not found in the package`);
+  return p;
+}
 vi.mock("@argent/native-devtools-ios", () => ({
-  simulatorServerBinaryPath: () => paths.simulatorServer,
-  axServiceBinaryPath: () => paths.axService,
-  nativeDevtoolsDylibPath: () => paths.dylib,
-  bootstrapDylibPath: () => paths.bootstrap,
+  simulatorServerBinaryPath: () => resolveArtifact("simulator-server", paths.simulatorServer),
+  axServiceBinaryPath: () => resolveArtifact("ax-service", paths.axService),
+  nativeDevtoolsDylibPath: () => resolveArtifact("dylib", paths.dylib),
+  bootstrapDylibPath: () => resolveArtifact("bootstrap", paths.bootstrap),
 }));
-vi.mock("@argent/native-devtools-android", () => ({ bundledHelperApkPath: () => paths.apk }));
+vi.mock("@argent/native-devtools-android", () => ({
+  bundledHelperApkPath: () => resolveArtifact("apk", paths.apk),
+}));
 // What each binary prints when run; a test overrides one to make it fail.
 const runs = vi.hoisted(() => ({
-  results: {} as Record<string, { stdout?: string; stderr?: string; fail?: boolean }>,
+  results: {} as Record<
+    string,
+    { stdout?: string; stderr?: string; fail?: boolean; killed?: boolean }
+  >,
+  calls: [] as Array<{ cmd: string; args: string[]; opts: { timeout?: number } }>,
 }));
 const defaultRuns = (): typeof runs.results => ({
   "xcode-select": { stdout: `${developerDir}\n` },
   "xcrun": {
     stdout: JSON.stringify({
-      devices: { "iOS-18": [{ isAvailable: true }, { isAvailable: false }] },
+      devices: {
+        "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [
+          { isAvailable: true },
+          { isAvailable: false },
+        ],
+      },
     }),
   },
   "/sdk/adb": { stdout: "Android Debug Bridge version 1.0.41\n" },
+  "/sdk/emulator": { stdout: "Android emulator version 35.1.4\n" },
 });
 vi.mock("node:child_process", () => ({
   execFile: (
     cmd: string,
-    _args: string[],
-    _opts: unknown,
+    args: string[],
+    opts: { timeout?: number },
     cb: (err: Error | null, out: { stdout: string; stderr: string }) => void
   ) => {
+    runs.calls.push({ cmd, args, opts });
     const run = runs.results[cmd] ?? { stdout: "" };
-    if (run.fail) {
-      cb(Object.assign(new Error(`Command failed: ${cmd}`), { stderr: run.stderr ?? "" }), {
-        stdout: "",
+    if (run.fail || run.killed) {
+      const err = Object.assign(new Error(`Command failed: ${cmd}`), {
         stderr: run.stderr ?? "",
+        killed: run.killed ?? false,
       });
+      cb(err, { stdout: "", stderr: run.stderr ?? "" });
     } else {
       cb(null, { stdout: run.stdout ?? "", stderr: "" });
     }
   },
 }));
+// Each dependency resolves only through its own resolver, so routing one to
+// another resolver reports it as missing.
 vi.mock("../src/utils/command-on-path", () => ({
   commandOnPath: async (name: string) => (name === "xcrun" ? "/usr/bin/xcrun" : null),
 }));
 vi.mock("../src/utils/android-binary", () => ({
-  resolveAndroidBinary: async (name: string) => (name === "adb" ? "/sdk/adb" : null),
+  resolveAndroidBinary: async (name: string) =>
+    ({ adb: "/sdk/adb", emulator: "/sdk/emulator" })[name] ?? null,
 }));
-vi.mock("../src/utils/vega-cli", () => ({ resolveVegaBinary: async () => null }));
+vi.mock("../src/utils/vega-cli", () => ({ resolveVegaBinary: async () => "/vega/bin/vega" }));
+const signing = vi.hoisted(() => ({ detect: async (): Promise<unknown[]> => [{ teamId: "T1" }] }));
 vi.mock("../src/utils/ios-device/team-detect", () => ({
-  detectSigningTeams: async () => [{ teamId: "T1" }],
+  detectSigningTeams: () => signing.detect(),
 }));
 vi.mock("../src/utils/chromium-discovery", () => ({
   getCandidateChromiumPorts: () => [9222, 9333],
@@ -89,7 +113,12 @@ async function reportOn(platform: NodeJS.Platform) {
 
 beforeEach(() => {
   runs.results = defaultRuns();
+  runs.calls = [];
+  missing.clear();
+  signing.detect = async () => [{ teamId: "T1" }];
 });
+
+const ranCommands = () => runs.calls.map((c) => c.cmd);
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -106,8 +135,8 @@ describe("collectHostDepsReport", () => {
     expect(report.deps.map((d) => [d.dep, d.path])).toEqual([
       ["xcrun", "/usr/bin/xcrun"],
       ["adb", "/sdk/adb"],
-      ["emulator", null],
-      ["vega", null],
+      ["emulator", "/sdk/emulator"],
+      ["vega", "/vega/bin/vega"],
     ]);
     for (const d of report.deps) expect(d.hint).toBe(INSTALL_HINTS[d.dep]);
     expect(report.chromiumPorts).toEqual([9222, 9333]);
@@ -119,12 +148,14 @@ describe("collectHostDepsReport", () => {
     expect(linux.xcode).toBeNull();
 
     const mac = await reportOn("darwin");
+    expect(mac.platform).toBe("darwin");
     expect(mac.signing).toEqual({ teamIdEnv: null, detectedTeams: 1 });
     expect(mac.xcode).toEqual({
       developerDir,
       simctl: true,
       fromEnv: false,
       availableSimulators: 1,
+      iosRuntimes: 1,
     });
 
     vi.stubEnv("ARGENT_IOS_TEAM_ID", "ABCDE12345");
@@ -144,9 +175,101 @@ describe("collectHostDepsReport", () => {
 
   it("counts available simulators, so a missing runtime shows as zero", async () => {
     runs.results.xcrun = {
-      stdout: JSON.stringify({ devices: { "iOS-18": [{ isAvailable: false }] } }),
+      stdout: JSON.stringify({
+        devices: { "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [{ isAvailable: false }] },
+      }),
     };
     expect((await reportOn("darwin")).xcode?.availableSimulators).toBe(0);
+  });
+
+  it("counts only iOS simulators and iOS runtimes", async () => {
+    runs.results.xcrun = {
+      stdout: JSON.stringify({
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.watchOS-11-5": [{ isAvailable: true }],
+          "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [{ isAvailable: false }],
+          "com.apple.CoreSimulator.SimRuntime.iOS-17-5": [],
+        },
+      }),
+    };
+    expect((await reportOn("darwin")).xcode).toMatchObject({
+      availableSimulators: 0,
+      iosRuntimes: 2,
+    });
+  });
+
+  it("reports simctl output it can't parse", async () => {
+    runs.results.xcrun = { stdout: "not json" };
+    expect((await reportOn("darwin")).xcode?.simctlError).toMatch(/unreadable output/);
+  });
+
+  it("does not run simctl when the developer dir has none", async () => {
+    const clt = path.join(fixture, "CommandLineTools");
+    fs.mkdirSync(path.join(clt, "usr", "bin"), { recursive: true });
+    runs.results["xcode-select"] = { stdout: `${clt}\n` };
+    expect((await reportOn("darwin")).xcode).toEqual({
+      developerDir: clt,
+      simctl: false,
+      fromEnv: false,
+    });
+    expect(ranCommands()).not.toContain("xcrun");
+  });
+
+  it("does not run simctl when xcode-select fails", async () => {
+    runs.results["xcode-select"] = { fail: true, stderr: "unable to get active developer dir" };
+    expect((await reportOn("darwin")).xcode).toEqual({
+      developerDir: null,
+      simctl: false,
+      fromEnv: false,
+    });
+    expect(ranCommands()).not.toContain("xcrun");
+  });
+
+  it("runs only the version flags of adb and the emulator, with a timeout", async () => {
+    await reportOn("linux");
+    expect(runs.calls.map((c) => [c.cmd, c.args, c.opts.timeout])).toEqual([
+      ["/sdk/adb", ["version"], 10_000],
+      ["/sdk/emulator", ["-version"], 10_000],
+    ]);
+  });
+
+  it("reports a found emulator that fails to run", async () => {
+    runs.results["/sdk/emulator"] = { fail: true, stderr: "bad CPU type in executable\n" };
+    const emulator = (await reportOn("linux")).deps.find((d) => d.dep === "emulator");
+    expect(emulator?.runError).toBe("bad CPU type in executable");
+  });
+
+  it("names a probe that timed out", async () => {
+    runs.results["/sdk/adb"] = { killed: true };
+    const adb = (await reportOn("linux")).deps.find((d) => d.dep === "adb");
+    expect(adb?.runError).toBe("`adb version` timed out");
+  });
+
+  it("skips blank stderr lines when naming a run failure", async () => {
+    runs.results["/sdk/adb"] = { fail: true, stderr: "\n  \nreal cause\n" };
+    const adb = (await reportOn("linux")).deps.find((d) => d.dep === "adb");
+    expect(adb?.runError).toBe("real cause");
+  });
+
+  it("reads a failed keychain lookup as no detected teams", async () => {
+    signing.detect = async () => {
+      throw new Error("security failed");
+    };
+    expect((await reportOn("darwin")).signing).toEqual({ teamIdEnv: null, detectedTeams: 0 });
+  });
+
+  it("checks the macOS-only artifacts only on macOS", async () => {
+    expect((await reportOn("linux")).bundled.map((b) => b.name)).toEqual([
+      "simulator-server",
+      "android helper apk",
+    ]);
+    expect((await reportOn("darwin")).bundled.map((b) => b.name)).toEqual([
+      "simulator-server",
+      "ax-service",
+      "native devtools dylib",
+      "injection bootstrap dylib",
+      "android helper apk",
+    ]);
   });
 
   it("does not run simctl off macOS", async () => {
@@ -183,6 +306,15 @@ describe("collectHostDepsReport", () => {
     } finally {
       fs.chmodSync(paths.simulatorServer, 0o755);
     }
+  });
+
+  it("reports an artifact whose resolver throws, as the real ones do when it is missing", async () => {
+    missing.add("simulator-server");
+    expect((await reportOn("darwin")).bundled.find((b) => b.name === "simulator-server")).toEqual({
+      name: "simulator-server",
+      path: null,
+      error: "simulator-server not found in the package",
+    });
   });
 
   it("reports a bundled artifact that is gone", async () => {

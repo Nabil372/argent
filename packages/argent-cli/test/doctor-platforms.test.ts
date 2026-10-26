@@ -59,6 +59,37 @@ describe("platformChecks", () => {
     expect(checks.find((c) => c.label.startsWith("iOS simulator"))?.label).toMatch(/no available/);
   });
 
+  it("asks for a simulator, not a runtime, when an iOS runtime is installed", () => {
+    const checks = platformChecks(
+      hostDeps({ xcode: { ...xcode, availableSimulators: 0, iosRuntimes: 1 } }),
+      "r"
+    );
+    expect(checks.find((c) => c.label.startsWith("iOS simulator"))).toMatchObject({
+      status: "warn",
+      label: "iOS simulator: no available iOS simulators",
+      fix: expect.stringMatching(/simctl create/),
+    });
+  });
+
+  it("warns when only the emulator binary fails to run", () => {
+    const checks = platformChecks(
+      hostDeps({
+        deps: [
+          { dep: "xcrun", path: "/usr/bin/xcrun", hint: "install xcode" },
+          { dep: "adb", path: "/sdk/adb", hint: "install adb" },
+          { dep: "emulator", path: "/sdk/emulator", hint: "x", runError: "bad CPU type" },
+          { dep: "vega", path: null, hint: "install vega" },
+        ],
+      }),
+      "reinstall"
+    );
+    expect(checks.find((c) => c.label === "Android")?.status).toBe("ok");
+    expect(checks.find((c) => c.label.startsWith("Android emulator"))).toMatchObject({
+      status: "warn",
+      detail: "/sdk/emulator: bad CPU type",
+    });
+  });
+
   it("fails Android when adb is found but can't run", () => {
     const checks = platformChecks(
       hostDeps({

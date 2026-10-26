@@ -41,8 +41,10 @@ interface HostDepsReport {
     fromEnv: boolean;
     /** Why `xcrun simctl list` failed (an unaccepted license exits 69). */
     simctlError?: string;
-    /** Available simulators; 0 when no iOS runtime is installed. */
+    /** Available iOS simulators; 0 when no iOS runtime is installed. */
     availableSimulators?: number;
+    /** Installed iOS runtimes, so doctor can tell "no runtime" from "no devices". */
+    iosRuntimes?: number;
   } | null;
   /** CDP ports Chromium discovery probes. */
   chromiumPorts: number[];
@@ -67,7 +69,9 @@ async function probeXcode(): Promise<NonNullable<HostDepsReport["xcode"]>> {
   }
 }
 
-const RUN_PROBE_TIMEOUT_MS = 15_000;
+// The probes run in parallel and the slowest chain (xcode-select, then simctl)
+// must finish inside doctor's 30s cap on --check-deps.
+const RUN_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * Runs a found binary the way tools do. A file that exists can still fail: an
@@ -98,15 +102,24 @@ async function runProbe(
   }
 }
 
-async function probeSimulators(): Promise<{ simctlError?: string; availableSimulators?: number }> {
+const IOS_RUNTIME_PREFIX = "com.apple.CoreSimulator.SimRuntime.iOS-";
+
+async function probeSimulators(): Promise<{
+  simctlError?: string;
+  availableSimulators?: number;
+  iosRuntimes?: number;
+}> {
   const result = await runProbe("xcrun", ["simctl", "list", "devices", "--json"]);
   if ("error" in result) return { simctlError: result.error };
   try {
     const { devices } = JSON.parse(result.stdout) as {
       devices?: Record<string, Array<{ isAvailable?: boolean }>>;
     };
-    const all = Object.values(devices ?? {}).flat();
-    return { availableSimulators: all.filter((d) => d.isAvailable).length };
+    const ios = Object.entries(devices ?? {}).filter(([runtime]) =>
+      runtime.startsWith(IOS_RUNTIME_PREFIX)
+    );
+    const available = ios.flatMap(([, list]) => list).filter((d) => d.isAvailable);
+    return { availableSimulators: available.length, iosRuntimes: ios.length };
   } catch {
     return { simctlError: "`xcrun simctl list devices --json` printed unreadable output" };
   }
@@ -149,21 +162,33 @@ function bundledArtifact(
   }
 }
 
-export async function collectHostDepsReport(): Promise<HostDepsReport> {
-  const deps = await Promise.all(
-    REPORTED_DEPS.map(async (dep) => {
-      const found = await resolveDep(dep);
-      const args = RUN_ARGS[dep];
-      const run = found && args ? await runProbe(found, args) : null;
-      return {
-        dep,
-        path: found,
-        hint: INSTALL_HINTS[dep],
-        ...(run && "error" in run ? { runError: run.error } : {}),
-      };
-    })
-  );
+async function probeMacXcode(): Promise<NonNullable<HostDepsReport["xcode"]>> {
+  const xcode = await probeXcode();
+  // Only with full Xcode selected: a bare `xcrun` can pop the install dialog.
+  return xcode.simctl ? { ...xcode, ...(await probeSimulators()) } : xcode;
+}
 
+async function probeSigning(): Promise<NonNullable<HostDepsReport["signing"]>> {
+  const teamIdEnv = process.env.ARGENT_IOS_TEAM_ID?.trim() || null;
+  // The env var wins over the keychain, so skip the `security` call when set.
+  if (teamIdEnv) return { teamIdEnv, detectedTeams: 0 };
+  const teams = await detectSigningTeams().catch(() => []);
+  return { teamIdEnv, detectedTeams: teams.length };
+}
+
+async function probeDep(dep: ToolDependency): Promise<HostDepsReport["deps"][number]> {
+  const found = await resolveDep(dep);
+  const args = RUN_ARGS[dep];
+  const run = found && args ? await runProbe(found, args) : null;
+  return {
+    dep,
+    path: found,
+    hint: INSTALL_HINTS[dep],
+    ...(run && "error" in run ? { runError: run.error } : {}),
+  };
+}
+
+export async function collectHostDepsReport(): Promise<HostDepsReport> {
   const isMac = process.platform === "darwin";
   const bundled = [bundledArtifact("simulator-server", simulatorServerBinaryPath, true)];
   if (isMac) {
@@ -175,17 +200,11 @@ export async function collectHostDepsReport(): Promise<HostDepsReport> {
   }
   bundled.push(bundledArtifact("android helper apk", bundledHelperApkPath));
 
-  let signing: HostDepsReport["signing"] = null;
-  let xcode: HostDepsReport["xcode"] = null;
-  if (isMac) {
-    xcode = await probeXcode();
-    // Only with full Xcode selected: a bare `xcrun` can pop the install dialog.
-    if (xcode.simctl) xcode = { ...xcode, ...(await probeSimulators()) };
-    const teamIdEnv = process.env.ARGENT_IOS_TEAM_ID?.trim() || null;
-    // The env var wins over the keychain, so skip the `security` call when set.
-    const detectedTeams = teamIdEnv ? 0 : (await detectSigningTeams()).length;
-    signing = { teamIdEnv, detectedTeams };
-  }
+  const [deps, xcode, signing] = await Promise.all([
+    Promise.all(REPORTED_DEPS.map(probeDep)),
+    isMac ? probeMacXcode() : null,
+    isMac ? probeSigning() : null,
+  ]);
 
   return {
     platform: process.platform,

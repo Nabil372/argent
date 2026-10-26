@@ -29,6 +29,7 @@ interface HostDepsReport {
     fromEnv?: boolean;
     simctlError?: string;
     availableSimulators?: number;
+    iosRuntimes?: number;
   } | null;
   chromiumPorts?: number[];
 }
@@ -115,6 +116,17 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
           fix: license
             ? "sudo xcodebuild -license accept"
             : "Open Xcode once to finish its setup (or run xcodebuild -runFirstLaunch)",
+        })
+      );
+    } else if (
+      xcrun?.path &&
+      report.xcode?.availableSimulators === 0 &&
+      (report.xcode.iosRuntimes ?? 0) > 0
+    ) {
+      checks.push(
+        check("warn", "iOS simulator: no available iOS simulators", {
+          detail: report.xcode.developerDir ?? undefined,
+          fix: "Create one in Xcode > Window > Devices and Simulators, or with xcrun simctl create",
         })
       );
     } else if (xcrun?.path && report.xcode?.availableSimulators === 0) {
