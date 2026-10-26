@@ -164,7 +164,9 @@ interface FormatDescribeOptions {
   source: DescribeSource;
 }
 
-const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable"]);
+// Sliders and page dots sit on the content they control. HarmonyOS wraps each
+// window in a synthetic "Window" node that is not drawn.
+const OVERLAP_SKIP_ROLES = new Set(["AXAdjustable", "PageIndicator", "Window"]);
 // Text over text is a layout quirk, not a tap trap. Lists the iOS AX roles,
 // the Android parser's roles and the DOM tags and ARIA roles of text and images.
 const PASSIVE_ROLES = new Set([
@@ -174,6 +176,7 @@ const PASSIVE_ROLES = new Set([
   "StaticText",
   "Image",
   "p",
+  "div",
   "span",
   "label",
   "strong",
@@ -182,7 +185,10 @@ const PASSIVE_ROLES = new Set([
   "i",
   "small",
   "img",
+  "figcaption",
   "svg",
+  "g",
+  "path",
   "h1",
   "h2",
   "h3",
@@ -193,11 +199,13 @@ const PASSIVE_ROLES = new Set([
   "text",
 ]);
 // A browser gives each inline run of a wrapped paragraph the box of every line
-// it spans, so neighbouring runs overlap while nothing covers anything.
+// it spans, so neighbouring runs of one parent overlap while nothing covers
+// anything. Android names a WebView link "View".
 const TEXT_RUN_ROLES = new Set([
   "AXStaticText",
   "AXLink",
   "StaticText",
+  "View",
   "a",
   "link",
   "span",
@@ -208,27 +216,38 @@ const TEXT_RUN_ROLES = new Set([
   "small",
   "code",
   "label",
+  "sup",
+  "sub",
+  "abbr",
+  "time",
+  "mark",
+  "cite",
+  "q",
+  "kbd",
 ]);
+const KEYBOARD_ROLES = new Set(["Key", "Keyboard"]);
+const KEYBOARD_ID_PATTERN = /\.inputmethod[.:]/;
 // ax-service reports UIKit scroll indicators as labelled AXGroups. They sit
 // over the content they scroll, alert button stacks included, and no scroll
 // can separate an indicator from its own content.
 const SCROLL_INDICATOR_PREFIXES = SCROLL_INDICATOR_LABELS.map((l) => l.toLowerCase());
-// A text or image inside a button is its label. A flat list also mixes leaves
-// with the groups that hold them (a tab bar and its buttons), so an element
-// well inside a group is skipped there. Any other element inside another one,
-// or inside a group of about its own size, is covered.
-const FLAT_CONTAINER_ROLES = new Set(["AXGroup", "AXTabBar"]);
-const FLAT_SAME_SIZE_RATIO = 0.8;
+const EMPTY_FRAME: DescribeFrame = { x: 0, y: 0, width: 0, height: 0 };
+const OVERLAP_MIN_ELEMENT_AREA = 0.0001;
 const OVERLAP_MAX_ELEMENT_AREA = 0.5;
 const OVERLAP_MIN_RATIO = 0.25;
 const OVERLAP_CONTAINED_RATIO = 0.95;
+const OVERLAP_SAME_FRAME_TOLERANCE = 0.002;
+const OVERLAP_PARKED_MIN = 3;
 const OVERLAP_NAME_MAX = 40;
 const OVERLAP_PARTNERS_MAX = 3;
 
 // `start`/`end` span the node's subtree in pre-order, so a pair whose ranges
-// nest is an ancestor and its descendant.
+// nest is an ancestor and its descendant. `frame` is the node's frame clipped
+// to its scrollable ancestors.
 interface OverlapCandidate {
   node: DescribeNode;
+  parent: DescribeNode;
+  frame: DescribeFrame;
   start: number;
   end: number;
 }
@@ -242,11 +261,26 @@ function frameArea(f: DescribeFrame): number {
   return f.width * f.height;
 }
 
+function intersectFrames(a: DescribeFrame, b: DescribeFrame): DescribeFrame | undefined {
+  const x = Math.max(a.x, b.x);
+  const y = Math.max(a.y, b.y);
+  const width = Math.min(a.x + a.width, b.x + b.width) - x;
+  const height = Math.min(a.y + a.height, b.y + b.height) - y;
+  return width > 0 && height > 0 ? { x, y, width, height } : undefined;
+}
+
 function overlapRatio(a: DescribeFrame, b: DescribeFrame): number {
-  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
-  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
-  if (width <= 0 || height <= 0) return 0;
-  return (width * height) / Math.min(frameArea(a), frameArea(b));
+  const shared = intersectFrames(a, b);
+  if (!shared) return 0;
+  return frameArea(shared) / Math.min(frameArea(a), frameArea(b));
+}
+
+function coversCentreOf(cover: DescribeFrame, f: DescribeFrame): boolean {
+  const cx = f.x + f.width / 2;
+  const cy = f.y + f.height / 2;
+  return (
+    cover.x <= cx && cx <= cover.x + cover.width && cover.y <= cy && cy <= cover.y + cover.height
+  );
 }
 
 function isScrollIndicator(n: DescribeNode): boolean {
@@ -254,17 +288,27 @@ function isScrollIndicator(n: DescribeNode): boolean {
   return SCROLL_INDICATOR_PREFIXES.some((prefix) => label.startsWith(prefix));
 }
 
-function isOverlapCandidate(n: DescribeNode): boolean {
+function isKeyboardKey(n: DescribeNode): boolean {
+  return KEYBOARD_ROLES.has(n.role) || KEYBOARD_ID_PATTERN.test(n.identifier ?? "");
+}
+
+function isPassive(n: DescribeNode): boolean {
+  return PASSIVE_ROLES.has(n.role) && !n.clickable;
+}
+
+function isOverlapCandidate(n: DescribeNode, frame: DescribeFrame): boolean {
   return (
     Boolean(n.label || n.identifier || n.value) &&
     !OVERLAP_SKIP_ROLES.has(n.role) &&
     !isScrollIndicator(n) &&
-    frameArea(n.frame) < OVERLAP_MAX_ELEMENT_AREA
+    frameArea(frame) >= OVERLAP_MIN_ELEMENT_AREA
   );
 }
 
-function bothIn(roles: Set<string>, a: DescribeNode, b: DescribeNode): boolean {
-  return roles.has(a.role) && roles.has(b.role);
+// Sheets, drawers and keyboard keys still cover other elements, but they are
+// on top or too large for the note to help.
+function receivesNote(c: OverlapCandidate): boolean {
+  return frameArea(c.node.frame) < OVERLAP_MAX_ELEMENT_AREA && !isKeyboardKey(c.node);
 }
 
 function originKey(n: DescribeNode): string {
@@ -272,16 +316,19 @@ function originKey(n: DescribeNode): string {
 }
 
 // ax-service parks below-the-fold rows at one shared origin where nothing is
-// drawn, so elements stacked on the same origin are dropped.
-function withoutSharedOrigins(nodes: DescribeNode[]): DescribeNode[] {
+// drawn, so a stack of elements on one origin is dropped.
+function withoutParkedRows(nodes: DescribeNode[]): DescribeNode[] {
   const counts = new Map<string, number>();
   for (const n of nodes) counts.set(originKey(n), (counts.get(originKey(n)) ?? 0) + 1);
-  return nodes.filter((n) => counts.get(originKey(n)) === 1);
+  return nodes.filter((n) => counts.get(originKey(n))! < OVERLAP_PARKED_MIN);
 }
 
 function flatCandidates(root: DescribeNode): OverlapCandidate[] {
-  return withoutSharedOrigins(root.children.filter(isOverlapCandidate)).map((node, i) => ({
+  const nodes = root.children.filter((n) => isOverlapCandidate(n, n.frame));
+  return withoutParkedRows(nodes).map((node, i) => ({
     node,
+    parent: root,
+    frame: node.frame,
     start: i,
     end: i,
   }));
@@ -289,7 +336,14 @@ function flatCandidates(root: DescribeNode): OverlapCandidate[] {
 
 interface CandidateWalkEntry {
   node: DescribeNode;
+  parent: DescribeNode;
+  clip?: DescribeFrame;
   closes?: OverlapCandidate;
+}
+
+function childClip(node: DescribeNode, clip: DescribeFrame | undefined): DescribeFrame | undefined {
+  if (!node.scrollable) return clip;
+  return clip ? (intersectFrames(clip, node.frame) ?? EMPTY_FRAME) : node.frame;
 }
 
 function nestedCandidates(root: DescribeNode): OverlapCandidate[] {
@@ -297,82 +351,114 @@ function nestedCandidates(root: DescribeNode): OverlapCandidate[] {
   const stack: CandidateWalkEntry[] = root.children
     .slice()
     .reverse()
-    .map((node) => ({ node }));
+    .map((node) => ({ node, parent: root }));
   let index = 0;
   while (stack.length > 0) {
-    const { node, closes } = stack.pop()!;
+    const { node, parent, clip, closes } = stack.pop()!;
     if (closes) {
       closes.end = index - 1;
       continue;
     }
     const start = index++;
-    if (isOverlapCandidate(node)) {
-      const candidate = { node, start, end: start };
+    const frame = clip ? intersectFrames(node.frame, clip) : node.frame;
+    if (frame && isOverlapCandidate(node, frame)) {
+      const candidate = { node, parent, frame, start, end: start };
       candidates.push(candidate);
-      stack.push({ node, closes: candidate });
+      stack.push({ node, parent, closes: candidate });
     }
+    const nextClip = childClip(node, clip);
     for (let i = node.children.length - 1; i >= 0; i--) {
-      stack.push({ node: node.children[i]! });
+      stack.push({ node: node.children[i]!, parent: node, clip: nextClip });
     }
   }
   return candidates;
-}
-
-function oneHoldsTheOther(a: DescribeNode, b: DescribeNode, mode: RenderMode): boolean {
-  const [inner, outer] = frameArea(a.frame) <= frameArea(b.frame) ? [a, b] : [b, a];
-  if (PASSIVE_ROLES.has(inner.role)) return true;
-  const sizeRatio = frameArea(inner.frame) / frameArea(outer.frame);
-  return (
-    mode === "flat" && FLAT_CONTAINER_ROLES.has(outer.role) && sizeRatio < FLAT_SAME_SIZE_RATIO
-  );
 }
 
 function isAncestorPair(a: OverlapCandidate, b: OverlapCandidate): boolean {
   return (a.start <= b.start && b.start <= a.end) || (b.start <= a.start && a.start <= b.end);
 }
 
-function overlapName(n: DescribeNode): string {
-  // Cut by code point: a lone surrogate left by a UTF-16 slice makes strict
-  // JSON parsers reject the whole MCP message.
-  const raw = Array.from(n.label || n.identifier || n.value || n.role)
-    .slice(0, OVERLAP_NAME_MAX)
-    .join("");
-  return `"${escapeForLine(raw).replace(/"/g, "'")}"`;
+function isSameElement(a: OverlapCandidate, b: OverlapCandidate): boolean {
+  const close = (x: number, y: number) => Math.abs(x - y) <= OVERLAP_SAME_FRAME_TOLERANCE;
+  const fa = a.node.frame;
+  const fb = b.node.frame;
+  return (
+    a.node.role === b.node.role &&
+    overlapName(a.node) === overlapName(b.node) &&
+    close(fa.x, fb.x) &&
+    close(fa.y, fb.y) &&
+    close(fa.width, fb.width) &&
+    close(fa.height, fb.height)
+  );
 }
 
-// Overlapping elements (a tab bar over a list row) carry no stacking order in
-// the element list, so a tap at either centre may hit the other. Ancestors
-// overlap their descendants by design, so those pairs are skipped.
-function overlapNotes(candidates: OverlapCandidate[], mode: RenderMode): Map<DescribeNode, string> {
+function isRunOfOneParagraph(a: OverlapCandidate, b: OverlapCandidate): boolean {
+  return (
+    a.parent === b.parent && TEXT_RUN_ROLES.has(a.node.role) && TEXT_RUN_ROLES.has(b.node.role)
+  );
+}
+
+// A control inside its own row or field is drawn over it, so a pair where one
+// element lies wholly inside the other is skipped.
+function canCover(a: OverlapCandidate, b: OverlapCandidate, ratio: number): boolean {
+  return (
+    ratio > OVERLAP_MIN_RATIO &&
+    ratio < OVERLAP_CONTAINED_RATIO &&
+    !isAncestorPair(a, b) &&
+    !isSameElement(a, b) &&
+    !(isPassive(a.node) && isPassive(b.node)) &&
+    !isRunOfOneParagraph(a, b)
+  );
+}
+
+// Android resource ids repeat the package before the name.
+function shortIdentifier(id: string): string {
+  return id.slice(id.lastIndexOf("/") + 1) || id;
+}
+
+function overlapNameParts(n: DescribeNode): [string, string] {
+  if (n.label) return ["", n.label];
+  if (n.identifier) return ["id=", shortIdentifier(n.identifier)];
+  if (n.value) return ["value=", n.value];
+  return ["", n.role];
+}
+
+function overlapName(n: DescribeNode): string {
+  const [prefix, raw] = overlapNameParts(n);
+  // Cut by code point: a lone surrogate left by a UTF-16 slice makes strict
+  // JSON parsers reject the whole MCP message.
+  const cut = Array.from(raw).slice(0, OVERLAP_NAME_MAX).join("");
+  return `${prefix}"${escapeForLine(cut).replace(/"/g, "'")}"`;
+}
+
+// The element list carries no stacking order, so a tap at an element's centre
+// may hit another element that covers that centre (a tab bar over a list row).
+function overlapNotes(candidates: OverlapCandidate[]): Map<DescribeNode, string> {
   const partners = new Map<DescribeNode, OverlapPartner[]>();
-  const addPartner = (self: DescribeNode, other: DescribeNode, ratio: number) => {
-    const list = partners.get(self) ?? [];
-    list.push({ other, ratio });
-    partners.set(self, list);
+  const addPartnerIfCentreCovered = (
+    self: OverlapCandidate,
+    other: OverlapCandidate,
+    ratio: number
+  ) => {
+    if (!receivesNote(self) || !coversCentreOf(other.frame, self.frame)) return;
+    const list = partners.get(self.node) ?? [];
+    list.push({ other: other.node, ratio });
+    partners.set(self.node, list);
   };
 
   candidates.forEach((first, i) => {
     for (const second of candidates.slice(i + 1)) {
-      if (isAncestorPair(first, second)) continue;
-      const a = first.node;
-      const b = second.node;
-      const ratio = overlapRatio(a.frame, b.frame);
-      if (ratio <= OVERLAP_MIN_RATIO) continue;
-      if (ratio >= OVERLAP_CONTAINED_RATIO && oneHoldsTheOther(a, b, mode)) continue;
-      if (bothIn(PASSIVE_ROLES, a, b) || bothIn(TEXT_RUN_ROLES, a, b)) continue;
-      addPartner(a, b, ratio);
-      addPartner(b, a, ratio);
+      const ratio = overlapRatio(first.frame, second.frame);
+      if (!canCover(first, second, ratio)) continue;
+      addPartnerIfCentreCovered(first, second, ratio);
+      addPartnerIfCentreCovered(second, first, ratio);
     }
   });
 
   const notes = new Map<DescribeNode, string>();
   for (const [self, list] of partners) {
-    // Largest overlap first, so separating the named elements clears the worst one.
-    const names = list
-      .sort((x, y) => y.ratio - x.ratio)
-      .slice(0, OVERLAP_PARTNERS_MAX)
-      .map((p) => overlapName(p.other))
-      .join(", ");
+    const ranked = list.sort((x, y) => y.ratio - x.ratio).map((p) => overlapName(p.other));
+    const names = [...new Set(ranked)].slice(0, OVERLAP_PARTNERS_MAX).join(", ");
     notes.set(self, `overlaps ${names}: either may be on top, check a screenshot before tapping`);
   }
   return notes;
@@ -428,7 +514,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
   // Vega has no tap, so the note's advice does not apply there.
   const notes = isVega
     ? new Map<DescribeNode, string>()
-    : overlapNotes(mode === "flat" ? flatCandidates(root) : nestedCandidates(root), mode);
+    : overlapNotes(mode === "flat" ? flatCandidates(root) : nestedCandidates(root));
   const body =
     mode === "flat"
       ? renderFlat(root, contentRoles, opts.source, notes)
