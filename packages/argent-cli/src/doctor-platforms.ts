@@ -1,7 +1,10 @@
+import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { homedir } from "node:os";
 import { getConfigValueAtScope } from "@argent/configuration-core";
 import { type ToolsServerPaths } from "@argent/tools-client";
+import { formatShellCommand, probeLocalInstall } from "@argent/installer";
 import {
   type DoctorCheck,
   type DoctorContext,
@@ -10,6 +13,7 @@ import {
   check,
   childFailureReason,
   home,
+  samePath,
 } from "./doctor-shared.js";
 
 const execFileAsync = promisify(execFile);
@@ -32,14 +36,21 @@ interface HostDepsReport {
     iosRuntimes?: number;
   } | null;
   chromiumPorts?: number[];
+  kvmProblem?: string | null;
 }
 
 const DEPS_PROBE_TIMEOUT_MS = 30_000;
 
-async function probeHostDeps(paths: ToolsServerPaths): Promise<HostDepsReport | string> {
+const RESTART_NOTE =
+  "a running tool-server keeps the environment it started with, so stop it (argent server stop) after changing the variable";
+
+export async function probeHostDeps(
+  paths: ToolsServerPaths,
+  timeoutMs = DEPS_PROBE_TIMEOUT_MS
+): Promise<HostDepsReport | string> {
   try {
     const { stdout } = await execFileAsync(process.execPath, [paths.bundlePath, "--check-deps"], {
-      timeout: DEPS_PROBE_TIMEOUT_MS,
+      timeout: timeoutMs,
       env: {
         ...process.env,
         ARGENT_SIMULATOR_SERVER_DIR: paths.simulatorServerDir,
@@ -48,7 +59,7 @@ async function probeHostDeps(paths: ToolsServerPaths): Promise<HostDepsReport | 
     });
     return JSON.parse(stdout) as HostDepsReport;
   } catch (err) {
-    return depsProbeFailure(err);
+    return depsProbeFailure(err, timeoutMs);
   }
 }
 
@@ -60,18 +71,45 @@ export function depsProbeFix(failure: string, reinstall: string): string {
 }
 
 /** Why `--check-deps` failed. Only execFile's own timeout kill sets `killed`. */
-export function depsProbeFailure(err: unknown): string {
+export function depsProbeFailure(err: unknown, timeoutMs = DEPS_PROBE_TIMEOUT_MS): string {
   const { stderr, killed, signal } = err as {
     stderr?: unknown;
     killed?: boolean;
     signal?: string | null;
   };
   if (killed) {
-    return `timed out after ${DEPS_PROBE_TIMEOUT_MS / 1000}s (${signal ?? "killed"})`;
+    return `timed out after ${timeoutMs / 1000}s (${signal ?? "killed"})`;
   }
   const fallback = err instanceof Error ? err.message.split("\n")[0]! : String(err);
   const reason = childFailureReason(typeof stderr === "string" ? stderr : "", fallback);
   return signal ? `killed by ${signal}: ${reason}` : reason;
+}
+
+// runProbe's message for a binary that did not answer in time.
+const isHang = (runError: string) => /timed out$/.test(runError);
+
+function simctlFailure(simctlError: string): DoctorCheck {
+  const fix = isHang(simctlError)
+    ? "Restart CoreSimulator (sudo killall -9 com.apple.CoreSimulator.CoreSimulatorService), then run doctor again"
+    : /license/i.test(simctlError)
+      ? "sudo xcodebuild -license accept"
+      : "Open Xcode once to finish its setup (or run xcodebuild -runFirstLaunch)";
+  return check("error", "iOS simulator: simctl fails to run", { detail: simctlError, fix });
+}
+
+/** The env var the tool-server's resolver read adb's SDK root from, if any. */
+function androidRootFromEnv(adbPath: string): string | null {
+  for (const name of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
+    const root = process.env[name];
+    if (root && adbPath.startsWith(path.join(root, path.sep))) return name;
+  }
+  return null;
+}
+
+function kvmFix(problem: string): string {
+  return /missing/.test(problem)
+    ? "Enable virtualization (VT-x/AMD-V) and load the kvm module (modprobe kvm_intel or kvm_amd)"
+    : "sudo usermod -aG kvm $USER, then log in again";
 }
 
 export function platformChecks(report: HostDepsReport, reinstall: string): DoctorCheck[] {
@@ -89,6 +127,8 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   }
   const bundleOk = (names: string[]) => !brokenBundle.some((b) => names.includes(b.name));
   let usable = 0;
+  // Installed but failing: the toolchain is there, so "install it" is the wrong advice.
+  let present = 0;
 
   if (report.platform !== "darwin") {
     checks.push(check("info", "iOS simulator: requires a macOS host"));
@@ -98,6 +138,7 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
     // with simctl (full Xcode, not just the Command Line Tools).
     const noSimctl = report.xcode != null && !report.xcode.simctl;
     const fromEnv = report.xcode?.fromEnv === true;
+    const simctlError = report.xcode?.simctlError;
     if (xcrun?.path && noSimctl) {
       const dir = report.xcode?.developerDir ?? "xcode-select -p failed";
       checks.push(
@@ -108,21 +149,15 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
             : "Install Xcode, then sudo xcode-select -s /Applications/Xcode.app",
         })
       );
-    } else if (xcrun?.path && report.xcode?.simctlError) {
-      const license = /license/i.test(report.xcode.simctlError);
-      checks.push(
-        check("error", "iOS simulator: simctl fails to run", {
-          detail: report.xcode.simctlError,
-          fix: license
-            ? "sudo xcodebuild -license accept"
-            : "Open Xcode once to finish its setup (or run xcodebuild -runFirstLaunch)",
-        })
-      );
+    } else if (xcrun?.path && simctlError) {
+      present++;
+      checks.push(simctlFailure(simctlError));
     } else if (
       xcrun?.path &&
       report.xcode?.availableSimulators === 0 &&
       (report.xcode.iosRuntimes ?? 0) > 0
     ) {
+      present++;
       checks.push(
         check("warn", "iOS simulator: no available iOS simulators", {
           detail: report.xcode.developerDir ?? undefined,
@@ -130,6 +165,7 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
         })
       );
     } else if (xcrun?.path && report.xcode?.availableSimulators === 0) {
+      present++;
       checks.push(
         check("warn", "iOS simulator: no available simulators (no iOS runtime installed?)", {
           detail: report.xcode.developerDir ?? undefined,
@@ -160,6 +196,13 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
           fix: "Install Xcode and select it as the developer dir (see iOS simulator above)",
         })
       );
+    } else if (simctlError && /license/i.test(simctlError)) {
+      // xcodebuild and devicectl stop at the same license gate.
+      checks.push(
+        check("info", "Physical iPhone: blocked until the Xcode license is accepted", {
+          fix: "sudo xcodebuild -license accept",
+        })
+      );
     } else if (signing?.teamIdEnv) {
       checks.push(
         check("ok", `Physical iPhone: signing team ${signing.teamIdEnv} (ARGENT_IOS_TEAM_ID)`, {
@@ -183,7 +226,16 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   const adb = dep("adb");
   const emulator = dep("emulator");
   // Android device tools drive the emulator through simulator-server too.
-  if (adb?.path && adb.runError) {
+  if (adb?.path && adb.runError && isHang(adb.runError)) {
+    present++;
+    checks.push(
+      check("error", "Android: adb does not answer", {
+        detail: `${home(adb.path)}: ${adb.runError}`,
+        fix: "Run adb kill-server, then doctor again",
+      })
+    );
+  } else if (adb?.path && adb.runError) {
+    present++;
     checks.push(
       check("error", "Android: adb fails to run", {
         detail: `${home(adb.path)}: ${adb.runError}`,
@@ -194,7 +246,14 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
     checks.push(check("info", "Android: unavailable until the bundled simulator-server works"));
   } else if (adb?.path) {
     usable++;
-    checks.push(check("ok", "Android", { detail: `adb at ${home(adb.path)}` }));
+    const envName = androidRootFromEnv(adb.path);
+    checks.push(
+      check("ok", "Android", {
+        detail: envName
+          ? `adb at ${home(adb.path)}, found through ${envName} in this shell; ${RESTART_NOTE}`
+          : `adb at ${home(adb.path)}`,
+      })
+    );
     if (emulator?.path && emulator.runError) {
       checks.push(
         check("warn", "Android emulator binary fails to run (can't boot AVDs)", {
@@ -206,6 +265,13 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
       checks.push(
         check("info", "Android emulator binary not found (can't boot AVDs)", {
           fix: emulator?.hint,
+        })
+      );
+    } else if (report.kvmProblem) {
+      checks.push(
+        check("warn", "Android emulator: no KVM acceleration (boots slowly or not at all)", {
+          detail: report.kvmProblem,
+          fix: kvmFix(report.kvmProblem),
         })
       );
     }
@@ -240,8 +306,8 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   );
 
   // Chromium / Electron need nothing installed, so this is not a failure. A
-  // broken bundle is reported above with its own fix.
-  if (usable === 0 && brokenBundle.length === 0) {
+  // broken bundle or toolchain is reported above with its own fix.
+  if (usable === 0 && present === 0 && brokenBundle.length === 0) {
     checks.unshift(
       check("warn", "No mobile platform toolchain found: only Chromium / Electron apps work", {
         fix:
@@ -254,6 +320,10 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   return checks;
 }
 
+function expandHome(value: string): string {
+  return path.resolve(value.replace(/^~(?=$|[\\/])/, homedir()));
+}
+
 /**
  * The shared tool-server reads config from the directory it was started in, so
  * a project-only android.sdkRoot is invisible to a server started elsewhere.
@@ -261,11 +331,45 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
 export function sdkRootCheck(cwd: string, argentCmd: string): DoctorCheck | null {
   const projectValue = getConfigValueAtScope("android.sdkRoot", "project", { cwd });
   const globalValue = getConfigValueAtScope("android.sdkRoot", "global", { cwd });
-  if (typeof projectValue !== "string" || projectValue === globalValue) return null;
+  if (typeof projectValue !== "string") return null;
+  if (typeof globalValue === "string") {
+    if (expandHome(projectValue) === expandHome(globalValue)) return null;
+    return check("warn", "android.sdkRoot here differs from the global one", {
+      detail: `project ${projectValue}, global ${globalValue}: a tool-server started from another directory uses the global one`,
+      fix: "Point both at the same SDK, or stop the tool-server before using this project",
+    });
+  }
   return check("warn", "android.sdkRoot is set only for this project", {
     detail: "the tool-server is shared, and one started from another directory won't see it",
-    fix: `${argentCmd} config set android.sdkRoot ${projectValue} --scope global`,
+    fix: formatShellCommand({
+      bin: argentCmd,
+      args: ["config", "set", "android.sdkRoot", projectValue, "--scope", "global"],
+    }),
   });
+}
+
+/**
+ * The tool-server the project's entries start. In a local-mode project they run
+ * the project's copy, which a global argent running doctor would not check.
+ */
+function projectToolServer(
+  ctx: DoctorContext,
+  paths: ToolsServerPaths
+): { paths: ToolsServerPaths; packageDir: string } | null {
+  if (ctx.mode !== "local" || paths.installKind === "local") return null;
+  const { packageDir } = probeLocalInstall(ctx.projectRoot);
+  if (!packageDir || samePath(packageDir, path.dirname(path.dirname(paths.bundlePath)))) {
+    return null;
+  }
+  return {
+    packageDir,
+    paths: {
+      ...paths,
+      bundlePath: path.join(packageDir, "dist", "tool-server.cjs"),
+      simulatorServerDir: path.join(packageDir, "bin"),
+      nativeDevtoolsDir: path.join(packageDir, "dylibs"),
+    },
+  };
 }
 
 export async function platformsSection(
@@ -281,14 +385,29 @@ export async function platformsSection(
       : "the tool-server every editor entry's ARGENT_TOOLS_URL points at";
     return { title: "Platforms", checks: [check("info", `Skipped: device tools run on ${where}`)] };
   }
-  const report = await probeHostDeps(paths);
+  const local = projectToolServer(ctx, paths);
+  const checked = local?.paths ?? paths;
+  const reinstallChecked = local
+    ? ctx.installCmd.startsWith("pnpm")
+      ? "Reinstall argent: pnpm install --force"
+      : `Reinstall argent: delete ${home(local.packageDir)}, then ${ctx.installCmd}`
+    : reinstall;
+  const source = local
+    ? [
+        check("info", "Checked the project's local argent, which its editor entries start", {
+          detail: home(local.packageDir),
+        }),
+      ]
+    : [];
+  const report = await probeHostDeps(checked);
   if (typeof report === "string") {
     return {
       title: "Platforms",
       checks: [
+        ...source,
         check("error", "Could not run the bundled tool-server's dependency check", {
           detail: report,
-          fix: depsProbeFix(report, reinstall),
+          fix: depsProbeFix(report, reinstallChecked),
         }),
       ],
     };
@@ -296,6 +415,6 @@ export async function platformsSection(
   const sdkRoot = sdkRootCheck(ctx.cwd, ctx.argentCmd);
   return {
     title: "Platforms",
-    checks: [...platformChecks(report, reinstall), ...(sdkRoot ? [sdkRoot] : [])],
+    checks: [...source, ...platformChecks(report, reinstallChecked), ...(sdkRoot ? [sdkRoot] : [])],
   };
 }

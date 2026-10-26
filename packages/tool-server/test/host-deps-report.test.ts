@@ -94,6 +94,8 @@ const signing = vi.hoisted(() => ({ detect: async (): Promise<unknown[]> => [{ t
 vi.mock("../src/utils/ios-device/team-detect", () => ({
   detectSigningTeams: () => signing.detect(),
 }));
+const kvm = vi.hoisted(() => ({ problem: [] as string[] | null }));
+vi.mock("../src/utils/linux-preflight", () => ({ linuxBootDiagnostics: () => kvm.problem }));
 vi.mock("../src/utils/chromium-discovery", () => ({
   getCandidateChromiumPorts: () => [9222, 9333],
 }));
@@ -315,6 +317,15 @@ describe("collectHostDepsReport", () => {
       path: null,
       error: "simulator-server not found in the package",
     });
+  });
+
+  it("reports the KVM preflight on Linux only", async () => {
+    kvm.problem = ["/dev/kvm is missing — KVM module is not loaded"];
+    expect((await reportOn("linux")).kvmProblem).toMatch(/\/dev\/kvm is missing/);
+    kvm.problem = [];
+    expect((await reportOn("linux")).kvmProblem).toBeNull();
+    kvm.problem = null;
+    expect((await reportOn("darwin")).kvmProblem).toBeNull();
   });
 
   it("reports a bundled artifact that is gone", async () => {

@@ -16,6 +16,7 @@ import { resolveVegaBinary } from "./vega-cli";
 import { commandOnPath } from "./command-on-path";
 import { getCandidateChromiumPorts } from "./chromium-discovery";
 import { detectSigningTeams } from "./ios-device/team-detect";
+import { linuxBootDiagnostics } from "./linux-preflight";
 
 /**
  * What `tool-server --check-deps` prints for `argent doctor`. The probes are the
@@ -48,6 +49,8 @@ interface HostDepsReport {
   } | null;
   /** CDP ports Chromium discovery probes. */
   chromiumPorts: number[];
+  /** Linux: why the emulator can't use KVM (boot-device's own preflight). Null when it can, or off Linux. */
+  kvmProblem: string | null;
 }
 
 const execFileAsync = promisify(execFile);
@@ -213,5 +216,6 @@ export async function collectHostDepsReport(): Promise<HostDepsReport> {
     signing,
     xcode,
     chromiumPorts: getCandidateChromiumPorts(),
+    kvmProblem: linuxBootDiagnostics()?.[0] ?? null,
   };
 }

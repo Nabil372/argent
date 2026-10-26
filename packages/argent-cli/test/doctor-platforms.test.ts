@@ -6,9 +6,11 @@ import {
   depsProbeFailure,
   depsProbeFix,
   platformChecks,
+  platformsSection,
+  probeHostDeps,
   sdkRootCheck,
 } from "../src/doctor-platforms.js";
-import { childFailureReason } from "../src/doctor-shared.js";
+import { type DoctorContext, childFailureReason } from "../src/doctor-shared.js";
 
 let projectRoot: string;
 
@@ -123,7 +125,7 @@ describe("platformChecks", () => {
       "reinstall"
     );
     expect(checks.find((c) => c.label.startsWith("Vega"))?.status).toBe("warn");
-    expect(checks[0]?.label).toMatch(/No mobile platform toolchain found/);
+    expect(checks.some((c) => /No mobile platform toolchain found/.test(c.label))).toBe(false);
   });
 
   it("names the team from ARGENT_IOS_TEAM_ID", () => {
@@ -380,6 +382,356 @@ describe("platformChecks details", () => {
     expect(checks.find((c) => c.label.startsWith("Physical iPhone"))?.fix).toMatch(
       /Manage Certificates > \+ > Apple Development/
     );
+  });
+});
+
+describe("platformChecks for a toolchain that is there but fails", () => {
+  const xcode = { developerDir: "/Applications/Xcode.app/Contents/Developer", simctl: true };
+  const deps = (adb: Partial<HostDeps["deps"][number]> | null, emulator: string | null = null) => [
+    { dep: "xcrun", path: "/usr/bin/xcrun", hint: "install xcode" },
+    { dep: "adb", path: null, hint: "install adb", ...adb },
+    { dep: "emulator", path: emulator, hint: "install emulator" },
+    { dep: "vega", path: null, hint: "install vega" },
+  ];
+  const ios = (checks: ReturnType<typeof platformChecks>) =>
+    checks.find((c) => c.label.startsWith("iOS simulator"));
+  const banner = (checks: ReturnType<typeof platformChecks>) =>
+    checks.some((c) => /No mobile platform toolchain/.test(c.label));
+
+  it("treats a simctl hang as a stuck CoreSimulator, and other failures as setup", () => {
+    const hang = platformChecks(
+      hostDeps({
+        xcode: { ...xcode, simctlError: "`xcrun simctl list devices --json` timed out" },
+      }),
+      "r"
+    );
+    expect(ios(hang)).toMatchObject({
+      status: "error",
+      detail: "`xcrun simctl list devices --json` timed out",
+      fix: expect.stringMatching(/CoreSimulatorService/),
+    });
+    const other = platformChecks(
+      hostDeps({ xcode: { ...xcode, simctlError: "Unable to locate device set." } }),
+      "r"
+    );
+    expect(ios(other)?.fix).toMatch(/runFirstLaunch/);
+  });
+
+  it("holds back the physical iPhone until the Xcode license is accepted", () => {
+    const checks = platformChecks(
+      hostDeps({
+        xcode: { ...xcode, simctlError: "You have not agreed to the Xcode license agreements." },
+        signing: { teamIdEnv: "ABCDE12345", detectedTeams: 0 },
+      }),
+      "r"
+    );
+    expect(checks.find((c) => c.label.startsWith("Physical iPhone"))).toMatchObject({
+      status: "info",
+      fix: "sudo xcodebuild -license accept",
+    });
+  });
+
+  it("does not tell a Mac with a failing or empty Xcode to install Xcode", () => {
+    for (const x of [
+      { ...xcode, simctlError: "You have not agreed to the Xcode license agreements." },
+      { ...xcode, simctlError: "`xcrun simctl list devices --json` timed out" },
+      { ...xcode, availableSimulators: 0 },
+    ]) {
+      expect(banner(platformChecks(hostDeps({ xcode: x, deps: deps(null) }), "r"))).toBe(false);
+    }
+    const empty = platformChecks(hostDeps({ xcode: { ...xcode, availableSimulators: 0 } }), "r");
+    expect(ios(empty)?.status).toBe("warn");
+  });
+
+  it("treats an adb hang as a stuck server, not a broken binary", () => {
+    const checks = platformChecks(
+      hostDeps({
+        platform: "linux",
+        signing: null,
+        xcode: null,
+        deps: deps({ path: "/sdk/adb", runError: "`adb version` timed out" }),
+      }),
+      "r"
+    );
+    expect(checks.find((c) => c.label.startsWith("Android"))).toMatchObject({
+      status: "error",
+      fix: expect.stringMatching(/adb kill-server/),
+    });
+    expect(banner(checks)).toBe(false);
+  });
+
+  it("counts a working adb as a platform, and reports the emulator binary", () => {
+    const linux = (emulator: Partial<HostDeps["deps"][number]>) =>
+      platformChecks(
+        hostDeps({
+          platform: "linux",
+          signing: null,
+          xcode: null,
+          deps: [
+            { dep: "xcrun", path: null, hint: "x" },
+            { dep: "adb", path: "/sdk/adb", hint: "install adb" },
+            { dep: "emulator", path: null, hint: "install emulator", ...emulator },
+            { dep: "vega", path: null, hint: "install vega" },
+          ],
+        }),
+        "r"
+      );
+    const emulatorRow = (checks: ReturnType<typeof platformChecks>) =>
+      checks.find((c) => c.label.startsWith("Android emulator"));
+    const missing = linux({});
+    expect(banner(missing)).toBe(false);
+    expect(emulatorRow(missing)).toMatchObject({ status: "info", fix: "install emulator" });
+    const failing = linux({ path: "/sdk/emulator", runError: "bad CPU type" });
+    expect(emulatorRow(failing)).toMatchObject({
+      status: "warn",
+      detail: "/sdk/emulator: bad CPU type",
+    });
+    expect(emulatorRow(linux({ path: "/sdk/emulator" }))).toBeUndefined();
+  });
+
+  it("warns when the emulator can't use KVM", () => {
+    const checks = platformChecks(
+      hostDeps({
+        platform: "linux",
+        signing: null,
+        xcode: null,
+        kvmProblem: "/dev/kvm exists but is not readable/writable by this user (code=EACCES).",
+      }),
+      "r"
+    );
+    expect(checks.find((c) => /KVM/.test(c.label))).toMatchObject({
+      status: "warn",
+      fix: expect.stringMatching(/usermod -aG kvm/),
+    });
+  });
+
+  it("counts a working Xcode without adb as a platform", () => {
+    const checks = platformChecks(hostDeps({ deps: deps(null) }), "r");
+    expect(banner(checks)).toBe(false);
+    expect(ios(checks)?.status).toBe("ok");
+  });
+
+  it("needs only simulator-server for Android", () => {
+    const checks = platformChecks(
+      hostDeps({ bundled: [{ name: "ax-service", path: null, error: "not found: /x" }] }),
+      "r"
+    );
+    expect(checks.find((c) => c.label.startsWith("Android"))?.status).toBe("ok");
+    expect(ios(checks)?.status).toBe("info");
+  });
+
+  it("notes that a running tool-server won't see an ANDROID_HOME set in this shell", () => {
+    vi.stubEnv("ANDROID_HOME", "/sdk");
+    try {
+      const android = platformChecks(
+        hostDeps({ deps: deps({ path: "/sdk/platform-tools/adb" }) }),
+        "r"
+      ).find((c) => c.label === "Android");
+      expect(android?.detail).toMatch(/ANDROID_HOME.*argent server stop/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps each row's detail, hint and severity", () => {
+    const checks = platformChecks(
+      hostDeps({
+        bundled: [{ name: "simulator-server", path: null, error: "not found: /pkg/s" }],
+        deps: [
+          { dep: "xcrun", path: null, hint: "install xcode" },
+          { dep: "adb", path: null, hint: "install adb" },
+          { dep: "emulator", path: null, hint: "x" },
+          { dep: "vega", path: null, hint: "install vega" },
+        ],
+      }),
+      "r"
+    );
+    expect(checks[0]?.detail).toBe("not found: /pkg/s");
+    expect(ios(checks)).toMatchObject({ status: "info", fix: "install xcode" });
+    expect(checks.find((c) => c.label.startsWith("Android"))).toMatchObject({
+      status: "info",
+      fix: "install adb",
+    });
+    const brokenAndroid = platformChecks(
+      hostDeps({ bundled: [{ name: "simulator-server", path: null, error: "not found" }] }),
+      "r"
+    );
+    expect(brokenAndroid.find((c) => c.label.startsWith("Android"))?.status).toBe("info");
+    expect(ios(brokenAndroid)?.status).toBe("info");
+    const adbError = platformChecks(
+      hostDeps({ deps: deps({ path: "/sdk/adb", runError: "bad CPU type" }) }),
+      "r"
+    ).find((c) => c.label.startsWith("Android"));
+    expect(adbError?.detail).toBe("/sdk/adb: bad CPU type");
+    const team = (signing: HostDeps["signing"]) =>
+      platformChecks(hostDeps({ signing }), "r").find((c) => c.label.startsWith("Physical iPhone"))
+        ?.status;
+    expect(team({ teamIdEnv: "T", detectedTeams: 0 })).toBe("ok");
+    expect(team({ teamIdEnv: null, detectedTeams: 2 })).toBe("ok");
+    expect(team({ teamIdEnv: null, detectedTeams: 0 })).toBe("info");
+  });
+});
+
+describe("sdkRootCheck against the global value", () => {
+  let home: string;
+  let app: string;
+  const write = (file: string, sdkRoot: string) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ android: { sdkRoot } }));
+  };
+
+  beforeEach(() => {
+    home = path.join(projectRoot, "home");
+    app = path.join(projectRoot, "app");
+    fs.mkdirSync(home);
+    fs.mkdirSync(path.join(app, ".git"), { recursive: true });
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+  });
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("is quiet once the global value matches, in either spelling of ~", () => {
+    write(path.join(app, ".argent", "config.json"), "~/Library/Android/sdk");
+    write(path.join(home, ".argent", "config.json"), path.join(home, "Library/Android/sdk"));
+    expect(sdkRootCheck(app, "argent")).toBeNull();
+  });
+
+  it("does not offer to overwrite a different global value", () => {
+    write(path.join(app, ".argent", "config.json"), "/opt/sdk-proj");
+    write(path.join(home, ".argent", "config.json"), "/opt/sdk-global");
+    const result = sdkRootCheck(app, "argent");
+    expect(result?.label).toMatch(/differs from the global one/);
+    expect(result?.fix).not.toMatch(/--scope global/);
+  });
+
+  it("quotes a path with a space and uses the given argent command", () => {
+    write(path.join(app, ".argent", "config.json"), "/opt/my sdk");
+    expect(sdkRootCheck(app, "npx argent")?.fix).toBe(
+      'npx argent config set android.sdkRoot "/opt/my sdk" --scope global'
+    );
+  });
+});
+
+describe("platformsSection", () => {
+  let dir: string;
+  const ctx = (): DoctorContext => ({
+    projectRoot: dir,
+    cwd: dir,
+    mode: "global",
+    global: null,
+    argentCmd: "argent",
+    installCmd: "npm install",
+    offPathGlobalBin: null,
+  });
+  const noLink = { url: null, source: "none" as const };
+  // A stand-in tool-server bundle: answers --check-deps with a report built
+  // from its environment, and anything else with a usage error.
+  const fakeBundle = (body = "") => {
+    const file = path.join(dir, "tool-server.cjs");
+    fs.writeFileSync(
+      file,
+      `if (!process.argv.includes("--check-deps")) { console.error("Usage: tool-server <command>"); process.exit(2); }
+${body}
+console.log(JSON.stringify({
+  platform: "linux", signing: null, xcode: null, bundled: [],
+  deps: [{ dep: "adb", path: process.env.ARGENT_TEST_ADB || null, hint: "install adb" }],
+}));`
+    );
+    return { bundlePath: file, simulatorServerDir: dir, nativeDevtoolsDir: dir };
+  };
+
+  beforeEach(() => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "argent-doctor-platforms-")));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("skips device checks when linked to a remote tool-server", async () => {
+    const section = await platformsSection(
+      ctx(),
+      fakeBundle(),
+      { url: "http://x:1", source: "env" },
+      "r"
+    );
+    expect(section.checks).toEqual([
+      { status: "info", label: "Skipped: device tools run on the linked tool-server's host" },
+    ]);
+  });
+
+  it("runs --check-deps with this shell's environment", async () => {
+    vi.stubEnv("ARGENT_TEST_ADB", "/from/env/adb");
+    const section = await platformsSection(ctx(), fakeBundle(), noLink, "r");
+    expect(section.checks.find((c) => c.label === "Android")?.detail).toBe("adb at /from/env/adb");
+  });
+
+  it("fails when the dependency check can't run, with its reason and fix", async () => {
+    const section = await platformsSection(
+      ctx(),
+      fakeBundle("process.exit(3);"),
+      noLink,
+      "reinstall"
+    );
+    expect(section.checks).toEqual([
+      expect.objectContaining({
+        status: "error",
+        label: "Could not run the bundled tool-server's dependency check",
+        detail: expect.stringMatching(/Command failed/),
+        fix: "reinstall",
+      }),
+    ]);
+  });
+
+  it("gives up on a hung dependency check, without suggesting a reinstall", async () => {
+    const paths = fakeBundle("setTimeout(() => {}, 60_000);");
+    const failure = await probeHostDeps(paths, 300);
+    expect(failure).toMatch(/^timed out after 0.3s/);
+    expect(depsProbeFix(failure as string, "reinstall")).toMatch(/Run doctor again/);
+  });
+
+  it("adds the android.sdkRoot check to a successful report", async () => {
+    const home = path.join(dir, "home");
+    fs.mkdirSync(home);
+    vi.stubEnv("HOME", home);
+    vi.stubEnv("USERPROFILE", home);
+    fs.mkdirSync(path.join(dir, ".git"));
+    fs.mkdirSync(path.join(dir, ".argent"));
+    fs.writeFileSync(
+      path.join(dir, ".argent", "config.json"),
+      JSON.stringify({ android: { sdkRoot: "/opt/sdk" } })
+    );
+    const section = await platformsSection(ctx(), fakeBundle(), noLink, "r");
+    expect(section.checks.at(-1)?.label).toBe("android.sdkRoot is set only for this project");
+  });
+
+  it("checks a local-mode project's own copy when a global argent runs doctor", async () => {
+    const pkg = path.join(dir, "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(path.join(pkg, "dist"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version: "0.30.0" })
+    );
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ devDependencies: { "@swmansion/argent": "0.30.0" } })
+    );
+    const global = fakeBundle();
+    const section = await platformsSection(
+      { ...ctx(), mode: "local" },
+      { ...global, installKind: "global" },
+      noLink,
+      "r"
+    );
+    expect(section.checks[0]?.label).toMatch(/Checked the project's local argent/);
+    expect(section.checks[1]).toMatchObject({
+      status: "error",
+      fix: expect.stringMatching(
+        /^Reinstall argent: delete .*node_modules\/@swmansion\/argent, then npm install$/
+      ),
+    });
   });
 });
 
