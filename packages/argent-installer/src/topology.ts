@@ -113,9 +113,8 @@ interface ManifestDeps {
 
 export function readManifestDeclaration(projectRoot: string): string | null {
   try {
-    const pkg = JSON.parse(
-      fs.readFileSync(path.join(projectRoot, "package.json"), "utf8")
-    ) as ManifestDeps;
+    const text = fs.readFileSync(path.join(projectRoot, "package.json"), "utf8");
+    const pkg = JSON.parse(text.replace(/^\uFEFF/, "")) as ManifestDeps;
     const spec =
       pkg.devDependencies?.[PACKAGE_NAME] ??
       pkg.dependencies?.[PACKAGE_NAME] ??

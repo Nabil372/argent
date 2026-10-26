@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  addToPathFix,
   findGlobalArgent,
   globalBinDirOf,
   globalPackageManagerOf,
@@ -12,7 +13,7 @@ import {
 } from "../src/doctor-install.js";
 import { collectDoctorReport } from "../src/doctor.js";
 import { globalBehindCheck } from "../src/doctor-other.js";
-import { type DoctorContext } from "../src/doctor-shared.js";
+import { type DoctorCheck, type DoctorContext } from "../src/doctor-shared.js";
 
 let projectRoot: string;
 
@@ -502,5 +503,328 @@ describe("global install helpers", () => {
       globalPackageManagerOf("/Users/me/.config/yarn/global/node_modules/@swmansion/argent")
     ).toBe("yarn");
     expect(globalPackageManagerOf("/opt/homebrew/lib/node_modules/@swmansion/argent")).toBe("npm");
+  });
+});
+
+describe("findGlobalArgent: PATH order and layouts", () => {
+  const npmGlobal = (prefix: string, version: string): string => {
+    const pkg = path.join(prefix, "lib", "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(path.join(pkg, "dist"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version })
+    );
+    fs.writeFileSync(path.join(pkg, "dist", "cli.js"), "", { mode: 0o755 });
+    fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
+    fs.symlinkSync(path.join(pkg, "dist", "cli.js"), path.join(prefix, "bin", "argent"));
+    return pkg;
+  };
+
+  it("reports the first argent on PATH, the one editors start", () => {
+    npmGlobal(path.join(projectRoot, "a"), "0.29.0");
+    npmGlobal(path.join(projectRoot, "b"), "0.30.1");
+    const pathValue = [path.join(projectRoot, "a", "bin"), path.join(projectRoot, "b", "bin")].join(
+      path.delimiter
+    );
+    expect(findGlobalArgent(pathValue)?.version).toBe("0.29.0");
+  });
+
+  it("keeps the package root of an npm global, so it is not taken for a script shim", () => {
+    const pkg = npmGlobal(path.join(projectRoot, "g"), "1.2.3");
+    expect(findGlobalArgent(path.join(projectRoot, "g", "bin"))?.root).toBe(fs.realpathSync(pkg));
+  });
+
+  it("does not take a package.json it can't parse for argent's", () => {
+    const tool = path.join(projectRoot, "tool");
+    fs.mkdirSync(path.join(tool, "bin"), { recursive: true });
+    fs.writeFileSync(path.join(tool, "package.json"), "{ not json");
+    fs.writeFileSync(
+      path.join(projectRoot, "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version: "9.9.9" })
+    );
+    fs.writeFileSync(path.join(tool, "bin", "argent"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(findGlobalArgent(path.join(tool, "bin"))).toMatchObject({ root: null, version: null });
+  });
+
+  it("strips the double quotes Windows tolerates around a PATH entry", () => {
+    const prefix = path.join(projectRoot, "npm");
+    fs.mkdirSync(prefix);
+    fs.writeFileSync(path.join(prefix, "argent.CMD"), "@echo off\n");
+    vi.stubEnv("PATHEXT", ".CMD");
+    try {
+      withPlatform("win32", () =>
+        expect(findGlobalArgent(`"${prefix}"`)?.bin).toBe(path.join(prefix, "argent.CMD"))
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("globalBinDirOf layouts", () => {
+  const writeArgent = (dir: string, name = "argent"): void => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, name), "", { mode: 0o755 });
+  };
+
+  it("finds a Windows npm global's bin dir, which is the prefix itself", () => {
+    const prefix = path.join(projectRoot, "AppData", "Roaming", "npm");
+    const pkg = path.join(prefix, "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(pkg, { recursive: true });
+    writeArgent(prefix, "argent.cmd");
+    vi.stubEnv("PATHEXT", ".CMD");
+    try {
+      withPlatform("win32", () => expect(globalBinDirOf(pkg)).toBe(prefix));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("finds bun's global bin dir", () => {
+    const bun = path.join(projectRoot, ".bun");
+    const pkg = path.join(bun, "install", "global", "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(pkg, { recursive: true });
+    writeArgent(path.join(bun, "bin"));
+    expect(globalBinDirOf(pkg)).toBe(path.join(bun, "bin"));
+  });
+
+  it("finds Yarn classic's global bin dir", () => {
+    vi.stubEnv("HOME", projectRoot);
+    try {
+      const pkg = path.join(
+        projectRoot,
+        ".config",
+        "yarn",
+        "global",
+        "node_modules",
+        "@swmansion",
+        "argent"
+      );
+      fs.mkdirSync(pkg, { recursive: true });
+      writeArgent(path.join(projectRoot, ".yarn", "bin"));
+      expect(globalBinDirOf(pkg)).toBe(path.join(projectRoot, ".yarn", "bin"));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("addToPathFix", () => {
+  it("prints the full dir on Windows, which does not expand ~ in PATH", () => {
+    const dir = path.join(os.homedir(), "AppData", "Roaming", "npm");
+    withPlatform("win32", () => expect(addToPathFix(dir)).toBe(`Add ${dir} to PATH`));
+    expect(addToPathFix(dir)).toMatch(/^Add ~/);
+  });
+});
+
+describe.skipIf(process.platform === "win32")("runGlobalShim lifecycle", () => {
+  const shim = (body: string, shebang = "#!/bin/sh"): string => {
+    const bin = path.join(projectRoot, "shims", "argent");
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.writeFileSync(bin, `${shebang}\n${body}\n`, { mode: 0o755 });
+    return bin;
+  };
+  const run = (bin: string, timeoutMs?: number) =>
+    runGlobalShim({ bin, root: null, version: null }, projectRoot, "/usr/bin:/bin", timeoutMs);
+  const isAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const waitForFile = async (file: string): Promise<string> => {
+    while (!fs.existsSync(file) || fs.readFileSync(file, "utf8").trim() === "") {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return fs.readFileSync(file, "utf8").trim();
+  };
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it("reports a shim whose interpreter is gone instead of crashing", async () => {
+    const bin = shim("echo 1.0.0", "#!/nonexistent/interpreter");
+    expect((await run(bin)).runError).toBeTruthy();
+  });
+
+  it("kills a shim that ignores SIGTERM", async () => {
+    const bin = shim('trap "" TERM\nsleep 30');
+    const started = Date.now();
+    expect((await run(bin, 200)).runError).toMatch(/timed out/);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("stops the kill timer once the shim answers", async () => {
+    const kill = vi.spyOn(process, "kill");
+    await run(shim("echo 1.0.0"), 150);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(kill).not.toHaveBeenCalled();
+  });
+
+  it("takes the shim's process group down when doctor is interrupted", async () => {
+    const pidFile = path.join(projectRoot, "sleep.pid");
+    const bin = shim(`sleep 30 &\necho $! > "${pidFile}"\nwait`);
+    const keepAlive = () => {};
+    process.on("SIGINT", keepAlive);
+    const baseline = process.listenerCount("SIGINT");
+    try {
+      const result = run(bin, 20_000);
+      const sleepPid = Number(await waitForFile(pidFile));
+      process.emit("SIGINT", "SIGINT");
+      await result;
+      await vi.waitFor(() => expect(isAlive(sleepPid)).toBe(false));
+      expect(process.listenerCount("SIGINT")).toBe(baseline);
+    } finally {
+      process.off("SIGINT", keepAlive);
+    }
+  });
+});
+
+describe("installSection verdicts", () => {
+  const pkgRoot = () => path.join(projectRoot, "pkg");
+  const pkgPaths = (installKind?: "global" | "local") => ({
+    bundlePath: path.join(pkgRoot(), "dist", "tool-server.cjs"),
+    simulatorServerDir: pkgRoot(),
+    nativeDevtoolsDir: pkgRoot(),
+    ...(installKind ? { installKind } : {}),
+  });
+  const ctx = (overrides: Partial<DoctorContext> = {}): DoctorContext => ({
+    projectRoot,
+    cwd: projectRoot,
+    mode: "global",
+    global: null,
+    argentCmd: "argent",
+    installCmd: "pnpm install",
+    offPathGlobalBin: null,
+    ...overrides,
+  });
+  const section = (c: DoctorContext, running = "1.0.0", installKind?: "global" | "local") =>
+    installSection(c, running, pkgPaths(installKind)).checks;
+  const find = (checks: DoctorCheck[], re: RegExp) => checks.find((c) => re.test(c.label));
+  const writeCliRecord = (record: Record<string, string>): void => {
+    fs.mkdirSync(path.join(projectRoot, ".argent"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".argent", "cli.json"), JSON.stringify(record));
+  };
+  const writeFile = (rel: string): string => {
+    const p = path.join(projectRoot, rel);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, "");
+    return p;
+  };
+  const installLocal = (dir: string, version: string): void => {
+    const pkg = path.join(dir, "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version })
+    );
+  };
+
+  beforeEach(() => vi.stubEnv("HOME", projectRoot));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("names the running install's kind and checks its engines", () => {
+    fs.mkdirSync(pkgRoot(), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgRoot(), "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", engines: { node: ">=1" } })
+    );
+    const checks = section(ctx(), "1.0.0", "local");
+    expect(checks[0]?.label).toBe("Running v1.0.0 (local install)");
+    expect(find(checks, /^Node v/)).toMatchObject({ status: "ok" });
+  });
+
+  it("states each global install verdict", () => {
+    expect(find(section(ctx()), /^No global install/)).toMatchObject({
+      status: "info",
+      label: "No global install on PATH",
+    });
+    const npm = {
+      bin: "/g/bin/argent",
+      root: "/g/lib/node_modules/@swmansion/argent",
+      version: "1.0.0",
+    };
+    expect(find(section(ctx({ global: npm })), /Global install/)).toMatchObject({ status: "ok" });
+    const failing = { bin: "/shims/argent", root: null, version: null, runError: "mise ERROR" };
+    expect(find(section(ctx({ global: failing })), /fails to run/)).toMatchObject({
+      status: "error",
+      detail: "/shims/argent: mise ERROR",
+      fix: expect.stringMatching(/npm i -g @swmansion\/argent/),
+    });
+  });
+
+  it("skips the Dock note without launchd's PATH", () => {
+    const global = { bin: "/Users/me/.nvm/bin/argent", root: null, version: "1.0.0" };
+    expect(find(section(ctx({ global, guiPath: null })), /Dock/)).toBeUndefined();
+    expect(find(section(ctx({ global, guiPath: "/usr/bin" })), /Dock/)?.status).toBe("info");
+  });
+
+  it("fails a declared local install that is not installed, with the project's install command", () => {
+    fs.writeFileSync(
+      path.join(projectRoot, "package.json"),
+      "﻿" + JSON.stringify({ devDependencies: { "@swmansion/argent": "0.30.0" } })
+    );
+    expect(find(section(ctx({ mode: "local" })), /not installed/)).toMatchObject({
+      status: "error",
+      fix: "pnpm install",
+    });
+  });
+
+  it("does not count a stray copy above the project as its local install", () => {
+    const app = path.join(projectRoot, "app");
+    fs.mkdirSync(app);
+    fs.writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "app" }));
+    installLocal(projectRoot, "1.0.0");
+    const checks = installSection(
+      ctx({ mode: "local", projectRoot: app }),
+      "1.0.0",
+      pkgPaths()
+    ).checks;
+    expect(find(checks, /not installed/)?.status).toBe("error");
+  });
+
+  it("warns about an older local install and passes a current one", () => {
+    installLocal(projectRoot, "0.9.0");
+    expect(find(section(ctx({ mode: "local" })), /local install/)).toMatchObject({
+      status: "warn",
+      label: "Project's local install v0.9.0 is older than v1.0.0",
+    });
+    expect(find(section(ctx({ mode: "local" }), "0.8.0"), /local install/)).toMatchObject({
+      status: "ok",
+      label: "Project local install v0.9.0 (package.json)",
+    });
+  });
+
+  it("states each ~/.argent/cli.json verdict", () => {
+    const missing = find(section(ctx({ mode: "local" })), /cli\.json/);
+    expect(missing).toMatchObject({
+      status: "warn",
+      fix: "argent update (or start the MCP server once)",
+    });
+
+    const cli = writeFile("pkg/dist/cli.js");
+    const node = writeFile("bin/node");
+    writeCliRecord({ cli, node, version: "1.0.0", mode: "global" });
+    expect(find(section(ctx()), /cli\.json/)).toMatchObject({
+      status: "ok",
+      label: "~/.argent/cli.json → v1.0.0",
+    });
+
+    const goneNode = path.join(projectRoot, ".nvm", "versions", "node", "v20.19.0", "bin", "node");
+    writeCliRecord({ cli, node: goneNode, version: "1.0.0", mode: "global" });
+    expect(find(section(ctx()), /cli\.json/)).toMatchObject({
+      status: "warn",
+      label: "~/.argent/cli.json points at a path that no longer exists",
+      detail: "~/.nvm/versions/node/v20.19.0/bin/node",
+      fix: "argent update (or start the MCP server once)",
+    });
+  });
+});
+
+describe("globalBehindCheck owners and modes", () => {
+  it("names the package manager that owns a script shim", () => {
+    const pnpm = { bin: "/Users/me/Library/pnpm/argent", root: null, version: "0.28.0" };
+    expect(globalBehindCheck(pnpm, "0.30.1", "0.30.1")?.fix).toMatch(/^pnpm /);
   });
 });

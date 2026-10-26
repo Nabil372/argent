@@ -169,7 +169,10 @@ describe("remote status probe", () => {
 });
 
 describe("toolServerSection", () => {
-  const paths = { bundlePath: "/pkg/dist/tool-server.cjs", installKind: "global" } as ToolsServerPaths;
+  const paths = {
+    bundlePath: "/pkg/dist/tool-server.cjs",
+    installKind: "global",
+  } as ToolsServerPaths;
   const ctx = { projectRoot: "/proj", argentCmd: "argent" } as DoctorContext;
   const notLinked = { url: null, token: null, source: null } as unknown as Parameters<
     typeof toolServerSection

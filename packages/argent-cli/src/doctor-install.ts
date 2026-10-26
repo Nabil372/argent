@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { type ToolsServerPaths } from "@argent/tools-client";
 import {
@@ -47,9 +48,9 @@ export function isOnPath(command: string, pathValue: string): boolean {
     process.platform === "win32"
       ? ["", ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)]
       : [""];
-  return pathValue
-    .split(path.delimiter)
-    .some((dir) => dir && exts.some((ext) => isExecutableFile(path.join(dir, command + ext))));
+  return pathDirs(pathValue).some(
+    (dir) => dir && exts.some((ext) => isExecutableFile(path.join(dir, command + ext)))
+  );
 }
 
 function argentPackageRoot(bin: string): string | null {
@@ -83,14 +84,25 @@ function npmPrefixPackageRoot(binDir: string): string | null {
   return fs.existsSync(path.join(root, "package.json")) ? root : null;
 }
 
-/** Where a global install's `argent` would be: `<prefix>/bin`, or `<prefix>` on Windows. */
+/**
+ * Where a global install's `argent` would be: `<prefix>/bin` for npm, `<prefix>`
+ * for npm on Windows, ~/.bun/bin for bun and ~/.yarn/bin for Yarn classic.
+ */
 export function globalBinDirOf(packageRoot: string): string | null {
   const nodeModules = path.dirname(path.dirname(packageRoot));
   if (path.basename(nodeModules) !== "node_modules") return null;
   const prefixDir = path.dirname(nodeModules);
-  const candidates =
-    path.basename(prefixDir) === "lib" ? [path.join(path.dirname(prefixDir), "bin")] : [prefixDir];
-  return candidates.find((dir) => findGlobalArgent(dir) !== null) ?? null;
+  return globalBinCandidates(prefixDir).find((dir) => findGlobalArgent(dir) !== null) ?? null;
+}
+
+function globalBinCandidates(prefixDir: string): string[] {
+  const p = prefixDir.replace(/\\/g, "/");
+  if (p.endsWith("/.bun/install/global")) {
+    return [path.join(path.dirname(path.dirname(prefixDir)), "bin")];
+  }
+  if (/\/yarn\/(global|data\/global)$/i.test(p)) return [path.join(homedir(), ".yarn", "bin")];
+  if (path.basename(prefixDir) === "lib") return [path.join(path.dirname(prefixDir), "bin")];
+  return [prefixDir];
 }
 
 export type PackageManager = "npm" | "yarn" | "pnpm" | "bun";
@@ -105,6 +117,12 @@ export function globalPackageManagerOf(packageRoot: string): PackageManager {
   return "npm";
 }
 
+/** Windows strips double quotes from PATH entries (cmd, libuv, `where` all do). */
+function pathDirs(pathValue: string | undefined): string[] {
+  const dirs = (pathValue ?? "").split(path.delimiter);
+  return process.platform === "win32" ? dirs.map((dir) => dir.replace(/"/g, "")) : dirs;
+}
+
 /**
  * The `argent` an editor would start, looked up on `pathValue` in-process: no
  * `which` (missing on some images) and no change to this process's PATH. Any
@@ -117,7 +135,7 @@ export function findGlobalArgent(pathValue: string | undefined): GlobalInstall |
     process.platform === "win32"
       ? (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
       : [""];
-  for (const dir of (pathValue ?? "").split(path.delimiter)) {
+  for (const dir of pathDirs(pathValue)) {
     if (!dir) continue;
     for (const ext of exts) {
       const bin = path.join(dir, MCP_BINARY_NAME + ext);
@@ -169,16 +187,28 @@ export async function runGlobalShim(
     });
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk));
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk));
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const killGroup = () => {
       try {
         process.kill(-child.pid!, "SIGKILL");
       } catch {
         child.kill("SIGKILL");
       }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroup();
     }, timeoutMs);
+    // A detached group misses the Ctrl-C the terminal sends doctor, so pass it on.
+    const onSignal = (signal: NodeJS.Signals) => {
+      killGroup();
+      if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
     const finish = (code: number | null, err?: Error) => {
       clearTimeout(timer);
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
       if (timedOut) {
         resolve({
           ...global,
@@ -194,6 +224,11 @@ export async function runGlobalShim(
     child.on("error", (err) => finish(null, err));
     child.on("close", (code) => finish(code));
   });
+}
+
+/** Windows does not expand `~` in PATH, so print the full dir there. */
+export function addToPathFix(dir: string): string {
+  return `Add ${process.platform === "win32" ? dir : home(dir)} to PATH`;
 }
 
 function readEnginesNode(packageRoot: string): string | null {
@@ -312,7 +347,7 @@ export function installSection(
       : !global && ctx.offPathGlobalBin
         ? check("warn", "Installed globally, but its bin dir is not on PATH", {
             detail: home(ctx.offPathGlobalBin),
-            fix: `Add ${home(ctx.offPathGlobalBin)} to PATH`,
+            fix: addToPathFix(ctx.offPathGlobalBin),
           })
         : !global
           ? check("info", "No global install on PATH")

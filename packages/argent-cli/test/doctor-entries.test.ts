@@ -415,6 +415,26 @@ describe("classifyMcpEntry argument rules", () => {
     withPlatform("win32", () => expect(classifyMcpEntry(entry, ctx()).status).toBe("ok"));
   });
 
+  it("checks the script of a `node.exe` entry on Windows", () => {
+    const entry = { command: "node.exe", args: ["missing/dist/cli.js", "mcp"] };
+    withPlatform("win32", () =>
+      expect(classifyMcpEntry(entry, ctx())).toMatchObject({
+        status: "error",
+        label: expect.stringMatching(/does not exist/),
+      })
+    );
+  });
+
+  it("prints the full bin dir in the PATH fix on Windows", () => {
+    const bin = path.join(os.homedir(), "AppData", "Roaming", "npm");
+    const entry = { command: "argent", args: ["mcp"] };
+    withPlatform("win32", () =>
+      expect(classifyMcpEntry(entry, ctx({ globalOnPath: false, offPathGlobalBin: bin })).fix).toBe(
+        `Add ${bin} to PATH`
+      )
+    );
+  });
+
   it("points a broken Claude Code local-scope entry at claude mcp remove", () => {
     const result = classifyMcpEntry({ command: "argent", args: [] }, ctx({ claudeLocal: true }));
     expect(result.fix).toMatch(/claude mcp remove -s local argent/);
