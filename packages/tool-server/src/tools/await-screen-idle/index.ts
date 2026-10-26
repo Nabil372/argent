@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@argent/registry";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
@@ -19,6 +19,7 @@ import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeIosDevice } from "../describe/platforms/ios-device";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
+import { pollHarmonyTree, harmonyRequires } from "../describe/platforms/harmony";
 
 const AWAIT_SCREEN_IDLE_TOOL_ID = "await-screen-idle";
 
@@ -31,7 +32,9 @@ const zodSchema = z
     udid: z
       .string()
       .min(1)
-      .describe("Target device id from `list-devices` (iOS UDID, Android serial, or Chromium id)."),
+      .describe(
+        "Target device id from `list-devices` (iOS UDID, Android serial, <flag:harmonyos>HarmonyOS id, </flag:harmonyos>or Chromium id)."
+      ),
     timeoutMs: z
       .number()
       .int()
@@ -67,6 +70,8 @@ interface IdleResult {
   settled: boolean;
   waitedMs: number;
   polls: number;
+  /** Why what it settled on may not be the live screen. */
+  note?: string;
 }
 
 const capability: ToolCapability = {
@@ -74,6 +79,7 @@ const capability: ToolCapability = {
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
+  harmony: { device: true },
 };
 
 // Frames are normalized 0..1, so rounding to 0.01 tolerates sub-pixel jitter
@@ -97,7 +103,8 @@ function fetchTree(
   device: DeviceInfo,
   chromium: ChromiumCdpApi | undefined,
   isTvOs: boolean,
-  androidIsTv: boolean
+  androidIsTv: boolean,
+  budgetMs: number
 ): Promise<DescribeTreeData> {
   // ios-remote reads the same AX tree through describeIos: the ax-service
   // blueprint routes it over the sim-remote tunnel, so only the preflight dep
@@ -111,6 +118,9 @@ function fetchTree(
   }
   if (device.platform === "android") {
     return describeAndroid(registry, device.id, undefined, androidIsTv);
+  }
+  if (device.platform === "harmony") {
+    return pollHarmonyTree(harmonyConnectKey(device.id), budgetMs);
   }
   return describeChromium(chromium as ChromiumCdpApi);
 }
@@ -152,6 +162,7 @@ export async function waitForScreenIdle(
   if (device.platform === "ios") await ensureDeps(iosRequires);
   else if (device.platform === "ios-remote") await ensureDeps(["sim-remote"]);
   else if (device.platform === "android") await ensureDeps(androidRequires);
+  else if (device.platform === "harmony") await ensureDeps(harmonyRequires);
 
   // Resolve tvOS / Android-TV once. Physical devices skip the tvOS probe. They are never tvOS simulators.
   const isTvOs =
@@ -164,7 +175,7 @@ export async function waitForScreenIdle(
   let stableSince = 0;
 
   const poll = await pollDescribeTree<true>({
-    fetchTree: () => fetchTree(registry, device, chromium, isTvOs, androidIsTv),
+    fetchTree: (budgetMs) => fetchTree(registry, device, chromium, isTvOs, androidIsTv, budgetMs),
     timeoutMs: wait.timeoutMs,
     pollIntervalMs: wait.pollIntervalMs,
     signal: wait.signal,
@@ -188,10 +199,12 @@ export async function waitForScreenIdle(
     },
   });
 
+  const note = poll.result === true && poll.lastData?.stale ? poll.lastData.hint : undefined;
   return {
     settled: poll.result === true,
     waitedMs: poll.elapsedMs,
     polls: poll.polls,
+    ...(note ? { note } : {}),
     aborted: poll.aborted,
     ...(poll.lastError !== undefined ? { readError: poll.lastError } : {}),
   };
@@ -213,8 +226,10 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
 
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
-${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }; settled=false means the screen never went
-still before the timeout. Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
+${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls<flag:harmonyos>, note?</flag:harmonyos> }; settled=false means the screen never went
+still before the timeout. <flag:harmonyos>A note on settled=true means the screen it settled on is not live: a suspended HarmonyOS
+panel settles instantly on its last frame, and taps land nowhere until it is woken.
+</flag:harmonyos>Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
@@ -230,14 +245,14 @@ still before the timeout. Use after a launch/navigation to wait for the UI to re
     async execute(services, params, ctx?: ToolContext) {
       const device = resolveDevice(params.udid);
       assertSupported(AWAIT_SCREEN_IDLE_TOOL_ID, capability, device);
-      const { settled, waitedMs, polls } = await waitForScreenIdle(registry, device, {
+      const { settled, waitedMs, polls, note } = await waitForScreenIdle(registry, device, {
         timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         pollIntervalMs: params.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
         minStableMs: params.minStableMs ?? DEFAULT_MIN_STABLE_MS,
         signal: ctx?.signal,
         chromium: services.chromium as ChromiumCdpApi | undefined,
       });
-      return { settled, waitedMs, polls };
+      return { settled, waitedMs, polls, ...(note ? { note } : {}) };
     },
   };
 }
