@@ -480,7 +480,7 @@ describe("collectDoctorReport", () => {
     await new Promise<void>((resolve) => server!.listen(0, "127.0.0.1", resolve));
     const { port } = server.address() as { port: number };
     vi.stubEnv("ARGENT_TOOLS_URL", `http://127.0.0.1:${port}/`);
-    expect((await toolServer())[0]).toMatchObject({ status: "ok" });
+    expect((await toolServer())[0]?.label).toMatch(/, reachable$/);
   });
 
   it("offers pnpm's forced reinstall for a broken local install in a pnpm project", async () => {
