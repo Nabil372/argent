@@ -232,26 +232,34 @@ describe("await-screen-idle tool", () => {
   });
 
   describe("ambient motion rules", () => {
-    type Box = { label: string; x?: number; y: number; width?: number; height?: number };
+    type Box = {
+      label: string;
+      value?: string;
+      x?: number;
+      y: number;
+      width?: number;
+      height?: number;
+    };
     const screen = (...boxes: Box[]) =>
       axResponse([
         { label: "Settings", frame: FRAME, traits: ["button"] },
         ...boxes.map((b) => ({
           label: b.label,
+          value: b.value,
           frame: { x: b.x ?? 0.4, y: b.y, width: b.width ?? 0.18, height: b.height ?? 0.08 },
           traits: ["image"],
         })),
       ]);
     const run = (
       frames: AXDescribeResponse[],
-      opts: { timeoutMs?: number; minStableMs?: number } = {}
+      opts: { timeoutMs?: number; minStableMs?: number; pollIntervalMs?: number } = {}
     ) =>
       createAwaitScreenIdleTool(iosRegistry(makeSequencedAXService(frames))).execute(
         {},
         {
           udid: IOS_UDID,
           timeoutMs: opts.timeoutMs ?? 300,
-          pollIntervalMs: 10,
+          pollIntervalMs: opts.pollIntervalMs ?? 10,
           minStableMs: opts.minStableMs ?? 30,
         }
       );
@@ -373,6 +381,143 @@ describe("await-screen-idle tool", () => {
       expect(result.ambientMotion).toBe(true);
     });
 
+    it("counts side-by-side nodes as one animation when snapping skews their moves", async () => {
+      // AX frames snap to whole points, so nodes bobbing together report moves
+      // that differ by about a point, and some reads show only some of them moving.
+      const snap = (v: number) => Math.round(v * 956) / 956;
+      const wave = (i: number) => 0.02 * Math.sin((Math.PI * i) / 4);
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            ...["arrow", "Tip", "Body", "Skip", "Next"].map((label, k) => ({
+              label,
+              x: 0.02 + k * 0.2,
+              y: snap(0.3003 + k * 0.0004 + wave(i)),
+              width: 0.15,
+            }))
+          )
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("counts a pulsing card and its children as one animation", async () => {
+      const card = { x: 0.2, y: 0.3, width: 0.6, height: 0.3 };
+      const children = [
+        { x: 0.22, y: 0.32, width: 0.2, height: 0.05 },
+        { x: 0.58, y: 0.32, width: 0.2, height: 0.05 },
+        { x: 0.22, y: 0.53, width: 0.2, height: 0.05 },
+        { x: 0.58, y: 0.53, width: 0.2, height: 0.05 },
+      ];
+      const scaled = (b: typeof card, s: number) => ({
+        x: 0.5 + (b.x - 0.5) * s,
+        y: 0.45 + (b.y - 0.45) * s,
+        width: b.width * s,
+        height: b.height * s,
+      });
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) => {
+          const s = i % 2 ? 1.1 : 1;
+          return screen(
+            { label: "card", ...scaled(card, s) },
+            ...children.map((c, k) => ({ label: `line-${k}`, ...scaled(c, s) }))
+          );
+        }),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("settles on a badge that pulses in size without moving", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen({ label: "badge", y: 0.2, width: i % 2 ? 0.12 : 0.1, height: i % 2 ? 0.06 : 0.05 })
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("settles when exactly three separate loops move", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            ...[0.02, 0.03, 0.04].map((amp, k) => ({
+              label: "dot",
+              value: `${k + 1} of 3`,
+              y: 0.3 + k * 0.1 + (i % 2) * amp,
+            }))
+          )
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("keeps loops apart that make the same moves on different polls", async () => {
+      // Each dot steps every other poll, a poll out of phase with the next one.
+      const step = (i: number, k: number) => 0.03 * (Math.floor((i + k) / 2) % 2);
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(...[0, 1, 2, 3].map((k) => ({ label: `dot-${k}`, y: 0.3 + k * 0.1 + step(i, k) })))
+        ),
+        { timeoutMs: 600, minStableMs: 100 }
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting while a loop moves next to a sheet that is still sliding", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "hand", y: bobY(i) },
+            { label: "sheet", x: 0, y: 0.9 - i * 0.012, width: 1, height: 0.05 }
+          )
+        )
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting while a slow slide has moved within minStableMs", async () => {
+      // The sheet steps every fifth poll: within minStableMs, but not within two polls.
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "hand", y: bobY(i) },
+            { label: "sheet", x: 0, y: 0.9 - Math.floor(i / 5) * 0.02, width: 1, height: 0.05 }
+          )
+        ),
+        { timeoutMs: 600, minStableMs: 200 }
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting on a slide that moved one poll ago when minStableMs is shorter", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "hand", y: bobY(i) },
+            { label: "sheet", x: 0, y: 0.9 - Math.floor(i / 2) * 0.02, width: 1, height: 0.05 }
+          )
+        ),
+        { timeoutMs: 1500, minStableMs: 20, pollIntervalMs: 50 }
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
     it("keeps waiting when more than three separate loops move", async () => {
       const result = await run(
         Array.from({ length: 200 }, (_, i) =>
@@ -411,6 +556,24 @@ describe("await-screen-idle tool", () => {
       );
 
       expect(result.settled).toBe(false);
+    });
+
+    it("needs fresh loop evidence after the structure changes", async () => {
+      // The hand loops next to a sliding sheet; the sheet leaves, then the hand
+      // swings a few more times and stops.
+      const result = await run(
+        [
+          ...Array.from({ length: 20 }, (_, i) =>
+            screen({ label: "hand", y: bobY(i) }, { label: "sheet", x: 0, y: 0.9 - i * 0.012 })
+          ),
+          ...Array.from({ length: 5 }, (_, i) => screen({ label: "hand", y: bobY(i) })),
+          screen({ label: "hand", y: 0.238 }),
+        ],
+        { timeoutMs: 2000, minStableMs: 40, pollIntervalMs: 20 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBeUndefined();
     });
 
     it("keeps waiting while a looping spinner has a progress role", async () => {

@@ -241,9 +241,40 @@ function trackAxis(axis: AxisMotion, from: number, to: number, nowMs: number): v
   axis.lastMovedAt = nowMs;
 }
 
-/** Fold one value into a 32-bit hash. */
-function mix(hash: number, value: number): number {
-  return (Math.imul(hash, 31) + value) | 0;
+/**
+ * How far two nodes' per-poll moves may differ and still count as one motion.
+ * AX frames snap to whole points or pixels, so children of one bobbing view
+ * report moves that differ by about a point, or move one read late.
+ */
+const SYNC_TOLERANCE = 0.005;
+
+const STILL = [0, 0, 0, 0];
+
+function movesInSync(a: number[][], b: number[][], polls: number): boolean {
+  for (let poll = 1; poll <= polls; poll++) {
+    const da = a[poll] ?? STILL;
+    const db = b[poll] ?? STILL;
+    if (da.some((v, i) => Math.abs(v - db[i]!) > SYNC_TOLERANCE)) return false;
+  }
+  return true;
+}
+
+function encloses(outer: number[], inner: number[]): boolean {
+  const [ox, oy, ow, oh] = outer as [number, number, number, number];
+  const [ix, iy, iw, ih] = inner as [number, number, number, number];
+  const slack = 0.01;
+  return (
+    ix >= ox - slack && iy >= oy - slack && ix + iw <= ox + ow + slack && iy + ih <= oy + oh + slack
+  );
+}
+
+function countGroups(ids: string[], together: (a: string, b: string) => boolean): number {
+  const parent = new Map(ids.map((id) => [id, id]));
+  const find = (id: string): string => (parent.get(id) === id ? id : find(parent.get(id)!));
+  ids.forEach((a, i) => {
+    for (const b of ids.slice(i + 1)) if (together(a, b)) parent.set(find(a), find(b));
+  });
+  return new Set(ids.map(find)).size;
 }
 
 /**
@@ -259,12 +290,8 @@ class AmbientMotion {
   private lastShared = new Map<string, string>();
   private sharedMovedAt = -Infinity;
   private readonly motion = new Map<string, AxisMotion[]>();
-  /**
-   * Hash of every unrounded move (poll index and delta) per node. Nodes that
-   * move rigidly together, like a coach mark's container, arrow, text and
-   * button, share it, so they count as one animation.
-   */
-  private readonly path = new Map<string, number>();
+  /** Unrounded frame change per node, indexed by poll. */
+  private readonly moves = new Map<string, number[][]>();
   private polls = 0;
 
   /** Forget everything, e.g. after a blank read: the next screen starts fresh. */
@@ -276,7 +303,7 @@ class AmbientMotion {
     this.lastShared = new Map();
     this.sharedMovedAt = -Infinity;
     this.motion.clear();
-    this.path.clear();
+    this.moves.clear();
     this.polls = 0;
   }
 
@@ -302,9 +329,8 @@ class AmbientMotion {
     for (const [id, frame] of snap.raw) {
       const prev = this.lastRaw.get(id);
       if (!prev || prev.every((v, i) => v === frame[i])) continue;
-      let hash = mix(this.path.get(id) ?? 0, this.polls);
-      for (let i = 0; i < 4; i++) hash = mix(hash, Math.round((frame[i]! - prev[i]!) * 10_000));
-      this.path.set(id, hash);
+      if (!this.moves.has(id)) this.moves.set(id, []);
+      this.moves.get(id)![this.polls] = frame.map((v, i) => v - prev[i]!);
     }
     this.lastRaw = new Map([...this.lastRaw, ...snap.raw]);
     for (const [id, frame] of snap.frames) {
@@ -331,8 +357,23 @@ class AmbientMotion {
       swingRepeats(axis) && nowMs - axis.swingSince >= minLoopMs;
     const isLoop = (axes: AxisMotion[]) => axes.filter(movedRecently).every(keepsLooping);
     if (!recent.every(([, axes]) => isLoop(axes))) return false;
-    const animations = new Set(recent.map(([id]) => this.path.get(id)));
-    return animations.size <= MAX_AMBIENT_MOVERS;
+    const animations = countGroups(
+      recent.map(([id]) => id),
+      (a, b) => this.oneAnimation(a, b)
+    );
+    return animations <= MAX_AMBIENT_MOVERS;
+  }
+
+  /**
+   * Nodes that move rigidly together (a coach mark's container, arrow, text and
+   * button), or a node and the moving node it sits inside (a pulsing card and
+   * its children), are one animation.
+   */
+  private oneAnimation(a: string, b: string): boolean {
+    const frameA = this.lastFrames.get(a)!;
+    const frameB = this.lastFrames.get(b)!;
+    if (encloses(frameA, frameB) || encloses(frameB, frameA)) return true;
+    return movesInSync(this.moves.get(a) ?? [], this.moves.get(b) ?? [], this.polls);
   }
 }
 
