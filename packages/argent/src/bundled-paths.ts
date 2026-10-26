@@ -1,6 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ToolsServerPaths } from "@argent/tools-client";
+
+// import.meta.dirname is undefined before Node 20.11, and this module loads before cli.ts checks the Node version.
+const distDir = path.dirname(fileURLToPath(import.meta.url));
 
 // Installed package version, read from the shipped package.json. Feeds the
 // launcher's version gate as the fallback for its on-disk read, so an in-place
@@ -11,7 +15,7 @@ import type { ToolsServerPaths } from "@argent/tools-client";
 function readPackageVersion(): string | undefined {
   try {
     const pkg = JSON.parse(
-      fs.readFileSync(path.join(import.meta.dirname, "..", "package.json"), "utf8")
+      fs.readFileSync(path.join(distDir, "..", "package.json"), "utf8")
     ) as { version?: string };
     return pkg.version;
   } catch {
@@ -89,7 +93,7 @@ function classifyInstall(): {
   let dir: string;
   let cwd: string;
   try {
-    packageRoot = fs.realpathSync(path.join(import.meta.dirname, ".."));
+    packageRoot = fs.realpathSync(path.join(distDir, ".."));
     // cwd throws (ENOENT) when the shell's directory was deleted, and this runs
     // at module import, before fatal handlers are installed.
     cwd = process.cwd();
@@ -129,9 +133,9 @@ function classifyInstall(): {
 
 const classifiedInstall = classifyInstall();
 
-// import.meta.dirname is dist/ in the published package, so ".." is the
+// distDir is dist/ in the published package, so ".." is the
 // package root; prefer the version-stable alias when classification found one.
-const packageDir = classifiedInstall.stablePackageDir ?? path.join(import.meta.dirname, "..");
+const packageDir = classifiedInstall.stablePackageDir ?? path.join(distDir, "..");
 
 export const BUNDLED_RUNTIME_PATHS: ToolsServerPaths = {
   bundlePath: path.join(packageDir, "dist", "tool-server.cjs"),

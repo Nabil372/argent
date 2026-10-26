@@ -7,6 +7,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type * as Installer from "@argent/installer";
 import type * as Mcp from "@argent/mcp";
 import type * as Cli from "@argent/cli";
@@ -20,10 +21,12 @@ import {
 } from "./installer-help.js";
 
 const PACKAGE_NAME = "@swmansion/argent";
+// import.meta.dirname is undefined before Node 20.11, where the Node version check below must still run.
+const distDir = path.dirname(fileURLToPath(import.meta.url));
 
 function getInstalledVersion(): string | null {
   try {
-    const pkgPath = path.resolve(import.meta.dirname, "..", "package.json");
+    const pkgPath = path.resolve(distDir, "..", "package.json");
     const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8")) as { version?: string };
     return pkg.version ?? null;
   } catch {
@@ -39,7 +42,7 @@ function getInstalledVersion(): string | null {
 function exitOnUnsupportedNode(): void {
   let range: string | undefined;
   try {
-    const pkgPath = path.resolve(import.meta.dirname, "..", "package.json");
+    const pkgPath = path.resolve(distDir, "..", "package.json");
     range = (JSON.parse(fs.readFileSync(pkgPath, "utf8")) as { engines?: { node?: string } })
       .engines?.node;
   } catch {
