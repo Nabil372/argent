@@ -19,6 +19,7 @@ import {
   type ResolvedToolsUrl,
   check,
   localArgentCmd,
+  samePath,
 } from "./doctor-shared.js";
 
 // `argent doctor`: the Tool-server section.
@@ -45,7 +46,7 @@ export function remoteCheck(
   // The tool-server answers 403 only from its Host guard.
   if (status === 403) {
     return check("error", `Linked to ${where}, which refuses this host name (HTTP 403)`, {
-      fix: "Use the host the server was started with (its ARGENT_HOST), or restart it with ARGENT_HOST set to the name you connect with",
+      fix: "Connect with the host the server was started with, or restart it with argent server start --host <the name you connect with>",
     });
   }
   return check(
@@ -122,6 +123,21 @@ export async function entryRemoteChecks(urls: EntryToolsUrl[]): Promise<DoctorCh
   );
 }
 
+/**
+ * `argent server stop` only reaches the server of the install it runs from:
+ * the project's copy, the global on PATH, or else this exact copy (an npx
+ * cache, a global whose bin dir is off PATH).
+ */
+export function stopCommand(ctx: DoctorContext, paths: ToolsServerPaths): string {
+  if (paths.installKind === "local") return localArgentCmd(ctx.projectRoot);
+  const packageRoot = path.dirname(path.dirname(paths.bundlePath));
+  if (ctx.global?.root && !ctx.global.runError && samePath(ctx.global.root, packageRoot)) {
+    return "argent";
+  }
+  const cli = path.join(packageRoot, "dist", "cli.js");
+  return `node ${/\s/.test(cli) ? JSON.stringify(cli) : cli}`;
+}
+
 export async function toolServerSection(
   ctx: DoctorContext,
   running: string,
@@ -168,8 +184,7 @@ export async function toolServerSection(
     const url = formatToolsServerUrl(host, state.port);
     const alive = isToolsServerProcessAlive(state.pid);
     const healthy = alive && (await isToolsServerHealthy(state.port, host, 2_000, state.token));
-    // `argent server stop` only reaches the server of the install it runs from.
-    const stopCmd = paths.installKind === "local" ? localArgentCmd(ctx.projectRoot) : ctx.argentCmd;
+    const stopCmd = stopCommand(ctx, paths);
     const argentHost = process.env.ARGENT_HOST;
     if (healthy) {
       const stale = state.version && state.version !== running;
@@ -188,7 +203,7 @@ export async function toolServerSection(
           `Stale state file (pid ${state.pid}) while ARGENT_HOST=${argentHost} is set`,
           {
             detail: `servers spawned here listen on ${argentHost} but are reached at ${host}, so every tool call respawns one`,
-            fix: "Unset ARGENT_HOST; it is meant for argent server start on a remote host",
+            fix: "Unset ARGENT_HOST (to serve another host, use argent server start --host)",
           }
         )
       );
