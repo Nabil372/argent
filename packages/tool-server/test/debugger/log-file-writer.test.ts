@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as v8 from "node:v8";
+import * as vm from "node:vm";
 import {
   LogFileWriter,
   TAIL_MAX,
@@ -14,6 +16,9 @@ import { scopeTempHome } from "../helpers/temp-home";
 scopeTempHome("argent-log-writer-home-");
 
 let writer: LogFileWriter;
+
+v8.setFlagsFromString("--expose-gc");
+const gc = vm.runInNewContext("gc") as () => void;
 
 function makeEntry(id: number, overrides: Partial<Omit<RichLogEntry, "marker">> = {}) {
   return {
@@ -223,6 +228,29 @@ describe("LogFileWriter", () => {
       expect.objectContaining({ level: "error", timestamp: makeEntry(1).timestamp }),
     ]);
     expect(writer.tail({ levels: ["timeEnd"], limit: 1 }).map((e) => e.id)).toEqual([0]);
+  });
+
+  it("tail() orders entries logged in the same millisecond by id", () => {
+    const sameMs = makeEntry(5).timestamp;
+    writer.write(makeEntry(0, { level: "error" }));
+    writer.write({ ...makeEntry(1, { level: "log" }), timestamp: sameMs });
+    writer.write({ ...makeEntry(2, { level: "error" }), timestamp: sameMs });
+
+    expect(writer.tail({ limit: 3 }).map((e) => e.id)).toEqual([0, 1, 2]);
+  });
+
+  it("tail() does not keep the full long messages alive", () => {
+    const prefix = "p".repeat(80);
+    const heapAfterGc = () => {
+      gc();
+      return process.memoryUsage().heapUsed;
+    };
+    const before = heapAfterGc();
+    for (let i = 0; i < 50; i++) {
+      writer.write(makeEntry(i, { message: `${prefix}${String(i).padEnd(1_000_000, "x")}` }));
+    }
+
+    expect(heapAfterGc() - before).toBeLessThan(10_000_000);
   });
 
   it("caps tail at 100 entries and 300 chars, the numbers the skills promise", () => {
