@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -239,8 +239,8 @@ describe("classifyMcpEntry", () => {
     expect(classifyMcpEntry(entry, ctx({ cwdSupport: "ignored" })).status).toBe("ok");
   });
 
-  it("does not judge a command that uses an editor variable", () => {
-    const entry = { command: "${HOME}/.local/bin/argent", args: ["mcp"] };
+  it("does not judge a command that uses a variable this shell can't fill in", () => {
+    const entry = { command: "${ARGENT_TEST_UNSET_DIR}/argent", args: ["mcp"] };
     expect(classifyMcpEntry(entry, ctx()).status).toBe("info");
   });
 
@@ -454,5 +454,237 @@ describe("classifyMcpEntry argument rules", () => {
       ctx({ globalOnPath: false, offPathGlobalBin: "/opt/npm-global/bin" })
     );
     expect(result.fix).toBe("Add /opt/npm-global/bin to PATH");
+  });
+});
+
+const writeFile = (file: string, mode = 0o644) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, "", { mode });
+  return file;
+};
+
+describe("classifyMcpEntry the way each editor starts it", () => {
+  const rel = "node_modules/@swmansion/argent/dist/cli.js";
+
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("does not judge a remote entry, and hides its credentials", () => {
+    const entry = { command: "", args: [], url: "http://user:secret@127.0.0.1:9/mcp" };
+    const result = classifyMcpEntry(entry, ctx({ globalOnPath: false }));
+    expect(result.status).toBe("info");
+    expect(result.label).toMatch(/remote MCP server, not verified/);
+    expect(result.label).not.toMatch(/secret/);
+    const off = { ...entry, switchedOffBy: ["disabled" as const] };
+    expect(classifyMcpEntry(off, ctx()).status).toBe("warn");
+  });
+
+  it("runs a relative script from where the editor starts, warning when only the root has it", () => {
+    writeFile(path.join(projectRoot, rel));
+    const sub = path.join(projectRoot, "sub");
+    fs.mkdirSync(sub);
+    const entry = { command: "node", args: [rel, "mcp"] };
+    expect(
+      classifyMcpEntry(entry, ctx({ cwd: sub, spawnDir: sub, spawnsInLaunchDir: true }))
+    ).toMatchObject({
+      status: "warn",
+      label: expect.stringMatching(/resolves only when the editor starts in the project root/),
+    });
+    const fromRoot = ctx({ spawnDir: projectRoot, spawnsInLaunchDir: true });
+    expect(classifyMcpEntry(entry, fromRoot).status).toBe("ok");
+    expect(classifyMcpEntry(entry, ctx({ spawnDir: sub })).status).toBe("error");
+  });
+
+  it("expands ${VAR}, ${env:VAR} and {env:VAR}, and leaves a bare $VAR unverified", () => {
+    const bin = writeFile(path.join(projectRoot, "gbin", "argent"), 0o755);
+    vi.stubEnv("ARGENT_TEST_DIR", path.dirname(bin));
+    for (const command of [
+      "${ARGENT_TEST_DIR}/argent",
+      "${env:ARGENT_TEST_DIR}/argent",
+      "{env:ARGENT_TEST_DIR}/argent",
+    ]) {
+      expect(classifyMcpEntry({ command, args: ["mcp"] }, ctx()).status, command).toBe("ok");
+    }
+    const missing = { command: "${ARGENT_TEST_DIR}/nope/argent", args: ["mcp"] };
+    expect(classifyMcpEntry(missing, ctx()).status).toBe("error");
+    const bare = { command: "$ARGENT_TEST_DIR/argent", args: ["mcp"] };
+    expect(classifyMcpEntry(bare, ctx()).status).toBe("info");
+  });
+
+  it("expands a leading ~ only for editors that do", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "argent-doctor-home-"));
+    try {
+      vi.stubEnv("HOME", home);
+      vi.stubEnv("USERPROFILE", home);
+      writeFile(path.join(home, "bin", "argent"), 0o755);
+      const entry = { command: "~/bin/argent", args: ["mcp"] };
+      expect(classifyMcpEntry(entry, ctx({ expandsTilde: true })).status).toBe("ok");
+      expect(classifyMcpEntry(entry, ctx()).status).toBe("error");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("ignores a `Path` env key off Windows", () => {
+    const entry = { command: "argent", args: ["mcp"], env: { Path: "C:\\Users\\me\\npm" } };
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("ok");
+  });
+
+  it("expands variables in the entry's PATH, and leaves ones it can't fill in unverified", () => {
+    const bin = writeFile(path.join(projectRoot, "gbin", "argent"), 0o755);
+    vi.stubEnv("ARGENT_TEST_DIR", path.dirname(bin));
+    const withPath = (PATH: string) => ({ command: "argent", args: ["mcp"], env: { PATH } });
+    const noGlobal = ctx({ globalOnPath: false });
+    expect(classifyMcpEntry(withPath("${ARGENT_TEST_DIR}"), noGlobal).status).toBe("ok");
+    expect(classifyMcpEntry(withPath("${ARGENT_TEST_DIR}/nothere"), ctx()).status).toBe("error");
+    expect(classifyMcpEntry(withPath("$HOME/bin"), ctx()).status).toBe("info");
+  });
+
+  it("appends the entry's PATH to the editor's own for VS Code", () => {
+    const entry = { command: "argent", args: ["mcp"], env: { PATH: "/opt/homebrew/bin" } };
+    expect(classifyMcpEntry(entry, ctx({ appendsPath: true })).status).toBe("ok");
+    expect(classifyMcpEntry(entry, ctx()).status).toBe("error");
+    const bin = writeFile(path.join(projectRoot, "extra", "argent"), 0o755);
+    const added = { ...entry, env: { PATH: path.dirname(bin) } };
+    expect(classifyMcpEntry(added, ctx({ appendsPath: true, globalOnPath: false })).status).toBe(
+      "ok"
+    );
+  });
+
+  it("fails an entry whose PATH finds the failing shim", () => {
+    const bin = writeFile(path.join(projectRoot, "shims", "argent"), 0o755);
+    const entry = { command: "argent", args: ["mcp"], env: { PATH: path.dirname(bin) } };
+    const failing = ctx({ globalOnPath: false, globalRunError: "mise ERROR", globalBin: bin });
+    expect(classifyMcpEntry(entry, failing)).toMatchObject({
+      status: "error",
+      detail: "mise ERROR",
+      fix: expect.stringMatching(/npm i -g @swmansion\/argent/),
+    });
+    const pinned = { ...entry, env: { ...entry.env, MISE_NODE_VERSION: "24" } };
+    expect(classifyMcpEntry(pinned, failing).status).toBe("warn");
+  });
+
+  it("judges the command a Windows `cmd /c` wrapper runs", () => {
+    const wrapped = { command: "cmd", args: ["/c", "argent", "mcp"] };
+    expect(classifyMcpEntry(wrapped, ctx({ globalOnPath: false }))).toMatchObject({
+      status: "error",
+      label: expect.stringMatching(/^cmd \/c argent mcp — `argent` is not on PATH/),
+    });
+    expect(classifyMcpEntry(wrapped, ctx()).status).toBe("ok");
+    const init = { command: "cmd.exe", args: ["/C", "argent", "init"] };
+    expect(classifyMcpEntry(init, ctx()).status).toBe("error");
+  });
+
+  it("does not print a token passed as an argument", () => {
+    const entry = {
+      command: "env",
+      args: [
+        "ARGENT_AUTH_TOKEN=SECRETARGTOKEN",
+        "ARGENT_TOOLS_URL=http://10.0.0.5:1",
+        "argent",
+        "mcp",
+      ],
+    };
+    const { label } = classifyMcpEntry(entry, ctx());
+    expect(label).not.toMatch(/SECRETARGTOKEN/);
+    expect(label).toMatch(/ARGENT_AUTH_TOKEN=\*\*\* ARGENT_TOOLS_URL=http:\/\/10\.0\.0\.5:1/);
+  });
+});
+
+describe("classifyMcpEntry details", () => {
+  it("skips the value of every node option that takes one", () => {
+    const script = writeFile(path.join(projectRoot, "x", "cli.js"));
+    for (const option of [
+      "-r",
+      "--require",
+      "--import",
+      "--loader",
+      "--experimental-loader",
+      "--env-file",
+      "--env-file-if-exists",
+      "-C",
+      "--conditions",
+      "--title",
+      "--disable-warning",
+      "--redirect-warnings",
+      "--watch-path",
+      "--input-type",
+      "--dns-result-order",
+      "--unhandled-rejections",
+    ]) {
+      const entry = { command: "node", args: [option, "value", script, "mcp"] };
+      expect(classifyMcpEntry(entry, ctx()).status, option).toBe("ok");
+    }
+  });
+
+  it("passes an absolute entry naming a healthy global argent", () => {
+    const bin = writeFile(path.join(projectRoot, "bin", "argent"));
+    const entry = { command: bin, args: ["mcp"] };
+    expect(classifyMcpEntry(entry, ctx({ globalBin: bin })).status).toBe("ok");
+  });
+
+  it("matches a relative path naming the failing shim", () => {
+    const bin = writeFile(path.join(projectRoot, "bin", "argent"));
+    const failing = ctx({ globalOnPath: false, globalRunError: "mise ERROR", globalBin: bin });
+    expect(classifyMcpEntry({ command: "./bin/argent", args: ["mcp"] }, failing)).toMatchObject({
+      status: "error",
+      detail: "mise ERROR",
+      fix: expect.stringMatching(/npm i -g/),
+    });
+  });
+
+  it("points a dead Claude Code local-scope path at claude mcp remove", () => {
+    const entry = { command: "/opt/gone/argent", args: ["mcp"] };
+    expect(classifyMcpEntry(entry, ctx({ claudeLocal: true })).fix).toMatch(
+      /claude mcp remove -s local argent, then argent init/
+    );
+  });
+
+  it("resolves the entry's cwd against the project, and ${workspaceFolder} to its root", () => {
+    writeFile(path.join(projectRoot, "apps", "mobile", "dist", "cli.js"));
+    writeFile(path.join(projectRoot, "tools", "x.js"));
+    const sub = path.join(projectRoot, "sub");
+    fs.mkdirSync(sub);
+    const app = { command: "node", args: ["dist/cli.js", "mcp"], cwd: "apps/mobile" };
+    expect(classifyMcpEntry(app, ctx()).status).toBe("ok");
+    const tools = { command: "node", args: ["tools/x.js", "mcp"], cwd: "${workspaceFolder}" };
+    expect(classifyMcpEntry(tools, ctx({ cwd: sub })).status).toBe("ok");
+  });
+
+  it("offers the install command only for a missing relative node_modules script", () => {
+    fs.writeFileSync(path.join(projectRoot, "package.json"), "{}");
+    const build = classifyMcpEntry({ command: "node", args: ["build/cli.js", "mcp"] }, ctx());
+    expect(build.fix).toMatch(/^Point the entry/);
+    const deps = classifyMcpEntry(
+      { command: "node", args: ["node_modules/@swmansion/argent/dist/cli.js", "mcp"] },
+      ctx()
+    );
+    expect(deps).toMatchObject({ status: "error", fix: "pnpm install" });
+  });
+
+  it("anchors the package and env name patterns", () => {
+    const createArgent = { command: "npx", args: ["-y", "create-argent", "mcp"] };
+    expect(classifyMcpEntry(createArgent, ctx()).status).toBe("error");
+    const nodePath = { command: "argent", args: ["mcp"], env: { NODE_PATH: "/x" } };
+    expect(classifyMcpEntry(nodePath, ctx({ globalOnPath: false })).status).toBe("error");
+  });
+
+  it("reads both --package spellings", () => {
+    for (const args of [
+      ["-y", "--package=other-tool", "argent", "mcp"],
+      ["-y", "--package", "other-tool", "argent", "mcp"],
+    ]) {
+      expect(classifyMcpEntry({ command: "npx", args }, ctx()).status).toBe("error");
+    }
+  });
+
+  it("gives a fix for an unparsed entry, a switched-off one and a PATH without argent", () => {
+    expect(classifyMcpEntry({ command: "", args: [] }, ctx()).fix).toBe("argent init");
+    const off = { command: "argent", args: ["mcp"], switchedOffBy: ["enabled" as const] };
+    expect(classifyMcpEntry(off, ctx())).toMatchObject({
+      detail: "`enabled: false`",
+      fix: expect.stringMatching(/Turn the argent server back on/),
+    });
+    const noArgent = { command: "argent", args: ["mcp"], env: { PATH: "/nonexistent" } };
+    expect(classifyMcpEntry(noArgent, ctx()).fix).toMatch(/Add argent's bin dir/);
   });
 });

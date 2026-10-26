@@ -1,8 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { homedir } from "node:os";
 import { MCP_BINARY_NAME, type McpServerEntry } from "@argent/installer";
-import { type DoctorCheck, check, samePath } from "./doctor-shared.js";
+import { type DoctorCheck, check, home, samePath } from "./doctor-shared.js";
 import { GLOBAL_SHIM_FIX, addToPathFix, findGlobalArgent, isOnPath } from "./doctor-install.js";
+import { redactUrl } from "./doctor-tool-server.js";
 
 // `argent doctor`: whether an editor's MCP entry starts argent, judged the way its runner starts it.
 
@@ -22,7 +24,11 @@ export interface EntryContext {
   localDeclared?: boolean;
   argentCmd: string;
   installCmd: string;
-  /** Claude Code's local scope, which `argent init` never writes or clears. */
+  /**
+   * Claude Code's local scope. `argent init` removes only a stock `argent mcp`
+   * entry there (or, after asking, one whose `argent` is gone from PATH), so
+   * other broken entries need `claude mcp remove`.
+   */
   claudeLocal?: boolean;
   /** Bin dir of a global install that is not on PATH. */
   offPathGlobalBin?: string | null;
@@ -32,6 +38,14 @@ export interface EntryContext {
   npmGlobalHasArgent?: boolean | null;
   /** The project runs Yarn 2 or later, which has `yarn dlx` (Yarn 1 doesn't). */
   yarnBerry?: boolean;
+  /** The directory the editor starts the command in; by default the project root or cwd, by scope. */
+  spawnDir?: string;
+  /** spawnDir is wherever the editor was started, which doctor's cwd stands in for. */
+  spawnsInLaunchDir?: boolean;
+  /** The editor expands a leading `~` in command, args and cwd (VS Code, Cursor). */
+  expandsTilde?: boolean;
+  /** The editor appends the entry's PATH to its own instead of replacing it (VS Code). */
+  appendsPath?: boolean;
 }
 
 /**
@@ -42,8 +56,38 @@ export interface EntryContext {
  */
 export type CwdSupport = "expands" | "literal" | "ignored" | "absolute-only";
 
+// `KEY=value` arguments (`env ARGENT_AUTH_TOKEN=… argent mcp`) that carry a secret.
+const SECRET_ASSIGNMENT = /^(\w*(?:TOKEN|SECRET|PASSWORD|KEY)\w*)=.+$/i;
+
+function redactArg(arg: string): string {
+  if (SECRET_ASSIGNMENT.test(arg)) return arg.replace(SECRET_ASSIGNMENT, "$1=***");
+  return /^\w+:\/\//.test(arg) ? redactUrl(arg) : arg;
+}
+
 export function formatEntry(entry: McpServerEntry): string {
-  return [entry.command, ...entry.args].join(" ");
+  if (entry.url) return redactUrl(entry.url);
+  return [entry.command, ...entry.args].map(redactArg).join(" ");
+}
+
+// `${VAR}` (Claude Code, Gemini), `${env:VAR}` (VS Code, Cursor), `{env:VAR}` (opencode).
+const ENV_REFERENCE = /\$\{env:(\w+)\}|\$\{(\w+)\}|\{env:(\w+)\}/g;
+// What is left after expansion, Gemini's bare `$VAR` included.
+const UNRESOLVED_VARIABLE = /\$\{|\{env:|\$\w/;
+
+/** An entry value with the editor variables this shell can fill in expanded. */
+export function expandEnvReferences(value: string): string {
+  return value.replace(
+    ENV_REFERENCE,
+    (match, a?: string, b?: string, c?: string) => process.env[(a ?? b ?? c)!] ?? match
+  );
+}
+
+export function hasUnresolvedVariable(value: string): boolean {
+  return UNRESOLVED_VARIABLE.test(value);
+}
+
+function expandTilde(value: string): string {
+  return /^~($|[\\/])/.test(value) ? homedir() + value.slice(1) : value;
 }
 
 // The scoped package or its unscoped `argent` alias, optionally with a version.
@@ -71,6 +115,7 @@ const NODE_VALUE_OPTIONS = new Set([
 // Env that changes which `argent` the editor's spawn finds: its PATH or a
 // version manager's pin. Other keys (ARGENT_IOS_TEAM_ID, …) don't.
 const RESOLUTION_ENV = /^(PATH|Path|MISE_|ASDF_|NODENV_|NVM_|VOLTA_|FNM_|N_PREFIX$)/;
+const PATH_KEY = /^(PATH|Path)$/;
 
 /** The package `npx -p <pkg>` / `yarn dlx -p <pkg>` / `--package=<pkg>` names. */
 function packageOption(args: string[]): string | undefined {
@@ -96,12 +141,23 @@ function nodeScriptIndex(args: string[]): number {
   return -1;
 }
 
+/** The command a `cmd /c …` wrapper runs, the form Claude Code's docs give for Windows. */
+function unwrapCmdShell(entry: McpServerEntry): McpServerEntry | null {
+  const name = entry.command.split(/[\\/]/).pop()!;
+  if (!/^cmd(\.exe)?$/i.test(name)) return null;
+  const at = entry.args.findIndex((a) => /^\/c$/i.test(a));
+  const [command, ...args] = at === -1 ? [] : entry.args.slice(at + 1);
+  return command ? { ...entry, command, args } : null;
+}
+
 /**
- * Will this MCP entry start? Mirrors the "provably dead" rule `init` uses to
- * prune stale entries (init-stale-config.ts): a command that resolves in this
- * shell is fine; one that doesn't is dead unless custom env may fix it in the
- * client (an nvm PATH, classically). The CLI dispatches on its first argument,
- * so `mcp` must follow the argent binary, script or package.
+ * Will this MCP entry start? A command that resolves in this shell is fine;
+ * one that doesn't is dead unless env that changes the lookup (an nvm PATH, a
+ * version manager's pin) may fix it in the client. That is stricter than the
+ * "provably dead" rule `init` prunes by (init-stale-config.ts), which spares
+ * an entry with any custom env because removing it can't be undone. The CLI
+ * dispatches on its first argument, so `mcp` must follow the argent binary,
+ * script or package.
  */
 export function classifyMcpEntry(entry: McpServerEntry, ctx: EntryContext): DoctorCheck {
   const cmd = formatEntry(entry);
@@ -123,11 +179,17 @@ export function classifyMcpEntry(entry: McpServerEntry, ctx: EntryContext): Doct
 
 function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck {
   const cmd = formatEntry(entry);
+  if (entry.url) return check("info", `${cmd} (remote MCP server, not verified)`);
   const reinit = ctx.claudeLocal
     ? `claude mcp remove -s local argent, then ${ctx.argentCmd} init`
     : `${ctx.argentCmd} init`;
   if (entry.command === "") {
     return check("warn", "argent entry exists but could not be parsed", { fix: reinit });
+  }
+  const wrapped = unwrapCmdShell(entry);
+  if (wrapped) {
+    const inner = classifyCommand(wrapped, ctx);
+    return { ...inner, label: inner.label.replace(formatEntry(wrapped), cmd) };
   }
   const badArgs = (): DoctorCheck =>
     check("error", `${cmd} — doesn't start the MCP server (argent's command must be \`mcp\`)`, {
@@ -139,14 +201,21 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
         ? `Point the entry at an existing argent, or run ${reinit}`
         : `Point the entry at an existing argent, or remove it and run ${ctx.argentCmd} init`,
     });
-  const scopeBase = ctx.scope === "project" ? ctx.projectRoot : ctx.cwd;
+  const resolveValue = (value: string) => {
+    const expanded = expandEnvReferences(value);
+    return ctx.expandsTilde ? expandTilde(expanded) : expanded;
+  };
+  const scopeBase = ctx.spawnDir ?? (ctx.scope === "project" ? ctx.projectRoot : ctx.cwd);
   const cwdSupport = ctx.cwdSupport ?? "expands";
   const rawCwd = cwdSupport === "ignored" ? undefined : entry.cwd;
   const entryCwd =
-    cwdSupport === "expands"
-      ? rawCwd?.replace(/\$\{workspace(Folder|Root)\}/g, ctx.projectRoot)
-      : rawCwd;
-  if (entryCwd?.includes("${")) {
+    rawCwd &&
+    resolveValue(
+      cwdSupport === "expands"
+        ? rawCwd.replace(/\$\{workspace(Folder|Root)\}/g, ctx.projectRoot)
+        : rawCwd
+    );
+  if (entryCwd && hasUnresolvedVariable(entryCwd)) {
     return check("info", `${cmd} (runs in ${entry.cwd}, an editor variable, not verified)`);
   }
   if (entryCwd && cwdSupport === "absolute-only" && !path.isAbsolute(entryCwd)) {
@@ -161,32 +230,52 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
       fix: "Point the entry's cwd at an existing directory, or remove it",
     });
   }
-  const absolute = path.isAbsolute(entry.command);
-  const pathLike = absolute || /[\\/]/.test(entry.command);
-  const fileName = path.basename(entry.command);
-  const bare = process.platform === "win32" ? fileName.replace(/\.(cmd|exe)$/i, "") : fileName;
+  // The editor runs relative paths from where it was started: from the project
+  // root they would resolve.
+  const missing = (p: string, otherwise: DoctorCheck): DoctorCheck =>
+    ctx.spawnsInLaunchDir &&
+    !entryCwd &&
+    !samePath(base, ctx.projectRoot) &&
+    fs.existsSync(path.resolve(ctx.projectRoot, p))
+      ? check("warn", `${cmd} — ${p} resolves only when the editor starts in the project root`, {
+          detail: `relative to ${home(base)}, where doctor runs`,
+          fix: `Start the editor from ${home(ctx.projectRoot)}, or use an absolute path in the entry`,
+        })
+      : otherwise;
 
-  if (entry.command.includes("${")) {
+  const command = resolveValue(entry.command);
+  if (hasUnresolvedVariable(command)) {
     return check("info", `${cmd} (uses an editor variable, not verified)`);
   }
-  if (pathLike && !fs.existsSync(path.resolve(base, entry.command))) {
-    return deadPath(entry.command);
+  const absolute = path.isAbsolute(command);
+  const pathLike = absolute || /[\\/]/.test(command);
+  const fileName = path.basename(command);
+  const bare = process.platform === "win32" ? fileName.replace(/\.(cmd|exe)$/i, "") : fileName;
+
+  if (pathLike && !fs.existsSync(path.resolve(base, command))) {
+    return missing(command, deadPath(entry.command));
   }
-  // The editor's spawn looks a bare command up on the entry's own PATH.
-  const envPath = entry.env?.PATH ?? entry.env?.Path;
-  const entryPath = envPath !== undefined && !envPath.includes("${") ? envPath : null;
+  // The editor's spawn looks a bare command up on the entry's own PATH. POSIX
+  // env names are case-sensitive: only Windows reads `Path` as PATH.
+  const rawPath = entry.env?.PATH ?? (process.platform === "win32" ? entry.env?.Path : undefined);
+  const envPath = rawPath === undefined ? undefined : expandEnvReferences(rawPath);
+  const entryPath = envPath !== undefined && !hasUnresolvedVariable(envPath) ? envPath : null;
+  const lookupPath =
+    entryPath !== null && ctx.appendsPath
+      ? [process.env.PATH, entryPath].filter(Boolean).join(path.delimiter)
+      : entryPath;
   const notOnEntryPath = (): DoctorCheck | null =>
-    !pathLike && entryPath !== null && !isOnPath(entry.command, entryPath)
-      ? check("error", `${cmd} — \`${entry.command}\` is not on the PATH this entry sets`, {
-          detail: entryPath,
-          fix: `Add ${entry.command}'s bin dir to the entry's PATH, or use its absolute path`,
+    !pathLike && lookupPath !== null && !isOnPath(command, lookupPath)
+      ? check("error", `${cmd} — \`${command}\` is not on the PATH this entry sets`, {
+          detail: entryPath!,
+          fix: `Add ${command}'s bin dir to the entry's PATH, or use its absolute path`,
         })
       : null;
   if (bare === MCP_BINARY_NAME) {
     if (entry.args[0] !== "mcp") return badArgs();
-    const mayResolve = Object.keys(entry.env ?? {}).some((key) => RESOLUTION_ENV.test(key));
-    const failingShim = (): DoctorCheck =>
-      mayResolve
+    const resolutionKeys = Object.keys(entry.env ?? {}).filter((key) => RESOLUTION_ENV.test(key));
+    const failingShim = (softened: boolean): DoctorCheck =>
+      softened
         ? check("warn", `${cmd} — \`argent\` fails to run here without this entry's env`, {
             detail: ctx.globalRunError!,
           })
@@ -194,22 +283,35 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
             detail: ctx.globalRunError!,
             fix: GLOBAL_SHIM_FIX,
           });
+    const isFailingShim = (bin: string) => !!ctx.globalRunError && samePath(bin, ctx.globalBin);
+    const onEntryPath = (): DoctorCheck => {
+      const found = findGlobalArgent(entryPath!);
+      if (!found) {
+        return check("error", `${cmd} — \`argent\` is not on the PATH this entry sets`, {
+          detail: entryPath!,
+          fix: "Add argent's bin dir to the entry's PATH, or use argent's absolute path",
+        });
+      }
+      // The entry's PATH found the shim itself; only a version manager's pin may still fix it.
+      if (isFailingShim(found.bin)) {
+        return failingShim(resolutionKeys.some((key) => !PATH_KEY.test(key)));
+      }
+      return check("ok", cmd, { detail: "found on the PATH the entry sets" });
+    };
+
     if (pathLike) {
-      const isFailingShim =
-        !!ctx.globalRunError && samePath(path.resolve(base, entry.command), ctx.globalBin);
-      return isFailingShim ? failingShim() : check("ok", cmd);
+      return isFailingShim(path.resolve(base, command))
+        ? failingShim(resolutionKeys.length > 0)
+        : check("ok", cmd);
     }
-    if (entryPath !== null) {
-      return findGlobalArgent(entryPath)
-        ? check("ok", cmd, { detail: "found on the PATH the entry sets" })
-        : check("error", `${cmd} — \`argent\` is not on the PATH this entry sets`, {
-            detail: entryPath,
-            fix: "Add argent's bin dir to the entry's PATH, or use argent's absolute path",
-          });
+    if (envPath !== undefined && entryPath === null) {
+      return check("info", `${cmd} (sets PATH with an editor variable, not verified)`);
     }
-    if (ctx.globalRunError) return failingShim();
+    if (entryPath !== null && !ctx.appendsPath) return onEntryPath();
+    if (ctx.globalRunError) return failingShim(resolutionKeys.length > 0);
     if (ctx.globalOnPath) return check("ok", cmd);
-    if (mayResolve) {
+    if (entryPath !== null) return onEntryPath();
+    if (resolutionKeys.length > 0) {
       return check("warn", `${cmd} — \`argent\` is not on this shell's PATH`, {
         detail: "its custom env may still make it resolve inside the editor",
       });
@@ -223,11 +325,12 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
   if (bare === "node") {
     // Node's own options (`--no-warnings`, `-r dotenv/config`) come before the script.
     const at = nodeScriptIndex(entry.args);
-    const script = at === -1 ? undefined : entry.args[at];
-    if (!script || entry.args[at + 1] !== "mcp") return badArgs();
+    const rawScript = at === -1 ? undefined : entry.args[at];
+    if (!rawScript || entry.args[at + 1] !== "mcp") return badArgs();
     const noNode = notOnEntryPath();
     if (noNode) return noNode;
-    if (script.includes("${")) {
+    const script = resolveValue(rawScript);
+    if (hasUnresolvedVariable(script)) {
       return check("info", `${cmd} (uses an editor variable, not verified)`);
     }
     if (fs.existsSync(path.resolve(base, script))) return check("ok", cmd);
@@ -235,9 +338,12 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
       !path.isAbsolute(script) &&
       /node_modules[\\/]/.test(script) &&
       fs.existsSync(path.join(ctx.projectRoot, "package.json"));
-    return inProjectDeps
-      ? check("error", `${cmd} — ${script} does not exist`, { fix: installFix(ctx) })
-      : deadPath(script);
+    return missing(
+      script,
+      inProjectDeps
+        ? check("error", `${cmd} — ${script} does not exist`, { fix: installFix(ctx) })
+        : deadPath(script)
+    );
   }
   if (bare === "npx" || bare === "yarn") {
     const startsMcp = entry.args.some(
@@ -256,10 +362,10 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
         ? check("info", `${cmd} (needs Yarn 2 or later, since Yarn 1 has no dlx; not verified)`)
         : check("ok", cmd, { detail: "fetched from npm when the editor starts it" });
     }
-    const missing = check("error", `${cmd} — no local @swmansion/argent to run`, {
+    const missingLocal = check("error", `${cmd} — no local @swmansion/argent to run`, {
       fix: installFix(ctx),
     });
-    if (bare === "yarn") return ctx.localInstalled ? check("ok", cmd) : missing;
+    if (bare === "yarn") return ctx.localInstalled ? check("ok", cmd) : missingLocal;
     // npx resolves like Node (ancestors too); `--no-install` then falls back to
     // the `argent` in npm's global prefix, wherever PATH points.
     const runsLocal = ctx.localResolvable ?? ctx.localInstalled;
@@ -267,7 +373,7 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
       !fetches &&
       entry.args.includes(MCP_BINARY_NAME) &&
       (ctx.npmGlobalHasArgent ?? ctx.globalOnPath);
-    return runsLocal || runsGlobal ? check("ok", cmd) : missing;
+    return runsLocal || runsGlobal ? check("ok", cmd) : missingLocal;
   }
   return check("info", `${cmd} (custom command, not verified)`);
 }
