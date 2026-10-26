@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@argent/registry";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
@@ -19,6 +19,7 @@ import { describeIos, iosRequires } from "../describe/platforms/ios";
 import { describeIosDevice } from "../describe/platforms/ios-device";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
+import { pollHarmonyTree, harmonyRequires } from "../describe/platforms/harmony";
 
 const AWAIT_SCREEN_IDLE_TOOL_ID = "await-screen-idle";
 
@@ -31,7 +32,9 @@ const zodSchema = z
     udid: z
       .string()
       .min(1)
-      .describe("Target device id from `list-devices` (iOS UDID, Android serial, or Chromium id)."),
+      .describe(
+        "Target device id from `list-devices` (iOS UDID, Android serial, <flag:harmonyos>HarmonyOS id, </flag:harmonyos>or Chromium id)."
+      ),
     timeoutMs: z
       .number()
       .int()
@@ -77,6 +80,8 @@ interface IdleResult {
    * check for the destination content before trusting the screen is loaded.
    */
   ambientMotion?: true;
+  /** Why what it settled on may not be the live screen. */
+  note?: string;
 }
 
 const capability: ToolCapability = {
@@ -84,6 +89,7 @@ const capability: ToolCapability = {
   appleRemote: { simulator: true },
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
+  harmony: { device: true },
 };
 
 // Frames are normalized 0..1, so rounding to 0.01 tolerates sub-pixel jitter
@@ -337,7 +343,8 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
     device: DeviceInfo,
     services: Record<string, unknown>,
     isTvOs: boolean,
-    androidIsTv: boolean
+    androidIsTv: boolean,
+    budgetMs: number
   ): Promise<DescribeTreeData> {
     // ios-remote reads the same AX tree through describeIos: the ax-service
     // blueprint routes it over the sim-remote tunnel, so only the preflight dep
@@ -351,6 +358,9 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
     }
     if (device.platform === "android") {
       return describeAndroid(registry, device.id, undefined, androidIsTv);
+    }
+    if (device.platform === "harmony") {
+      return pollHarmonyTree(harmonyConnectKey(device.id), budgetMs);
     }
     return describeChromium(services.chromium as ChromiumCdpApi);
   }
@@ -368,12 +378,14 @@ export function createAwaitScreenIdleTool(registry: Registry): ToolDefinition<Pa
 
 Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (default ${DEFAULT_POLL_INTERVAL_MS}ms) until it
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
-${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls }; settled=false means the screen never went
+${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls<flag:harmonyos>, note?</flag:harmonyos> }; settled=false means the screen never went
 still before the timeout. A screen where only up to ${MAX_AMBIENT_MOVERS} looping animations keep moving (a bobbing hint, a
 pulsing badge), each swinging for at least ${MIN_LOOP_POLLS} poll intervals, counts as settled and adds ambientMotion: true;
 those elements are still moving. A screen that shows a progress bar or spinner role is waited out. A loop that changes a
-label or value (an animated "Loading..." label) is a content change and is waited out. Use after a launch/navigation to
-wait for the UI to render before screenshotting or tapping.`,
+label or value (an animated "Loading..." label) is a content change and is waited out. <flag:harmonyos>A note on settled=true
+means the screen it settled on is not live: a suspended HarmonyOS panel settles instantly on its last frame, and taps land
+nowhere until it is woken.
+</flag:harmonyos>Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
@@ -392,6 +404,7 @@ wait for the UI to render before screenshotting or tapping.`,
       if (device.platform === "ios") await ensureDeps(iosRequires);
       else if (device.platform === "ios-remote") await ensureDeps(["sim-remote"]);
       else if (device.platform === "android") await ensureDeps(androidRequires);
+      else if (device.platform === "harmony") await ensureDeps(harmonyRequires);
 
       // Resolve tvOS / Android-TV once. Physical devices skip the tvOS probe. They are never tvOS simulators.
       const isTvOs =
@@ -411,7 +424,7 @@ wait for the UI to render before screenshotting or tapping.`,
       const ambientMotion = new AmbientMotion();
 
       const poll = await pollDescribeTree<true>({
-        fetchTree: () => fetchTree(device, services, isTvOs, androidIsTv),
+        fetchTree: (budgetMs) => fetchTree(device, services, isTvOs, androidIsTv, budgetMs),
         timeoutMs: params.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         pollIntervalMs,
         signal: ctx?.signal,
@@ -440,11 +453,13 @@ wait for the UI to render before screenshotting or tapping.`,
         },
       });
 
+      const note = poll.result === true && poll.lastData?.stale ? poll.lastData.hint : undefined;
       return {
         settled: poll.result === true,
         waitedMs: poll.elapsedMs,
         polls: poll.polls,
         ...(ambient ? { ambientMotion: true as const } : {}),
+        ...(note ? { note } : {}),
       };
     },
   };
