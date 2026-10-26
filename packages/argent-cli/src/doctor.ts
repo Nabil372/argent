@@ -13,6 +13,7 @@ import {
   resolveInstallMode,
   resolveProjectRoot,
   PACKAGE_NAME,
+  type McpServerEntry,
 } from "@argent/installer";
 import {
   type CheckStatus,
@@ -46,11 +47,13 @@ const execFileAsync = promisify(execFile);
 // command that does (`argent init`, `argent update`, an installer).
 
 /**
- * PATH as an editor sees it. `npx argent doctor` and npm scripts prepend the
- * `node_modules/.bin` of the project and its ancestors, which would make the
- * project-local copy pass for a global install (and a bare `argent mcp` entry
- * look startable). Editors don't see those dirs. A `node_modules/.bin` outside
- * cwd's ancestry is a real global bin (Yarn classic's) and stays.
+ * This shell's PATH without the dirs package scripts add (an editor started
+ * from the Dock gets launchd's PATH instead, see guiPath). `npx argent doctor`
+ * and npm scripts prepend the `node_modules/.bin` of the project and its
+ * ancestors, which would make the project-local copy pass for a global install
+ * (and a bare `argent mcp` entry look startable). Editors don't see those dirs.
+ * A `node_modules/.bin` outside cwd's ancestry is a real global bin (Yarn
+ * classic's) and stays.
  */
 export function stripPackageBinDirs(pathValue: string, cwd: string): string {
   const here = path.resolve(cwd);
@@ -95,6 +98,22 @@ async function launchdPath(): Promise<string | null> {
   }
 }
 
+/** Whether npm's global prefix, where `npx --no-install` looks, has an `argent`. */
+async function npmGlobalHasArgent(): Promise<boolean | null> {
+  try {
+    const { stdout } = await execFileAsync("npm", ["prefix", "-g"], {
+      timeout: 5_000,
+      shell: process.platform === "win32",
+    });
+    const prefix = stdout.trim();
+    if (!prefix) return null;
+    const binDir = process.platform === "win32" ? prefix : path.join(prefix, "bin");
+    return findGlobalArgent(binDir) !== null;
+  } catch {
+    return null;
+  }
+}
+
 function currentDir(): string {
   try {
     return process.cwd();
@@ -120,6 +139,7 @@ export async function collectDoctorReport(options: {
   const runningLocal = options.paths.installKind === "local";
   const projectPm = detectProjectPackageManager(projectRoot);
   const localCmd = localArgentCmd(projectRoot);
+  const [guiPath, npmGlobal] = await Promise.all([launchdPath(), npmGlobalHasArgent()]);
   const ctx: DoctorContext = {
     projectRoot,
     claudeRoot: claudeProjectKey(cwd),
@@ -130,7 +150,8 @@ export async function collectDoctorReport(options: {
       global && !global.runError ? "argent" : mode === "local" ? localCmd : "npx @swmansion/argent",
     installCmd: formatShellCommand(projectInstallCommand(projectPm)),
     offPathGlobalBin: !global && !runningLocal ? globalBinDirOf(packageRoot) : null,
-    guiPath: await launchdPath(),
+    guiPath,
+    npmGlobalHasArgent: npmGlobal,
   };
   const running = options.paths.version ?? getInstalledVersion() ?? "unknown";
   const globalPm = globalPackageManagerOf(packageRoot);
@@ -144,13 +165,16 @@ export async function collectDoctorReport(options: {
   const updateCmd = updateCommand(runningLocal, globalPm, ctx.argentCmd);
   const linked = await getResolvedToolsUrl();
   const entryToolsUrls: EntryToolsUrl[] = [];
-  const editors = editorsSection(ctx, entryToolsUrls);
+  const startedEntries: McpServerEntry[] = [];
+  const editors = editorsSection(ctx, entryToolsUrls, startedEntries);
+  const entriesAllRemote =
+    startedEntries.length > 0 && startedEntries.every((e) => e.env?.ARGENT_TOOLS_URL);
 
   // Sections that touch the network or spawn a process run concurrently.
   const [toolServer, entryRemotes, platforms, other] = await Promise.all([
     toolServerSection(ctx, running, options.paths, linked),
     entryRemoteChecks(entryToolsUrls),
-    platformsSection(ctx, options.paths, linked, reinstall),
+    platformsSection(ctx, options.paths, linked, reinstall, entriesAllRemote),
     otherSection(ctx, running, options.offline, updateCmd, runningLocal ? projectPm : globalPm),
   ]);
   toolServer.checks.push(...entryRemotes);

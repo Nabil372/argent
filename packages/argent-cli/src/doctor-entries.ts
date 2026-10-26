@@ -18,6 +18,8 @@ export interface EntryContext {
   localInstalled: boolean;
   /** Resolvable the way npx resolves it (Node resolution, ancestors included). */
   localResolvable?: boolean;
+  /** Whether package.json declares @swmansion/argent, so installing brings it back. */
+  localDeclared?: boolean;
   argentCmd: string;
   installCmd: string;
   /** Claude Code's local scope, which `argent init` never writes or clears. */
@@ -26,6 +28,10 @@ export interface EntryContext {
   offPathGlobalBin?: string | null;
   /** How the editor treats the entry's `cwd`; "expands" when unknown. */
   cwdSupport?: CwdSupport;
+  /** Whether npm's global prefix has an `argent`, where `npx --no-install` looks; null when unknown. */
+  npmGlobalHasArgent?: boolean | null;
+  /** The project runs Yarn 2 or later, which has `yarn dlx` (Yarn 1 doesn't). */
+  yarnBerry?: boolean;
 }
 
 /**
@@ -75,6 +81,12 @@ function packageOption(args: string[]): string | undefined {
   return undefined;
 }
 
+function installFix(ctx: EntryContext): string {
+  return ctx.localDeclared === false
+    ? `Add @swmansion/argent to devDependencies, then ${ctx.installCmd}`
+    : ctx.installCmd;
+}
+
 /** The script `node` runs: the first argument that is neither an option nor an option's value. */
 function nodeScriptIndex(args: string[]): number {
   for (let i = 0; i < args.length; i++) {
@@ -94,13 +106,19 @@ function nodeScriptIndex(args: string[]): number {
 export function classifyMcpEntry(entry: McpServerEntry, ctx: EntryContext): DoctorCheck {
   const cmd = formatEntry(entry);
   const result = classifyCommand(entry, ctx);
-  if (entry.switchedOffBy?.length && (result.status === "ok" || result.status === "info")) {
+  if (!entry.switchedOffBy?.length) return result;
+  const key = `\`${entry.switchedOffBy[0] === "enabled" ? "enabled: false" : "disabled: true"}\``;
+  if (result.status === "ok" || result.status === "info") {
     return check("warn", `${cmd} — switched off in the editor`, {
-      detail: `\`${entry.switchedOffBy[0] === "enabled" ? "enabled: false" : "disabled: true"}\``,
+      detail: key,
       fix: "Turn the argent server back on in the editor's MCP settings",
     });
   }
-  return result;
+  // The editor never starts it, so its broken command is no error yet.
+  return check("warn", `${result.label} (switched off in the editor)`, {
+    detail: [key, result.detail].filter(Boolean).join(" · "),
+    fix: result.fix,
+  });
 }
 
 function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck {
@@ -218,7 +236,7 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
       /node_modules[\\/]/.test(script) &&
       fs.existsSync(path.join(ctx.projectRoot, "package.json"));
     return inProjectDeps
-      ? check("error", `${cmd} — ${script} does not exist`, { fix: ctx.installCmd })
+      ? check("error", `${cmd} — ${script} does not exist`, { fix: installFix(ctx) })
       : deadPath(script);
   }
   if (bare === "npx" || bare === "yarn") {
@@ -234,16 +252,21 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
       (bare === "yarn" && entry.args[0] === "dlx");
     const pkg = packageOption(entry.args) ?? entry.args.find((a) => ARGENT_PACKAGE_ARG.test(a));
     if (fetches && pkg && ARGENT_PACKAGE_ARG.test(pkg)) {
-      return check("ok", cmd, { detail: "fetched from npm when the editor starts it" });
+      return bare === "yarn" && !ctx.yarnBerry
+        ? check("info", `${cmd} (needs Yarn 2 or later, since Yarn 1 has no dlx; not verified)`)
+        : check("ok", cmd, { detail: "fetched from npm when the editor starts it" });
     }
     const missing = check("error", `${cmd} — no local @swmansion/argent to run`, {
-      fix: ctx.installCmd,
+      fix: installFix(ctx),
     });
     if (bare === "yarn") return ctx.localInstalled ? check("ok", cmd) : missing;
     // npx resolves like Node (ancestors too); `--no-install` then falls back to
-    // an `argent` on PATH.
+    // the `argent` in npm's global prefix, wherever PATH points.
     const runsLocal = ctx.localResolvable ?? ctx.localInstalled;
-    const runsGlobal = !fetches && ctx.globalOnPath && entry.args.includes(MCP_BINARY_NAME);
+    const runsGlobal =
+      !fetches &&
+      entry.args.includes(MCP_BINARY_NAME) &&
+      (ctx.npmGlobalHasArgent ?? ctx.globalOnPath);
     return runsLocal || runsGlobal ? check("ok", cmd) : missing;
   }
   return check("info", `${cmd} (custom command, not verified)`);

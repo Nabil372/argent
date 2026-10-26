@@ -50,6 +50,8 @@ export interface DoctorContext {
   offPathGlobalBin: string | null;
   /** macOS: the PATH launchd gives apps started from the Dock. */
   guiPath?: string | null;
+  /** Whether npm's global prefix has an `argent`; null when npm can't be asked. */
+  npmGlobalHasArgent?: boolean | null;
 }
 
 export interface GlobalInstall {

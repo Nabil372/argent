@@ -5,6 +5,7 @@ import * as path from "node:path";
 import * as http from "node:http";
 import {
   collectDoctorReport,
+  doctor,
   renderDoctorReport,
   stripPackageBinDirs,
   updateCommand,
@@ -156,6 +157,52 @@ describe("collectDoctorReport", () => {
       status: "error",
       label: expect.stringMatching(/unreachable/),
     });
+  });
+
+  it("skips Platforms when every entry the editors start points at a remote tool-server", async () => {
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          argent: {
+            command: "argent",
+            args: ["mcp"],
+            env: { ARGENT_TOOLS_URL: "http://127.0.0.1:1" },
+          },
+        },
+      })
+    );
+    const platforms = (await collect()).sections.find((s) => s.title === "Platforms")!;
+    expect(platforms.checks).toEqual([
+      expect.objectContaining({ status: "info", label: expect.stringMatching(/^Skipped/) }),
+    ]);
+  });
+
+  it("exits 1 on a failed check and on an unknown option", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const pkg = path.join(home, "pkg");
+    const paths = {
+      bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
+      simulatorServerDir: path.join(pkg, "bin"),
+      nativeDevtoolsDir: path.join(pkg, "dylibs"),
+      version: "1.0.0",
+    };
+    try {
+      process.exitCode = undefined;
+      await doctor(["--bogus"], { paths });
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = undefined;
+      await doctor(["--offline", "--json"], { paths });
+      const report = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as DoctorReport;
+      expect(report.errors).toBeGreaterThan(0);
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = undefined;
+      log.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it("rejects an argent:// pairing string in ARGENT_TOOLS_URL", async () => {

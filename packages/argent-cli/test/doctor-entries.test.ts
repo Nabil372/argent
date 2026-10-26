@@ -141,12 +141,44 @@ describe("classifyMcpEntry", () => {
       expect(classifyMcpEntry({ command: "npx", args }, ctx()).status).toBe("ok");
     }
     const dlx = { command: "yarn", args: ["dlx", "@swmansion/argent", "mcp"] };
-    expect(classifyMcpEntry(dlx, ctx()).status).toBe("ok");
+    expect(classifyMcpEntry(dlx, ctx({ yarnBerry: true })).status).toBe("ok");
   });
 
-  it("lets `npx --no-install argent` fall back to the global argent", () => {
+  it("doesn't vouch for `yarn dlx` outside a Yarn 2+ project", () => {
+    const dlx = { command: "yarn", args: ["dlx", "@swmansion/argent", "mcp"] };
+    const result = classifyMcpEntry(dlx, ctx({ globalOnPath: false }));
+    expect(result.status).toBe("info");
+    expect(result.label).toMatch(/Yarn 2 or later/);
+  });
+
+  it("lets `npx --no-install argent` fall back to npm's global argent, not PATH's", () => {
     const entry = { command: "npx", args: ["--no-install", "argent", "mcp"] };
-    expect(classifyMcpEntry(entry, ctx()).status).toBe("ok");
+    expect(classifyMcpEntry(entry, ctx({ npmGlobalHasArgent: true })).status).toBe("ok");
+    expect(
+      classifyMcpEntry(entry, ctx({ globalOnPath: false, npmGlobalHasArgent: true })).status
+    ).toBe("ok");
+    expect(
+      classifyMcpEntry(entry, ctx({ globalOnPath: true, npmGlobalHasArgent: false })).status
+    ).toBe("error");
+  });
+
+  it("asks to declare the dependency when package.json doesn't list argent", () => {
+    const entry = { command: "npx", args: ["--no-install", "argent", "mcp"] };
+    const noArgent = { globalOnPath: false, npmGlobalHasArgent: false };
+    expect(classifyMcpEntry(entry, ctx({ ...noArgent, localDeclared: true })).fix).toBe(
+      "pnpm install"
+    );
+    expect(classifyMcpEntry(entry, ctx({ ...noArgent, localDeclared: false })).fix).toBe(
+      "Add @swmansion/argent to devDependencies, then pnpm install"
+    );
+    fs.writeFileSync(path.join(projectRoot, "package.json"), "{}");
+    const node = {
+      command: "node",
+      args: ["node_modules/@swmansion/argent/dist/cli.js", "mcp"],
+    };
+    expect(classifyMcpEntry(node, ctx({ localDeclared: false })).fix).toBe(
+      "Add @swmansion/argent to devDependencies, then pnpm install"
+    );
   });
 
   it("resolves an npx entry the way npx does, through ancestors", () => {
@@ -388,9 +420,12 @@ describe("classifyMcpEntry argument rules", () => {
     expect(result.fix).toMatch(/claude mcp remove -s local argent/);
   });
 
-  it("still fails a dead entry that is switched off", () => {
+  it("only warns about a dead entry the editor has switched off, keeping its fix", () => {
     const entry = { command: "argent", args: ["mcp"], switchedOffBy: ["enabled" as const] };
-    expect(classifyMcpEntry(entry, ctx({ globalOnPath: false })).status).toBe("error");
+    const result = classifyMcpEntry(entry, ctx({ globalOnPath: false }));
+    expect(result.status).toBe("warn");
+    expect(result.label).toMatch(/can't start \(switched off in the editor\)/);
+    expect(result.fix).toContain("npm i -g @swmansion/argent");
   });
 
   it("names the off-PATH bin dir of a global install", () => {

@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
-import { AGENTS_DIR, listBundledSkills, RULES_DIR } from "@argent/installer";
+import { AGENTS_DIR, listBundledSkills, RULES_DIR, type McpServerEntry } from "@argent/installer";
 import { claudeProjectKey, editorsSection, isStrictJson } from "../src/doctor-editors.js";
 import { type DoctorContext } from "../src/doctor-shared.js";
 import { skillsSection } from "../src/doctor-skills.js";
@@ -317,6 +317,42 @@ describe("editor and skill sections", () => {
     installSkills(path.join(projectRoot, ".agents", "skills"));
     const checks = skillsSection(doctorCtx(), "reinstall").checks;
     expect(checks[0]).toMatchObject({ status: "error", label: "No argent skills installed" });
+  });
+
+  it("counts skills linked into .agents/skills only while the links resolve", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent } });
+    const shared = path.join(projectRoot, ".agents", "skills");
+    installSkills(shared);
+    const claudeSkills = path.join(projectRoot, ".claude", "skills");
+    fs.mkdirSync(claudeSkills, { recursive: true });
+    for (const skill of listBundledSkills()) {
+      fs.symlinkSync(path.join(shared, skill), path.join(claudeSkills, skill));
+    }
+    expect(skillsSection(doctorCtx(), "reinstall").checks[0]?.status).toBe("ok");
+
+    fs.rmSync(path.join(projectRoot, ".agents"), { recursive: true });
+    expect(skillsSection(doctorCtx(), "reinstall").checks[0]).toMatchObject({
+      status: "error",
+      label: "No argent skills installed",
+    });
+  });
+
+  it("warns when Claude Code's /mcp toggle switched argent off for the project", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent } });
+    writeJson(path.join(home, ".claude.json"), {
+      projects: { [projectRoot]: { disabledMcpServers: ["argent"] } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => /switched off for this project/.test(c.label))?.status).toBe("warn");
+  });
+
+  it("collects the entries the editors start", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), {
+      mcpServers: { argent: { ...argent, env: { ARGENT_TOOLS_URL: "http://h:1" } } },
+    });
+    const started: McpServerEntry[] = [];
+    editorsSection(doctorCtx(), [], started);
+    expect(started).toEqual([{ ...argent, env: { ARGENT_TOOLS_URL: "http://h:1" } }]);
   });
 
   it("accepts Claude Code rules from either scope", () => {

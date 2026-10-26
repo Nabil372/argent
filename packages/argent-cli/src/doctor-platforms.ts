@@ -256,13 +256,14 @@ export async function platformsSection(
   ctx: DoctorContext,
   paths: ToolsServerPaths,
   linked: ResolvedToolsUrl,
-  reinstall: string
+  reinstall: string,
+  entriesAllRemote = false
 ): Promise<DoctorSection> {
-  if (linked.url) {
-    return {
-      title: "Platforms",
-      checks: [check("info", "Skipped: device tools run on the linked tool-server's host")],
-    };
+  if (linked.url || entriesAllRemote) {
+    const where = linked.url
+      ? "the linked tool-server's host"
+      : "the tool-server every editor entry's ARGENT_TOOLS_URL points at";
+    return { title: "Platforms", checks: [check("info", `Skipped: device tools run on ${where}`)] };
   }
   const report = await probeHostDeps(paths);
   if (typeof report === "string") {

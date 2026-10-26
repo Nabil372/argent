@@ -9,6 +9,7 @@ import {
   isArgentDisabledInClaudeProject,
   isSwitchedOffInEditor,
   probeLocalInstall,
+  readManifestDeclaration,
   type McpConfigAdapter,
   type McpServerEntry,
 } from "@argent/installer";
@@ -54,6 +55,18 @@ export function isStrictJson(configPath: string): boolean {
   }
 }
 
+function isYarnBerryProject(root: string): boolean {
+  if (fs.existsSync(path.join(root, ".yarnrc.yml"))) return true;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
+      packageManager?: unknown;
+    };
+    return typeof pkg.packageManager === "string" && /^yarn@(?!1\.)\d/.test(pkg.packageManager);
+  } catch {
+    return false;
+  }
+}
+
 /** Claude Code has its own idea of the project (claudeProjectKey); other editors use projectRoot. */
 export function rootFor(ctx: DoctorContext, adapter: McpConfigAdapter | string | null): string {
   const name = typeof adapter === "string" ? adapter : adapter?.name;
@@ -76,7 +89,8 @@ export function configuredScopes(
 
 export function editorsSection(
   ctx: DoctorContext,
-  entryToolsUrls: EntryToolsUrl[] = []
+  entryToolsUrls: EntryToolsUrl[] = [],
+  startedEntries: McpServerEntry[] = []
 ): DoctorSection {
   const { projectRoot } = ctx;
   const checks: DoctorCheck[] = [];
@@ -98,9 +112,12 @@ export function editorsSection(
     globalBin: ctx.global?.bin ?? null,
     localInstalled: probeProjectInstall(projectRoot).installed,
     localResolvable: probeLocalInstall(projectRoot).installed,
+    localDeclared: readManifestDeclaration(projectRoot) !== null,
     argentCmd: ctx.argentCmd,
     installCmd: ctx.installCmd,
     offPathGlobalBin: ctx.offPathGlobalBin,
+    npmGlobalHasArgent: ctx.npmGlobalHasArgent,
+    yarnBerry: isYarnBerryProject(projectRoot),
   };
 
   interface Found {
@@ -266,6 +283,7 @@ export function editorsSection(
       label: `${f.adapterName}: ${result.label}`,
       detail: [f.location, result.detail].filter(Boolean).join(" · "),
     });
+    if (!entry.switchedOffBy) startedEntries.push(f.entry);
     const url = f.entry.env?.ARGENT_TOOLS_URL;
     if (url) {
       entryToolsUrls.push({ editor: f.adapterName, url, token: f.entry.env?.[AUTH_TOKEN_ENV] });

@@ -241,17 +241,28 @@ describe("installSection", () => {
     vi.stubEnv("HOME", projectRoot);
     const global = { bin: "/Users/me/.nvm/bin/argent", root: null, version: "1.0.0" };
     const off = installSection(
-      localCtx({ mode: "global", global, guiPath: "/usr/bin:/bin" }),
+      localCtx({ mode: "global", global, guiPath: "/gui/a:/gui/b" }),
       "1.0.0",
       pkgPaths()
     );
-    expect(off.checks.some((c) => /Dock/.test(c.label))).toBe(true);
+    const note = off.checks.find((c) => /Dock/.test(c.label));
+    const nodeDir = path.dirname(process.execPath);
+    expect(note?.fix).toContain(`"PATH": "/Users/me/.nvm/bin:${nodeDir}:/gui/a:/gui/b"`);
     const on = installSection(
-      localCtx({ mode: "global", global, guiPath: "/Users/me/.nvm/bin:/usr/bin" }),
+      localCtx({ mode: "global", global, guiPath: `/Users/me/.nvm/bin:${nodeDir}:/gui/a` }),
       "1.0.0",
       pkgPaths()
     );
     expect(on.checks.some((c) => /Dock/.test(c.label))).toBe(false);
+  });
+
+  it("notes when node is not on the PATH apps started from the Dock get", () => {
+    vi.stubEnv("HOME", projectRoot);
+    const nodeDir = path.dirname(process.execPath);
+    const section = installSection(localCtx({ guiPath: "/gui/a:/gui/b" }), "1.0.0", pkgPaths());
+    const note = section.checks.find((c) => /Dock/.test(c.label));
+    expect(note?.detail).toContain(nodeDir);
+    expect(note?.fix).toContain(`"PATH": "${nodeDir}:/gui/a:/gui/b"`);
   });
 
   it("names a global install whose bin dir is not on PATH", () => {

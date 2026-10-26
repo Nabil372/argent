@@ -250,6 +250,25 @@ export function probeProjectInstall(projectRoot: string): {
   return dir === projectRoot || isWorkspaceRoot(dir) ? probe : notInstalled;
 }
 
+/**
+ * Editors started from the Dock get launchd's PATH unless they load the
+ * shell's. Every entry needs `node` (npm's `argent` shim runs it through
+ * `env`), so its dir counts as well as the global install's.
+ */
+function dockPathNote(ctx: DoctorContext): DoctorCheck | null {
+  if (!ctx.guiPath) return null;
+  const guiDirs = ctx.guiPath.split(path.delimiter);
+  const globalDir = ctx.global && !ctx.global.runError ? path.dirname(ctx.global.bin) : null;
+  const needed = [globalDir, path.dirname(process.execPath)];
+  const missing = [...new Set(needed)].filter((d): d is string => !!d && !guiDirs.includes(d));
+  if (missing.length === 0) return null;
+  const entryPath = [...missing, ctx.guiPath].join(path.delimiter);
+  return check("info", "Apps started from the Dock don't get this shell's PATH", {
+    detail: `${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} not on launchd's PATH (${ctx.guiPath})`,
+    fix: `If an editor started outside a terminal can't start argent, add "env": {"PATH": "${entryPath}"} to its entry`,
+  });
+}
+
 export function installSection(
   ctx: DoctorContext,
   running: string,
@@ -264,16 +283,8 @@ export function installSection(
     })
   );
 
-  // Editors started from the Dock get launchd's PATH unless they load the shell's.
-  const globalDir = ctx.global && !ctx.global.runError ? path.dirname(ctx.global.bin) : null;
-  if (globalDir && ctx.guiPath && !ctx.guiPath.split(path.delimiter).includes(globalDir)) {
-    checks.push(
-      check("info", "Apps started from the Dock don't get this shell's PATH", {
-        detail: `${home(globalDir)} is not on launchd's PATH (${ctx.guiPath})`,
-        fix: `If an editor started outside a terminal can't start argent, put ${home(ctx.global!.bin)} in its entry instead of argent`,
-      })
-    );
-  }
+  const dockNote = dockPathNote(ctx);
+  if (dockNote) checks.push(dockNote);
 
   const engines = readEnginesNode(packageRoot);
   const satisfied = engines ? nodeSatisfiesEngines(process.versions.node, engines) : null;
