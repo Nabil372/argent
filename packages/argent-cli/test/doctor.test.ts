@@ -357,10 +357,18 @@ describe("collectDoctorReport", () => {
   it("checks for updates with the package manager that owns the running copy", async () => {
     fs.writeFileSync(path.join(projectRoot, "pnpm-lock.yaml"), "");
     await collect("local", { offline: false });
-    expect(vi.mocked(resolveInstallableUpdateTarget)).toHaveBeenLastCalledWith("pnpm", "1.0.0");
+    expect(vi.mocked(resolveInstallableUpdateTarget)).toHaveBeenLastCalledWith(
+      "pnpm",
+      "1.0.0",
+      expect.anything()
+    );
     const bunGlobal = path.join(home, ".bun", "install", "global", "node_modules");
     await collect("global", { pkg: path.join(bunGlobal, "@swmansion", "argent"), offline: false });
-    expect(vi.mocked(resolveInstallableUpdateTarget)).toHaveBeenLastCalledWith("bun", "1.0.0");
+    expect(vi.mocked(resolveInstallableUpdateTarget)).toHaveBeenLastCalledWith(
+      "bun",
+      "1.0.0",
+      expect.anything()
+    );
   });
 
   it("checks the tool-server an entry points at through its own env", async () => {
