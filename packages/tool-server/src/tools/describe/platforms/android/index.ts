@@ -100,8 +100,8 @@ async function awaitWebViewPublished(
   return tree;
 }
 
-function uiautomatorDump(serial: string): Promise<string> {
-  return queueUiautomatorDump(serial, () => runUiautomatorDump(serial));
+async function uiautomatorDump(serial: string): Promise<string> {
+  return assertCaptured(await queueUiautomatorDump(serial, () => runUiautomatorDump(serial)));
 }
 
 async function runUiautomatorDump(serial: string): Promise<string> {
@@ -118,7 +118,10 @@ async function runUiautomatorDump(serial: string): Promise<string> {
     `uiautomator dump --compressed ${dumpPath} >/dev/null && cat ${dumpPath}; rm -f ${dumpPath}`,
     { timeoutMs: 20_000 }
   );
-  const raw = rawBuf.toString("utf-8");
+  return rawBuf.toString("utf-8");
+}
+
+function assertCaptured(raw: string): string {
   const trimmed = raw.trim();
   if (/^ERROR:/i.test(trimmed) || (!trimmed.includes("<hierarchy") && /error/i.test(trimmed))) {
     throw new FailureError(

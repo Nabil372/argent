@@ -181,8 +181,15 @@ export const androidTvControlBlueprint: ServiceBlueprint<TvControlApi, DeviceInf
 
     const events = new TypedEventEmitter<ServiceEvents>();
 
-    function dumpHierarchy(): Promise<string> {
-      return queueUiautomatorDump(serial, runDumpHierarchy);
+    async function dumpHierarchy(): Promise<string> {
+      const raw = await queueUiautomatorDump(serial, runDumpHierarchy);
+      if (!raw.includes("<hierarchy")) {
+        throw new Error(
+          `uiautomator could not capture the screen: ${raw.trim().slice(0, 200)}. ` +
+            `The device may be locked or showing a secure overlay — take a screenshot to confirm.`
+        );
+      }
+      return raw;
     }
 
     async function runDumpHierarchy(): Promise<string> {
@@ -191,20 +198,13 @@ export const androidTvControlBlueprint: ServiceBlueprint<TvControlApi, DeviceInf
       // /data/local/tmp; trailing `; rm -f` so cleanup fires even when it fails.
       const suffix = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`;
       const dumpPath = `/data/local/tmp/argent-tv-dump-${suffix}.xml`;
-      const raw = (
+      return (
         await adbExecOutBinary(
           serial,
           `uiautomator dump --compressed ${dumpPath} >/dev/null && cat ${dumpPath}; rm -f ${dumpPath}`,
           { timeoutMs: 20_000 }
         )
       ).toString("utf-8");
-      if (!raw.includes("<hierarchy")) {
-        throw new Error(
-          `uiautomator could not capture the screen: ${raw.trim().slice(0, 200)}. ` +
-            `The device may be locked or showing a secure overlay — take a screenshot to confirm.`
-        );
-      }
-      return raw;
     }
 
     async function read(): Promise<{ focused: TvNode | null; focusable: TvNode[] }> {

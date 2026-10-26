@@ -27,7 +27,13 @@ const COLD_WEBVIEW_DUMP = readFileSync(
 
 const NEVER_IDLE = "ERROR: could not get idle state.";
 
-type Pending = { serial: string; finish: (dump?: string) => void };
+type Pending = {
+  serial: string;
+  finish: (dump?: string) => void;
+  fail: (err: Error) => void;
+};
+
+const tvDevice = (id: string) => ({ id, platform: "android" as const, kind: "emulator" as const });
 
 describe("describeAndroid uiautomator fallback", () => {
   let pending: Pending[];
@@ -38,8 +44,12 @@ describe("describeAndroid uiautomator fallback", () => {
     adbExecOutBinary.mockReset();
     adbExecOutBinary.mockImplementation(
       (serial: string) =>
-        new Promise<Buffer>((resolve) => {
-          pending.push({ serial, finish: (dump = DUMP) => resolve(Buffer.from(dump)) });
+        new Promise<Buffer>((resolve, reject) => {
+          pending.push({
+            serial,
+            finish: (dump = DUMP) => resolve(Buffer.from(dump)),
+            fail: reject,
+          });
         })
     );
   });
@@ -49,10 +59,12 @@ describe("describeAndroid uiautomator fallback", () => {
   });
 
   const tick = () => vi.advanceTimersByTimeAsync(0);
+  const read = (serial: string) => describeAndroid(undefined, serial, undefined, false);
 
   it("starts a dump on a device only after the running one on that device finished", async () => {
-    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
-    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const first = read("emulator-5554");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = read("emulator-5554");
     await tick();
     expect(pending).toHaveLength(1);
 
@@ -66,31 +78,47 @@ describe("describeAndroid uiautomator fallback", () => {
     expect(JSON.stringify(tree)).toContain("Continue");
   });
 
-  it("runs the next dump after one that failed", async () => {
-    adbExecOutBinary.mockImplementationOnce(async () => {
-      throw new Error("adb: device offline");
-    });
-    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
-    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
-    await expect(first).rejects.toThrow("device offline");
+  it("gives reads requested right after a dump started that dump's output", async () => {
+    const first = read("emulator-5554");
+    await vi.advanceTimersByTimeAsync(400);
+    const second = read("emulator-5554");
     await tick();
     expect(pending).toHaveLength(1);
+
     pending[0]!.finish();
+    await Promise.all([first, second]);
+    expect(pending).toHaveLength(1);
+  });
+
+  it("runs the next dump after one that failed", async () => {
+    const first = read("emulator-5554");
+    const firstFailed = expect(first).rejects.toThrow("device offline");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = read("emulator-5554");
+    await tick();
+    expect(pending).toHaveLength(1);
+
+    pending[0]!.fail(new Error("adb: device offline"));
+    await firstFailed;
+    await tick();
+    expect(pending).toHaveLength(2);
+    pending[1]!.finish();
     await expect(second).resolves.toMatchObject({ source: "uiautomator" });
   });
 
   it("dumps different devices at the same time", async () => {
-    const a = describeAndroid(undefined, "emulator-5554", undefined, false);
-    const b = describeAndroid(undefined, "emulator-5556", undefined, false);
+    const a = read("emulator-5554");
+    const b = read("emulator-5556");
     await tick();
     expect(pending.map((p) => p.serial).sort()).toEqual(["emulator-5554", "emulator-5556"]);
     for (const p of pending) p.finish();
     await Promise.all([a, b]);
   });
 
-  it("starts a dump anyway once the running one on that device took over three seconds", async () => {
-    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
-    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+  it("starts a dump anyway once a read waited three seconds for the running one", async () => {
+    const first = read("emulator-5554");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = read("emulator-5554");
     await tick();
     expect(pending).toHaveLength(1);
 
@@ -105,9 +133,9 @@ describe("describeAndroid uiautomator fallback", () => {
   });
 
   it("gives every read queued behind a running dump one shared dump", async () => {
-    const reads = [1, 2, 3].map(() =>
-      describeAndroid(undefined, "emulator-5554", undefined, false)
-    );
+    const first = read("emulator-5554");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const queued = [1, 2, 3].map(() => read("emulator-5554"));
     await tick();
     expect(pending).toHaveLength(1);
 
@@ -115,24 +143,26 @@ describe("describeAndroid uiautomator fallback", () => {
     expect(pending).toHaveLength(2);
 
     for (const p of pending) p.finish();
-    await Promise.all(reads);
+    await Promise.all([first, ...queued]);
     expect(pending).toHaveLength(2);
   });
 
-  it("queues a new read behind the newest dump after an older one finishes late", async () => {
-    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
-    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+  it("keeps queueing reads behind an older dump after a newer one on that device finished", async () => {
+    const first = read("emulator-5554");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = read("emulator-5554");
     await vi.advanceTimersByTimeAsync(3_000);
-    expect(pending).toHaveLength(2);
-
-    pending[0]!.finish();
-    await first;
-    const third = describeAndroid(undefined, "emulator-5554", undefined, false);
-    await tick();
     expect(pending).toHaveLength(2);
 
     pending[1]!.finish();
     await second;
+    await vi.advanceTimersByTimeAsync(1_000);
+    const third = read("emulator-5554");
+    await tick();
+    expect(pending).toHaveLength(2);
+
+    pending[0]!.finish();
+    await first;
     await tick();
     expect(pending).toHaveLength(3);
 
@@ -140,32 +170,35 @@ describe("describeAndroid uiautomator fallback", () => {
     await third;
   });
 
-  it("re-reads an unpublished WebView only after another dump on that device finished", async () => {
-    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
-    await tick();
-    pending[0]!.finish(COLD_WEBVIEW_DUMP);
+  it("shares the WebView re-reads of two describes instead of taking turns", async () => {
+    const first = read("emulator-5554");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = read("emulator-5554");
     await tick();
 
-    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+    pending[0]!.finish(COLD_WEBVIEW_DUMP);
     await tick();
     expect(pending).toHaveLength(2);
 
     await vi.advanceTimersByTimeAsync(250);
     expect(pending).toHaveLength(2);
 
-    pending[1]!.finish();
-    await tick();
+    pending[1]!.finish(COLD_WEBVIEW_DUMP);
+    await vi.advanceTimersByTimeAsync(250);
     expect(pending).toHaveLength(3);
 
     pending[2]!.finish();
-    const [{ tree }] = await Promise.all([first, second]);
-    expect(JSON.stringify(tree)).toContain("Continue");
+    const [a, b] = await Promise.all([first, second]);
+    expect(JSON.stringify(a.tree)).toContain("Continue");
+    expect(JSON.stringify(b.tree)).toContain("Continue");
+    expect(pending).toHaveLength(3);
   });
 
   it("fails a read queued behind a dump that could not get an idle screen", async () => {
-    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
-    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const first = read("emulator-5560");
     const firstFailed = expect(first).rejects.toThrow("could not get idle state");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const second = read("emulator-5560");
     const secondFailed = expect(second).rejects.toThrow("could not get idle state");
     await tick();
 
@@ -174,20 +207,64 @@ describe("describeAndroid uiautomator fallback", () => {
     expect(pending).toHaveLength(1);
   });
 
+  it("fails a read behind a running dump at once while the device reports a never-idle screen", async () => {
+    const earlier = read("emulator-5562");
+    const earlierFailed = expect(earlier).rejects.toThrow("could not get idle state");
+    await tick();
+    pending[0]!.finish(NEVER_IDLE);
+    await earlierFailed;
+
+    const abandoned = read("emulator-5562");
+    await vi.advanceTimersByTimeAsync(1_500);
+    const next = read("emulator-5562");
+    await expect(next).rejects.toThrow("could not get idle state");
+    expect(pending).toHaveLength(2);
+
+    pending[1]!.finish();
+    await abandoned;
+    await vi.advanceTimersByTimeAsync(0);
+    const fresh = read("emulator-5562");
+    await vi.advanceTimersByTimeAsync(1_000);
+    const queued = read("emulator-5562");
+    await tick();
+    expect(pending).toHaveLength(3);
+    pending[2]!.finish();
+    await fresh;
+    await tick();
+    expect(pending).toHaveLength(4);
+    pending[3]!.finish();
+    await queued;
+  });
+
   it("starts an Android TV dump only after the describe dump on that device finished", async () => {
-    const device = { id: "emulator-5554", platform: "android" as const, kind: "emulator" as const };
+    const device = tvDevice("emulator-5554");
     const { api } = await androidTvControlBlueprint.factory({}, device, { device });
-    const read = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const describeRead = read("emulator-5554");
+    await vi.advanceTimersByTimeAsync(1_000);
     const tv = api.describe();
     await tick();
     expect(pending).toHaveLength(1);
 
     pending[0]!.finish();
-    await read;
+    await describeRead;
     await tick();
     expect(pending).toHaveLength(2);
 
     pending[1]!.finish();
     await expect(tv).resolves.toMatchObject({ focusable: [{ label: "Continue" }] });
+  });
+
+  it("validates a shared dump separately for the Android TV read that joined it", async () => {
+    const device = tvDevice("emulator-5554");
+    const { api } = await androidTvControlBlueprint.factory({}, device, { device });
+    const describeRead = read("emulator-5554");
+    const describeFailed = expect(describeRead).rejects.toThrow();
+    const tv = api.describe();
+    const tvFailed = expect(tv).rejects.toThrow("uiautomator could not capture the screen: Killed");
+    await tick();
+    expect(pending).toHaveLength(1);
+
+    pending[0]!.finish("Killed");
+    await Promise.all([describeFailed, tvFailed]);
   });
 });
