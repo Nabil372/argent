@@ -1,13 +1,16 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { homedir } from "node:os";
 import {
   ALL_ADAPTERS,
+  findConfiguredAdapterScopes,
   getManagedContentTargets,
   hasCodexRules,
   listBundledSkills,
   ARGENT_SKILL_PREFIX,
   RULES_DIR,
   AGENTS_DIR,
+  resolveProjectRoot,
   type McpConfigAdapter,
 } from "@argent/installer";
 import {
@@ -16,6 +19,7 @@ import {
   type DoctorSection,
   check,
   home,
+  isUnreadable,
   realPath,
 } from "./doctor-shared.js";
 import { configuredScopes, rootFor } from "./doctor-editors.js";
@@ -51,6 +55,52 @@ function hasClaudeLocalScopeEntry(projectRoot: string): boolean {
   }
 }
 
+/** Claude Code loads project skills and rules from cwd and every ancestor below ~. */
+function claudeProjectDirs(ctx: DoctorContext): string[] {
+  const dirs = new Set([ctx.claudeRoot ?? ctx.projectRoot]);
+  const stop = homedir();
+  let dir = ctx.cwd;
+  while (dir !== stop && path.dirname(dir) !== dir) {
+    dirs.add(dir);
+    dir = path.dirname(dir);
+  }
+  return [...dirs];
+}
+
+/** Editors whose config can't be read: their entries are invisible, so check their dirs anyway. */
+function unreadableAdapters(ctx: DoctorContext): McpConfigAdapter[] {
+  return ALL_ADAPTERS.filter((adapter) =>
+    [adapter.projectPath(rootFor(ctx, adapter)), adapter.globalPath()].some(
+      (file) => file && isUnreadable(file)
+    )
+  );
+}
+
+/** The rules and agents dirs `argent update` run from `root` refreshes. */
+function dirsUpdateRefreshes(root: string): Set<string> {
+  const dirs = findConfiguredAdapterScopes(ALL_ADAPTERS, root).flatMap((c) => {
+    const scope = c.scope === "project" ? "local" : "global";
+    const targets = getManagedContentTargets([c.adapter], root, scope);
+    return [...targets.ruleTargets, ...targets.agentTargets].map((t) => realPath(t.targetPath));
+  });
+  return new Set(dirs);
+}
+
+/**
+ * `argent update` refreshes only the dirs of entries it finds from its project
+ * root, so a Claude Code local-scope entry or a package inside a monorepo
+ * needs another fix.
+ */
+function refreshFix(ctx: DoctorContext, target: string, sourceDir: string): string {
+  const updateRoot = resolveProjectRoot(ctx.cwd);
+  if (dirsUpdateRefreshes(updateRoot).has(realPath(target))) return `${ctx.argentCmd} update`;
+  const claudeRoot = rootFor(ctx, "Claude Code");
+  if (claudeRoot !== updateRoot && dirsUpdateRefreshes(claudeRoot).has(realPath(target))) {
+    return `${ctx.argentCmd} update --project-root ${home(claudeRoot)}`;
+  }
+  return `mkdir -p ${home(target)} && cp ${home(sourceDir)}/*.md ${home(target)}/`;
+}
+
 export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSection {
   const checks: DoctorCheck[] = [];
   const configured = configuredScopes(ctx).map((c) => ({
@@ -62,17 +112,40 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     configured.push({ adapter: claude, scope: "local" });
   }
   const adapters = [...new Set(configured.map((c) => c.adapter))];
+  const skillAdapters = [...new Set([...adapters, ...unreadableAdapters(ctx)])];
 
   // Each editor loads skills from its own dirs in either scope, whatever scope
   // its MCP entry is in. The shared .agents/skills is not read by Claude Code.
+  const projectDirs = (adapter: McpConfigAdapter | null): string[] =>
+    adapter?.name === "Claude Code" ? claudeProjectDirs(ctx) : [rootFor(ctx, adapter)];
+  const targetsIn = (adapter: McpConfigAdapter | null, scope: "local" | "global") =>
+    scope === "global"
+      ? [getManagedContentTargets(adapter ? [adapter] : [], rootFor(ctx, adapter), scope)]
+      : projectDirs(adapter).map((dir) =>
+          getManagedContentTargets(adapter ? [adapter] : [], dir, scope)
+        );
   const skillDirs = (adapter: McpConfigAdapter | null): string[] =>
     (["local", "global"] as const).flatMap((scope) =>
-      getManagedContentTargets(adapter ? [adapter] : [], rootFor(ctx, adapter), scope)
-        .skillTargets.filter((t) => t.editorName !== "skills" || adapter?.name !== "Claude Code")
-        .map((t) => t.targetPath)
+      targetsIn(adapter, scope).flatMap((targets) =>
+        targets.skillTargets
+          .filter((t) => t.editorName !== "skills" || adapter?.name !== "Claude Code")
+          .map((t) => t.targetPath)
+      )
     );
   const installedIn = (dirs: string[]): Set<string> =>
     new Set(dirs.flatMap((d) => listArgentDirs(d)));
+  // Editors that read the same dirs (Gemini and Codex share .agents/skills) get one line.
+  const groupBySkillDirs = (list: Array<McpConfigAdapter | null>) => {
+    const groups = new Map<string, { names: string[]; dirs: string[] }>();
+    for (const adapter of list) {
+      const dirs = skillDirs(adapter);
+      const key = [...new Set(dirs.map(realPath))].sort().join("\0");
+      const group = groups.get(key) ?? { names: [], dirs };
+      if (adapter) group.names.push(adapter.name);
+      groups.set(key, group);
+    }
+    return [...groups.values()];
+  };
 
   const bundled = listBundledSkills();
   if (bundled.length === 0) {
@@ -80,13 +153,15 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
       check("error", "The argent package ships no skills (a partial install)", { fix: reinstall })
     );
   } else {
-    const perEditor = (adapters.length > 0 ? adapters : [null]).map((adapter) => {
-      const installed = installedIn(skillDirs(adapter));
-      return { name: adapter?.name, missing: bundled.filter((s) => !installed.has(s)) };
-    });
+    const perEditor = groupBySkillDirs(skillAdapters.length > 0 ? skillAdapters : [null]).map(
+      ({ names, dirs }) => {
+        const installed = installedIn(dirs);
+        return { name: names.join(", "), missing: bundled.filter((s) => !installed.has(s)) };
+      }
+    );
     const noneAnywhere = perEditor.every((e) => e.missing.length === bundled.length);
-    const prefix = (name: string | undefined) =>
-      name && adapters.length > 1 && !noneAnywhere ? `${name}: ` : "";
+    const prefix = (name: string) =>
+      name && perEditor.length > 1 && !noneAnywhere ? `${name}: ` : "";
     if (perEditor.every((e) => e.missing.length === 0)) {
       checks.push(check("ok", `${bundled.length}/${bundled.length} argent skills installed`));
     }
@@ -126,6 +201,8 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     getManagedContentTargets([adapter], rootFor(ctx, adapter), scope).ruleTargets.map(
       (t) => t.targetPath
     );
+  const loadedRuleDirs = (adapter: McpConfigAdapter, scope: "local" | "global") =>
+    targetsIn(adapter, scope).flatMap((targets) => targets.ruleTargets.map((t) => t.targetPath));
   const ruleTargets = new Set<string>();
   for (const { adapter, scope } of configured) {
     if (adapter.name !== "Claude Code") ruleDirs(adapter, scope).forEach((t) => ruleTargets.add(t));
@@ -134,7 +211,10 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
   if (claudeScopes.length > 0) {
     // Claude Code loads ~/.claude/rules and the project's .claude/rules alike.
     const [first] = claudeScopes;
-    const either = [...ruleDirs(first!.adapter, "local"), ...ruleDirs(first!.adapter, "global")];
+    const either = [
+      ...loadedRuleDirs(first!.adapter, "local"),
+      ...loadedRuleDirs(first!.adapter, "global"),
+    ];
     const complete = either.find((d) => absentIn(d).length === 0);
     const fallback = ruleDirs(
       first!.adapter,
@@ -153,7 +233,7 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
         ? check("ok", `Rules present in ${home(target)}`)
         : check("warn", `Rules missing in ${home(target)}`, {
             detail: absent.join(", "),
-            fix: `${ctx.argentCmd} update`,
+            fix: refreshFix(ctx, target, RULES_DIR),
           })
     );
   }
@@ -188,7 +268,9 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
   const seenAgentDirs = new Set<string>();
   for (const { adapter, scope } of configured) {
     // Editors load agents from either scope, like Claude Code's rules.
-    const either = [...agentDirs(adapter, "local"), ...agentDirs(adapter, "global")];
+    const either = (["local", "global"] as const).flatMap((s) =>
+      targetsIn(adapter, s).flatMap((targets) => targets.agentTargets.map((t) => t.targetPath))
+    );
     if (either.some((d) => agentsAbsentIn(d).length === 0)) continue;
     for (const target of agentDirs(adapter, scope)) {
       if (seenAgentDirs.has(realPath(target))) continue;
@@ -196,7 +278,7 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
       checks.push(
         check("warn", `Agents missing in ${home(target)}`, {
           detail: agentsAbsentIn(target).join(", "),
-          fix: `${ctx.argentCmd} update`,
+          fix: refreshFix(ctx, target, AGENTS_DIR),
         })
       );
     }
