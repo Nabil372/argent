@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { resolveInstallableUpdateTarget } from "@argent/installer";
 import { globalBehindCheck, otherSection } from "../src/doctor-other.js";
 import { type DoctorContext } from "../src/doctor-shared.js";
@@ -60,7 +63,11 @@ describe("otherSection update check", () => {
         fix: "argent update",
       }),
     ]);
-    expect(resolveInstallableUpdateTarget).toHaveBeenLastCalledWith("pnpm", "0.30.0");
+    expect(resolveInstallableUpdateTarget).toHaveBeenLastCalledWith(
+      "pnpm",
+      "0.30.0",
+      expect.anything()
+    );
   });
 
   it("reports a release the minimum-release-age policy holds back", async () => {
@@ -90,5 +97,67 @@ describe("globalBehindCheck", () => {
   it("stays quiet when the global install is already the latest", () => {
     const global = { bin: "/usr/local/bin/argent", root: null, version: "2.0.0" };
     expect(globalBehindCheck(global, "1.0.0", "2.0.0")).toBeNull();
+  });
+});
+
+describe("otherSection guards", () => {
+  let projectRoot: string;
+
+  beforeEach(() => {
+    projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-doctor-other-"));
+    fs.mkdirSync(path.join(projectRoot, ".git"));
+    fs.mkdirSync(path.join(projectRoot, "home"));
+    vi.stubEnv("HOME", path.join(projectRoot, "home"));
+    registry("0.30.1", "0.30.1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  const local = (overrides: Partial<DoctorContext> = {}): DoctorContext => ({
+    ...ctx,
+    projectRoot,
+    cwd: projectRoot,
+    ...overrides,
+  });
+
+  it("skips the behind-latest warning in local mode, whose entries start the project's copy", async () => {
+    const { checks } = await otherSection(local({ mode: "local" }), "0.30.1", false, "u", "npm");
+    expect(checks.some((c) => c.label.startsWith("Global install"))).toBe(false);
+  });
+
+  it("caps the update check and keeps the package manager from installing or logging", async () => {
+    await otherSection(local(), "0.30.1", false, "argent update", "npm");
+    expect(vi.mocked(resolveInstallableUpdateTarget).mock.lastCall?.[2]).toMatchObject({
+      deadlineMs: 15_000,
+      env: expect.objectContaining({
+        COREPACK_ENABLE_NETWORK: "0",
+        npm_config_update_notifier: "false",
+        npm_config_logs_max: "0",
+      }),
+    });
+  });
+
+  it("points at --offline when the registry gives no answer in time", async () => {
+    vi.mocked(resolveInstallableUpdateTarget).mockResolvedValue(null);
+    const { checks } = await otherSection(local(), "0.30.1", false, "argent update", "npm");
+    expect(checks.find((c) => c.label.startsWith("Update check skipped"))?.detail).toMatch(
+      /--offline/
+    );
+  });
+
+  it("names a project config file that does not parse", async () => {
+    fs.mkdirSync(path.join(projectRoot, ".argent"));
+    fs.writeFileSync(
+      path.join(projectRoot, ".argent", "config.json"),
+      '<<<<<<< HEAD\n{ "telemetry": { "enabled": false } }\n=======\n{}\n>>>>>>> main\n'
+    );
+    const { checks } = await otherSection(local(), "0.30.1", true, "argent update", "npm");
+    expect(checks.find((c) => c.label.includes("config.json"))).toMatchObject({
+      status: "warn",
+      label: `${path.join(projectRoot, ".argent", "config.json")} doesn't parse, so every setting in it is ignored`,
+    });
   });
 });
