@@ -125,13 +125,16 @@ function renderFlat(
 
 interface ExpoFabModel {
   isIcon: (n: DescribeNode) => boolean;
-  // Distance from the side edge the button snaps to, to the icon centre.
-  edgeToCentre: number;
+  // Ranges of the distance from the side edge the button snaps to, to the
+  // icon centre.
+  edgeToCentre: ReadonlyArray<readonly [number, number]>;
   // The touch area around the icon centre: across the edge each way, and
   // along it towards the top and the bottom of the UI.
   halfAcross: number;
   alongBefore: number;
   alongAfter: number;
+  // Towards the bottom of the UI once the "Tools" caption has gone.
+  alongAfterWithoutCaption: number;
   // Whether the UI's side edge can be the top or bottom of the frame space.
   portraitNativeFrames: boolean;
 }
@@ -139,39 +142,55 @@ interface ExpoFabModel {
 // Sizes are in the icon's own units (pt on iOS, dp on Android). The icon is
 // 26 x 26 on both, so its frame gives the size of one unit on each axis.
 const EXPO_FAB_ICON = 26;
-const EXPO_FAB_EDGE_TOLERANCE = 4;
+// A 26 unit icon on a screen at least 260 units across.
+const EXPO_FAB_MAX_ICON_FRACTION = 0.1;
 
 // expo-dev-menu `ios/FAB/DevMenuFABView.swift` and `DevMenuFABWindow.swift`.
-// The button snaps 5 pt in from the nearer side edge and is 72 pt wide.
-// `hitTest` takes any point in its 72 x 94 pt frame grown by 10 pt on each
-// side. Along the edge the icon sits 32.5 pt (caption shown) to 47 pt
-// (caption gone) below the frame top, so 71.5 pt each way covers both.
+// Up to 58.0.4 the button snaps 5 pt in from the nearer side edge, with the
+// icon centre 41 pt in. From 58.0.5 (`FABPlacement.swift`) its 52 pt pill
+// keeps max(safe area, 10) pt from the edge: the icon centre is 36 pt in
+// without a side safe area, and safe area + 26 pt in a notched landscape
+// iPhone (44 to 62 pt safe area). `hitTest` takes any point in the
+// 72 x 94 pt frame grown by 10 pt on each side. Along the edge the icon sits
+// 32.5 pt (caption shown) to 47 pt (caption gone) below the frame top, so
+// 71.5 pt each way covers both.
 const IOS_EXPO_FAB: ExpoFabModel = {
   isIcon: (n) =>
     (n.identifier === "gearshape.fill" || n.label === "gearshape.fill") && /image/i.test(n.role),
-  edgeToCentre: 41,
+  edgeToCentre: [
+    [34.5, 43],
+    [68, 90],
+  ],
   halfAcross: 46,
   alongBefore: 71.5,
   alongAfter: 71.5,
+  alongAfterWithoutCaption: 71.5,
   portraitNativeFrames: true,
 };
 
 // expo-dev-menu `android/.../fab/MovableFloatingActionButton.kt` and
 // `FloatingActionButtonContent.kt`. The pointer area is 52 dp wide, 16 dp in
-// from the nearer side edge, with the 52 dp circle at its top and the icon in
-// the circle's centre. It is 94 dp tall while the caption shows, 52 dp after.
+// from the nearer safe-drawing edge, with the 52 dp circle at its top and the
+// icon in the circle's centre: 42 dp in, plus up to a 48 dp navigation bar or
+// a cutout on that side in landscape. It is 94 dp tall while the caption
+// shows, 52 dp after. The icon is a plain view without click semantics.
 const ANDROID_EXPO_FAB: ExpoFabModel = {
-  isIcon: (n) => n.label === "Tools" && !/text/i.test(n.role),
-  edgeToCentre: 42,
+  isIcon: (n) => n.label === "Tools" && !n.clickable && !/text|button/i.test(n.role),
+  edgeToCentre: [[38, 94]],
   halfAcross: 26,
   alongBefore: 26,
   alongAfter: 68,
+  alongAfterWithoutCaption: 26,
   portraitNativeFrames: false,
 };
 
 const EXPO_FAB_NOTE =
   "under the Expo dev Tools button: it may take a tap here and open the Expo dev menu — " +
   "switch off 'Tools button' in that menu first";
+
+function isCaption(n: DescribeNode): boolean {
+  return /text/i.test(n.role) && n.label === "Tools";
+}
 
 function expoFabModel(source: DescribeSource | undefined): ExpoFabModel | undefined {
   switch (source) {
@@ -210,11 +229,12 @@ function expoDevButtonNotes(root: DescribeNode, model: ExpoFabModel): Map<Descri
       stack.push(c);
     }
   }
+  const hasCaption = all.some(isCaption);
   let area: { x0: number; x1: number; y0: number; y1: number } | undefined;
   let gear: DescribeNode | undefined;
   for (const n of all) {
     if (!model.isIcon(n)) continue;
-    area = expoFabArea(n.frame, model);
+    area = expoFabArea(n.frame, model, hasCaption);
     if (area) {
       gear = n;
       break;
@@ -225,7 +245,7 @@ function expoDevButtonNotes(root: DescribeNode, model: ExpoFabModel): Map<Descri
   const own = new Set<DescribeNode>([gear]);
   for (let p = parent.get(gear); p; p = parent.get(p)) own.add(p);
   for (const n of all) {
-    if (own.has(n) || (/text/i.test(n.role) && n.label === "Tools")) continue;
+    if (own.has(n) || isCaption(n)) continue;
     const f = n.frame;
     const cx = f.x + f.width / 2;
     const cy = f.y + f.height / 2;
@@ -242,24 +262,28 @@ function expoDevButtonNotes(root: DescribeNode, model: ExpoFabModel): Map<Descri
  * simulator keeps portrait-native frames, so the UI's side edge can be the
  * top or bottom of the frame space.
  */
-function expoFabArea(f: DescribeFrame, model: ExpoFabModel) {
+function expoFabArea(f: DescribeFrame, model: ExpoFabModel, hasCaption: boolean) {
   if (f.width <= 0 || f.height <= 0) return undefined;
+  if (f.width > EXPO_FAB_MAX_ICON_FRACTION || f.height > EXPO_FAB_MAX_ICON_FRACTION) {
+    return undefined;
+  }
   const ptX = f.width / EXPO_FAB_ICON;
   const ptY = f.height / EXPO_FAB_ICON;
   const cx = f.x + f.width / 2;
   const cy = f.y + f.height / 2;
   const snapped = (fromEdge: number, pt: number) =>
-    Math.abs(fromEdge / pt - model.edgeToCentre) <= EXPO_FAB_EDGE_TOLERANCE;
+    model.edgeToCentre.some(([min, max]) => fromEdge / pt >= min && fromEdge / pt <= max);
+  const alongAfter = hasCaption ? model.alongAfter : model.alongAfterWithoutCaption;
   if (snapped(cx, ptX) || snapped(1 - cx, ptX)) {
     return {
       x0: cx - model.halfAcross * ptX,
       x1: cx + model.halfAcross * ptX,
       y0: cy - model.alongBefore * ptY,
-      y1: cy + model.alongAfter * ptY,
+      y1: cy + alongAfter * ptY,
     };
   }
   if (model.portraitNativeFrames && (snapped(cy, ptY) || snapped(1 - cy, ptY))) {
-    const along = Math.max(model.alongBefore, model.alongAfter);
+    const along = Math.max(model.alongBefore, alongAfter);
     return {
       x0: cx - along * ptX,
       x1: cx + along * ptX,
@@ -297,6 +321,8 @@ function renderNested(
 
 interface FormatDescribeOptions {
   source: DescribeSource;
+  // False for TV: no taps reach the Expo Tools button there, so no note.
+  touchScreen?: boolean;
 }
 
 export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptions): string {
@@ -345,7 +371,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
 
   // Vega's lowercase toolkit roles count as content only for its own source.
   const contentRoles = isVega ? VEGA_CONTENT_ROLES : CONTENT_ROLES;
-  const fabModel = expoFabModel(opts.source);
+  const fabModel = opts.touchScreen === false ? undefined : expoFabModel(opts.source);
   const notes = fabModel ? expoDevButtonNotes(root, fabModel) : new Map<DescribeNode, string>();
   const body =
     mode === "flat"

@@ -650,10 +650,12 @@ describe("formatDescribeTree — Expo dev Tools button", () => {
         ...root.children,
         // Centre x 0.752: the app got this tap on a device.
         node("AXButton", 0.742, 0.075, 0.02, 0.023, { label: "H" }),
+        // In the button's column, further down the screen.
+        node("AXButton", 0.861, 0.4, 0.1, 0.047, { label: "Below" }),
       ],
     };
     const out = formatDescribeTree(clear as any, { source: "ax-service" });
-    for (const id of ["list-search-input", '"H"']) {
+    for (const id of ["list-search-input", '"H"', '"Below"']) {
       expect(lineOf(out, id)).not.toContain("Expo");
     }
   });
@@ -758,6 +760,42 @@ describe("formatDescribeTree — Expo dev Tools button", () => {
     expect(formatDescribeTree(root as any, { source: "cdp-dom" })).not.toContain("Expo");
   });
 
+  it("looks for the gear in the native-devtools fallback too", () => {
+    const out = formatDescribeTree(root as any, { source: "native-devtools" });
+    expect(lineOf(out, "list-settings-button")).toContain("Expo dev Tools button");
+  });
+
+  it("finds the button where expo-dev-menu 58.0.5+ places it in portrait", () => {
+    // Icon centre 36 pt from the right edge of a 402 x 874 pt screen.
+    const v58 = {
+      role: "AXGroup",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        node("AXImage", 0.8781, 0.1101, 0.0647, 0.0297, { label: "gearshape.fill" }),
+        node("AXButton", 0.85, 0.11, 0.08, 0.03, { label: "Skip" }),
+      ],
+    };
+    const out = formatDescribeTree(v58 as any, { source: "ax-service" });
+    expect(lineOf(out, '"Skip"')).toContain("Expo dev Tools button");
+  });
+
+  it("finds the button where expo-dev-menu 58.0.5+ places it in a notched landscape UI", () => {
+    // iPhone 16 Pro: 62 pt side safe area, so the icon centre is 88 pt from
+    // the UI's side edge, the top of the portrait-native frame space.
+    const v58Landscape = {
+      role: "AXGroup",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [
+        node("AXImage", 0.3, 0.0858, 0.0647, 0.0297, { label: "gearshape.fill" }),
+        node("AXButton", 0.41, 0.09, 0.02, 0.02, { label: "Near" }),
+        node("AXButton", 0.6, 0.09, 0.02, 0.02, { label: "Far" }),
+      ],
+    };
+    const out = formatDescribeTree(v58Landscape as any, { source: "ax-service" });
+    expect(lineOf(out, '"Near"')).toContain("Expo dev Tools button");
+    expect(lineOf(out, '"Far"')).not.toContain("Expo");
+  });
+
   it("ignores the dev launcher's Settings tab icon", () => {
     // Frames from the Expo dev launcher's home screen.
     const launcher = {
@@ -825,5 +863,70 @@ describe("formatDescribeTree — Expo dev Tools button on Android", () => {
 
   it("adds nothing without the button", () => {
     expect(describeAndroid(dump(""))).not.toContain("Expo");
+  });
+
+  it("checks the android-devtools source the same way", () => {
+    const out = formatDescribeTree(parseUiAutomatorDump(dump(fab), 1080, 2400), {
+      source: "android-devtools",
+    });
+    expect(lineOf(out, '"Skip"')).toContain("under the Expo dev Tools button");
+    expect(lineOf(out, '"Back"')).not.toContain("Expo");
+  });
+
+  it("shrinks the area to the circle once the caption has gone", () => {
+    const iconOnly = fab.split("\n")[0]!;
+    const out = describeAndroid(dump(iconOnly));
+    expect(lineOf(out, '"Skip"')).toContain("under the Expo dev Tools button");
+    expect(lineOf(out, '"Next"')).not.toContain("Expo");
+  });
+
+  it("finds the button beside a landscape navigation bar", () => {
+    // Rotation 1, 2400 x 1080 px with a 48 dp (126 px) navigation bar on the
+    // right: the icon centre is 42 dp from the safe edge, 90 dp from the screen edge.
+    const landscape = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="1">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.example.app" content-desc="" bounds="[0,0][2400,1080]">
+    <node index="0" text="Skip" resource-id="" class="android.widget.Button" package="com.example.app" content-desc="" clickable="true" bounds="[2100,140][2230,210]" />
+    <node index="1" text="Back" resource-id="" class="android.widget.Button" package="com.example.app" content-desc="" clickable="true" bounds="[20,140][150,210]" />
+    <node index="2" text="" resource-id="" class="android.view.View" package="com.example.app" content-desc="Tools" bounds="[2130,139][2198,207]" />
+  </node>
+</hierarchy>`;
+    const out = formatDescribeTree(parseUiAutomatorDump(landscape, 2400, 1080), {
+      source: "uiautomator",
+    });
+    expect(lineOf(out, '"Skip"')).toContain("under the Expo dev Tools button");
+    expect(lineOf(out, '"Back"')).not.toContain("Expo");
+  });
+
+  it("ignores an app's own Tools tab", () => {
+    // A bottom bar of five equal tabs in a page without Expo: the Tools tab's
+    // centre is 1.5 tab widths from the right edge.
+    const tab = (label: string, x: number) => ({
+      role: "Button",
+      label,
+      clickable: true,
+      frame: { x, y: 0.904, width: 0.2, height: 0.07 },
+      children: [],
+    });
+    const tabs = {
+      role: "Screen",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children: [tab("Feed", 0.4), tab("Tools", 0.6), tab("Profile", 0.8)],
+    };
+    expect(formatDescribeTree(tabs as any, { source: "android-devtools" })).not.toContain("Expo");
+    const plainView = {
+      ...tabs,
+      children: tabs.children.map((n) => ({ ...n, role: "View", clickable: false })),
+    };
+    expect(formatDescribeTree(plainView as any, { source: "android-devtools" })).not.toContain(
+      "Expo"
+    );
+  });
+
+  it("adds no note on a screen without touch input", () => {
+    const tree = parseUiAutomatorDump(dump(fab), 1080, 2400);
+    const out = formatDescribeTree(tree, { source: "uiautomator", touchScreen: false });
+    expect(out).toContain('"Skip"');
+    expect(out).not.toContain("Expo");
   });
 });
