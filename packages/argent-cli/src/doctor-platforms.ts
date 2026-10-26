@@ -202,9 +202,13 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   }
 
   const vega = dep("vega");
-  if (vega?.path && adb?.path) {
+  if (vega?.path && adb?.path && !adb.runError) {
     usable++;
     checks.push(check("ok", "Vega (Fire TV)", { detail: `vega at ${home(vega.path)}` }));
+  } else if (vega?.path && adb?.path) {
+    checks.push(
+      check("warn", "Vega (Fire TV): adb fails to run (see Android above), and Vega tools need it")
+    );
   } else if (vega?.path) {
     // The Vega SDK does not ship adb, and most Vega tools need it.
     checks.push(

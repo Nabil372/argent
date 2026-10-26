@@ -79,6 +79,22 @@ describe("platformChecks", () => {
     expect(checks.find((c) => c.label.startsWith("Android:"))?.status).toBe("error");
   });
 
+  it("does not count Vega as usable when adb fails to run", () => {
+    const checks = platformChecks(
+      hostDeps({
+        platform: "linux",
+        deps: [
+          { dep: "adb", path: "/sdk/adb", hint: "install adb", runError: "spawn ENOEXEC" },
+          { dep: "emulator", path: null, hint: "x" },
+          { dep: "vega", path: "/home/me/vega/bin/vega", hint: "install vega" },
+        ],
+      }),
+      "reinstall"
+    );
+    expect(checks.find((c) => c.label.startsWith("Vega"))?.status).toBe("warn");
+    expect(checks[0]?.label).toMatch(/No mobile platform toolchain found/);
+  });
+
   it("names the team from ARGENT_IOS_TEAM_ID", () => {
     const checks = platformChecks(
       hostDeps({ signing: { teamIdEnv: "ABCDE12345", detectedTeams: 0 } }),
