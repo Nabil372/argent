@@ -71,7 +71,7 @@ const zodSchema = z
       .max(TAIL_MAX)
       .optional()
       .describe(
-        `Also return the newest N entries (oldest first, each message cut at ${TAIL_MESSAGE_CHARS} chars, with its source file and line when known), so you can read the logs without opening the file. At most ${TAIL_MAX}.`
+        `Also return the newest N entries (oldest first, each message cut at ${TAIL_MESSAGE_CHARS} chars, with sourceFile and a 0-based sourceLine, like clusters, when the call frame has a source path; React Native frames point at the Metro bundle, so their entries carry no source), so you can read the logs without opening the file. At most ${TAIL_MAX}.`
       ),
     levels: z
       .array(z.enum(CONSOLE_LEVELS))
