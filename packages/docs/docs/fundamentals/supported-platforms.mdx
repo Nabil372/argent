@@ -42,6 +42,17 @@ Argent drives these foldable devices closed, half-open and open:
 
 The agent folds and unfolds the device with the `fold` tool. `list-devices` marks a foldable device with `foldable: true`. Screenshots, element trees, taps and recordings use the panel that shows the UI. Argent cannot fold a physical Android device. See the [tools reference](/docs/reference/tools).
 
+### Emulators started by another user
+
+Argent finds an emulator through a file that the emulator writes in the home directory of its user. An emulator that another user or another `HOME` started has no such file for Argent. Argent then controls that emulator over adb, the same way as a physical Android device. This path has these limits:
+
+- Two-finger gestures (pinch, rotate, a two-finger `gesture-custom`) fail with an error. On this path, Android keeps both fingers down after the gesture and refuses all later touches.
+- Screenshots have a lower resolution than on an emulator that Argent finds. `screenshot-diff` reports a size mismatch when it compares screenshots from the two paths.
+- Only one Argent tool-server can control the emulator. When a second tool-server connects, the first one loses its connection and connects again on its next call.
+- Argent copies its screen-sharing agent to `/data/local/tmp/.studio` on the emulator and keeps it there for the next start.
+
+To remove these limits, start the emulator as the same user that runs Argent, or start it with `boot-device`.
+
 ### Physical iPhones
 
 Argent also drives a physical iPhone over a USB cable. Physical iPads are not supported yet. Automation on hardware is scoped to one app at a time, and a subset of the simulator tools is available. See [Physical iOS devices](/docs/features/physical-ios-devices).
