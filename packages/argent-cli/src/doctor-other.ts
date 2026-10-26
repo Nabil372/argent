@@ -72,7 +72,11 @@ export async function otherSection(
     } else {
       checks.push(check("ok", `Up to date (latest v${target.latestVersion})`));
     }
-    const behind = installable && globalBehindCheck(ctx.global, running, installable);
+    // On latest there is no upgrade for this copy, but the global entries start may still lag.
+    const globalTarget =
+      installable ??
+      (target && !isNewerVersion(target.latestVersion, running) ? target.latestVersion : null);
+    const behind = globalTarget && globalBehindCheck(ctx.global, running, globalTarget);
     if (behind) checks.push(behind);
   }
   return { title: "Other", checks };
