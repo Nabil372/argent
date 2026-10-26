@@ -641,6 +641,7 @@ describe("formatDescribeTree — Expo dev Tools button", () => {
     const settings = lineOf(out, "list-settings-button");
     expect(settings).toContain("under the Expo dev Tools button");
     expect(settings).toContain("'Tools button'");
+    expect(settings).toContain("keeps it off until it is switched back on");
   });
 
   it("covers the touch area, which is wider than the icon", () => {
@@ -935,5 +936,200 @@ describe("formatDescribeTree — Expo dev Tools button on Android", () => {
     const out = formatDescribeTree(tree, { source: "uiautomator", touchScreen: false });
     expect(out).toContain('"Skip"');
     expect(out).not.toContain("Expo");
+  });
+});
+
+// Builds trees in the icon's own units (pt on iOS, dp on Android) from
+// element centres, so each case reads as a distance from the icon.
+function screenOf(width: number, height: number) {
+  const at = (role: string, cx: number, cy: number, w: number, h: number, extra = {}) => ({
+    role,
+    frame: {
+      x: (cx - w / 2) / width,
+      y: (cy - h / 2) / height,
+      width: w / width,
+      height: h / height,
+    },
+    children: [],
+    ...extra,
+  });
+  const screen = (...children: object[]) =>
+    ({
+      role: "AXGroup",
+      frame: { x: 0, y: 0, width: 1, height: 1 },
+      children,
+    }) as unknown as DescribeNode;
+  return { at, screen };
+}
+
+const notedLabels = (out: string) =>
+  out
+    .split("\n")
+    .filter((l) => l.includes("Expo dev Tools button"))
+    .map((l) => l.match(/"([^"]+)"/)?.[1]);
+
+describe("formatDescribeTree: Expo dev Tools button reach on iOS", () => {
+  // iPhone 16 Pro, 402 x 874 pt.
+  const { at, screen } = screenOf(402, 874);
+  const gear = (cx: number, cy: number) =>
+    at("AXImage", cx, cy, 26, 26, { identifier: "gearshape.fill", label: "gearshape.fill" });
+  const button = (label: string, cx: number, cy: number) =>
+    at("AXButton", cx, cy, 14, 14, { label });
+  const describeIos = (...children: object[]) =>
+    notedLabels(formatDescribeTree(screen(...children), { source: "ax-service" }));
+
+  it("reaches 57 pt along the edge once the caption has gone", () => {
+    // Icon centre 36 pt from the right edge, 88 pt from the top.
+    const noted = describeIos(
+      gear(366, 88),
+      button("above in", 366, 38),
+      button("above out", 366, 24),
+      button("below in", 366, 138),
+      button("below out", 366, 152),
+      button("beside in", 326, 88),
+      button("beside out", 314, 88)
+    );
+    expect(noted.sort()).toEqual(["above in", "below in", "beside in"]);
+  });
+
+  it("reaches 42.5 pt above and 71.5 pt below while the caption shows", () => {
+    const noted = describeIos(
+      gear(366, 88),
+      at("AXStaticText", 366, 110, 30, 12, { label: "Tools" }),
+      button("above in", 366, 50),
+      button("above out", 366, 40),
+      button("below in", 366, 154),
+      button("below out", 366, 166)
+    );
+    expect(noted.sort()).toEqual(["above in", "below in"]);
+  });
+
+  it("marks app text under the button that is not its caption", () => {
+    const noted = describeIos(
+      gear(366, 88),
+      at("AXStaticText", 366, 120, 40, 16, { label: "Hello" })
+    );
+    expect(noted).toEqual(["Hello"]);
+  });
+
+  it("ignores a gear in a portrait nav bar, 84 pt from the top", () => {
+    const noted = describeIos(
+      at("AXStaticText", 201, 84, 120, 20, { label: "Inbox" }),
+      button("Edit", 330, 84),
+      gear(373, 84),
+      button("Filter", 390, 120)
+    );
+    expect(noted).toEqual([]);
+  });
+
+  it("uses the gear snapped to a side edge whatever the child order", () => {
+    // An app's own gear 74 pt from the bottom, next to the Expo one.
+    const expoGear = gear(366, 85);
+    const appGear = gear(201, 800);
+    const header = button("HeaderRightUnderFAB", 366, 100);
+    const tab = button("TabNearAppGear", 230, 800);
+    expect(describeIos(expoGear, header, tab, appGear)).toEqual(["HeaderRightUnderFAB"]);
+    expect(describeIos(appGear, header, tab, expoGear)).toEqual(["HeaderRightUnderFAB"]);
+  });
+
+  describe("in a landscape UI, whose frames stay portrait-native", () => {
+    // Text lines run down the frame space when the UI is rotated.
+    const text = [
+      at("AXStaticText", 200, 400, 20, 120, { label: "Welcome" }),
+      at("AXStaticText", 240, 400, 20, 160, { label: "Pick a plan" }),
+    ];
+
+    it("measures the snap from the UI's side edge, the frame top", () => {
+      // Gear 36 pt from the UI top (frame x) and 88 pt from its right edge
+      // (frame y), as expo-dev-menu 58.0.11 places it on an iPhone 16 Pro.
+      const noted = describeIos(
+        ...text,
+        gear(36, 88),
+        button("in", 88, 88),
+        button("beside in", 88, 128),
+        button("beside out", 88, 140),
+        button("along out", 100, 88),
+        button("near edge", 40, 40)
+      );
+      expect(noted.sort()).toEqual(["beside in", "in"]);
+    });
+
+    it("finds the button snapped to the frame bottom", () => {
+      const noted = describeIos(
+        ...text,
+        gear(200, 833),
+        button("Near", 240, 833),
+        button("Far", 300, 833)
+      );
+      expect(noted).toEqual(["Near"]);
+    });
+  });
+});
+
+describe("formatDescribeTree: Expo dev Tools button reach on Android", () => {
+  // A 1080 x 2400 px screen at 2.625 px/dp.
+  const width = 1080 / 2.625;
+  const { at, screen } = screenOf(width, 2400 / 2.625);
+  const icon = (cx: number, cy: number, extra = {}) =>
+    at("View", cx, cy, 26, 26, { label: "Tools", ...extra });
+  const caption = (cx: number, cy: number) => at("TextView", cx, cy, 30, 12, { label: "Tools" });
+  const button = (label: string, cx: number, cy: number) =>
+    at("Button", cx, cy, 12, 12, { label, clickable: true });
+  const describeAndroid = (...children: object[]) =>
+    notedLabels(formatDescribeTree(screen(...children), { source: "android-devtools" }));
+  // Icon centre 42 dp from the right edge, 66 dp from the top.
+  const cx = width - 42;
+
+  it("reaches 26 dp across and above, and 68 dp below while the caption shows", () => {
+    const noted = describeAndroid(
+      icon(cx, 66),
+      caption(cx, 92),
+      button("above in", cx, 46),
+      button("above out", cx, 36),
+      button("beside in", cx - 22, 66),
+      button("beside out", cx - 30, 66),
+      button("below in", cx, 130),
+      button("below out", cx, 138)
+    );
+    expect(noted.sort()).toEqual(["above in", "below in", "beside in"]);
+  });
+
+  it("reaches 26 dp below once the caption has gone", () => {
+    const noted = describeAndroid(
+      icon(cx, 66),
+      button("below in", cx, 88),
+      button("below out", cx, 96)
+    );
+    expect(noted).toEqual(["below in"]);
+  });
+
+  it("takes only the text under the icon as its caption", () => {
+    // An app's "Tools" heading elsewhere does not stretch the area, and its
+    // own "Tools" text beside the icon still gets the note.
+    const noted = describeAndroid(
+      icon(cx, 66),
+      at("TextView", width / 2, 860, 60, 20, { label: "Tools" }),
+      at("TextView", cx - 20, 70, 30, 12, { label: "Tools" }),
+      button("below out", cx, 110)
+    );
+    expect(noted).toEqual(["Tools"]);
+  });
+
+  it("needs a plain, unclickable view labelled Tools as the icon", () => {
+    for (const notIcon of [
+      icon(cx, 66, { clickable: true }),
+      icon(cx, 66, { label: "Gear" }),
+      icon(cx, 66, { role: "Button" }),
+      icon(cx, 66, { role: "TextView" }),
+    ]) {
+      expect(describeAndroid(notIcon, button("Skip", cx, 70))).toEqual([]);
+    }
+  });
+
+  it("ignores an icon that is not snapped to a side edge", () => {
+    for (const fromEdge of [30, 110]) {
+      const x = width - fromEdge;
+      expect(describeAndroid(icon(x, 66), button("Under", x, 70))).toEqual([]);
+    }
   });
 });

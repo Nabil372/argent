@@ -132,18 +132,22 @@ function renderFlat(
     .map((n) => formatLine(n, 1, source, notes.get(n)));
 }
 
+interface ExpoFabReach {
+  // Along the edge, towards the top and the bottom of the UI.
+  before: number;
+  after: number;
+}
+
 interface ExpoFabModel {
   isIcon: (n: DescribeNode) => boolean;
   // Ranges of the distance from the side edge the button snaps to, to the
   // icon centre.
   edgeToCentre: ReadonlyArray<readonly [number, number]>;
   // The touch area around the icon centre: across the edge each way, and
-  // along it towards the top and the bottom of the UI.
+  // along it while the "Tools" caption shows and once it has gone.
   halfAcross: number;
-  alongBefore: number;
-  alongAfter: number;
-  // Towards the bottom of the UI once the "Tools" caption has gone.
-  alongAfterWithoutCaption: number;
+  withCaption: ExpoFabReach;
+  withoutCaption: ExpoFabReach;
   // Whether the UI's side edge can be the top or bottom of the frame space.
   portraitNativeFrames: boolean;
 }
@@ -161,8 +165,8 @@ const EXPO_FAB_MAX_ICON_FRACTION = 0.1;
 // without a side safe area, and safe area + 26 pt in a notched landscape
 // iPhone (44 to 62 pt safe area). `hitTest` takes any point in the
 // 72 x 94 pt frame grown by 10 pt on each side. Along the edge the icon sits
-// 32.5 pt (caption shown) to 47 pt (caption gone) below the frame top, so
-// 71.5 pt each way covers both.
+// 32.5 pt below the frame top while the caption shows, and 47 pt once it has
+// gone.
 const IOS_EXPO_FAB: ExpoFabModel = {
   isIcon: (n) =>
     (n.identifier === "gearshape.fill" || n.label === "gearshape.fill") && /image/i.test(n.role),
@@ -171,9 +175,8 @@ const IOS_EXPO_FAB: ExpoFabModel = {
     [68, 90],
   ],
   halfAcross: 46,
-  alongBefore: 71.5,
-  alongAfter: 71.5,
-  alongAfterWithoutCaption: 71.5,
+  withCaption: { before: 42.5, after: 71.5 },
+  withoutCaption: { before: 57, after: 57 },
   portraitNativeFrames: true,
 };
 
@@ -187,19 +190,14 @@ const ANDROID_EXPO_FAB: ExpoFabModel = {
   isIcon: (n) => n.label === "Tools" && !n.clickable && !/text|button/i.test(n.role),
   edgeToCentre: [[38, 94]],
   halfAcross: 26,
-  alongBefore: 26,
-  alongAfter: 68,
-  alongAfterWithoutCaption: 26,
+  withCaption: { before: 26, after: 68 },
+  withoutCaption: { before: 26, after: 26 },
   portraitNativeFrames: false,
 };
 
 const EXPO_FAB_NOTE =
-  "under the Expo dev Tools button: it may take a tap here and open the Expo dev menu — " +
-  "switch off 'Tools button' in that menu first";
-
-function isCaption(n: DescribeNode): boolean {
-  return /text/i.test(n.role) && n.label === "Tools";
-}
+  "under the Expo dev Tools button: a tap here may open the Expo dev menu. " +
+  "Switch off 'Tools button' in that menu first; the app keeps it off until it is switched back on";
 
 function expoFabModel(source: DescribeSource | undefined): ExpoFabModel | undefined {
   switch (source) {
@@ -215,6 +213,36 @@ function expoFabModel(source: DescribeSource | undefined): ExpoFabModel | undefi
   }
 }
 
+// The frame axis that runs across the side edge the button snaps to: x when
+// the frames are in the UI's own space, y for a landscape UI in
+// portrait-native frames.
+type ExpoFabAcrossAxis = "x" | "y";
+
+interface ExpoFab {
+  icon: DescribeNode;
+  caption?: DescribeNode;
+  area: { x0: number; x1: number; y0: number; y1: number };
+}
+
+function centreOf(f: DescribeFrame) {
+  return { x: f.x + f.width / 2, y: f.y + f.height / 2 };
+}
+
+function collectNodes(root: DescribeNode) {
+  const all: DescribeNode[] = [];
+  const parent = new Map<DescribeNode, DescribeNode>();
+  const stack = [...root.children];
+  while (stack.length) {
+    const n = stack.pop()!;
+    all.push(n);
+    for (const c of n.children) {
+      parent.set(c, n);
+      stack.push(c);
+    }
+  }
+  return { all, parent };
+}
+
 /**
  * Expo's development builds float a "Tools" button (a gear icon over a
  * "Tools" caption that fades after 10 s) above the app. The accessibility
@@ -227,80 +255,147 @@ function expoFabModel(source: DescribeSource | undefined): ExpoFabModel | undefi
  */
 function expoDevButtonNotes(root: DescribeNode, model: ExpoFabModel): Map<DescribeNode, string> {
   const notes = new Map<DescribeNode, string>();
-  const all: DescribeNode[] = [];
-  const parent = new Map<DescribeNode, DescribeNode>();
-  const stack = [...root.children];
-  while (stack.length) {
-    const n = stack.pop()!;
-    all.push(n);
-    for (const c of n.children) {
-      parent.set(c, n);
-      stack.push(c);
-    }
+  const { all, parent } = collectNodes(root);
+  const fabs = findExpoFabs(all, model);
+  // The icon's own containers and its caption belong to the button, not to the app.
+  const own = new Set<DescribeNode>();
+  for (const fab of fabs) {
+    if (fab.caption) own.add(fab.caption);
+    for (let p: DescribeNode | undefined = fab.icon; p; p = parent.get(p)) own.add(p);
   }
-  const hasCaption = all.some(isCaption);
-  let area: { x0: number; x1: number; y0: number; y1: number } | undefined;
-  let gear: DescribeNode | undefined;
   for (const n of all) {
-    if (!model.isIcon(n)) continue;
-    area = expoFabArea(n.frame, model, hasCaption);
-    if (area) {
-      gear = n;
-      break;
-    }
-  }
-  if (!gear || !area) return notes;
-  // The icon's own containers belong to the button, not to the app.
-  const own = new Set<DescribeNode>([gear]);
-  for (let p = parent.get(gear); p; p = parent.get(p)) own.add(p);
-  for (const n of all) {
-    if (own.has(n) || isCaption(n)) continue;
-    const f = n.frame;
-    const cx = f.x + f.width / 2;
-    const cy = f.y + f.height / 2;
+    if (own.has(n)) continue;
     // Only a centre inside the button is a trap: that is where agents tap.
-    if (cx < area.x0 || cx > area.x1 || cy < area.y0 || cy > area.y1) continue;
-    notes.set(n, EXPO_FAB_NOTE);
+    const c = centreOf(n.frame);
+    const covered = fabs.some(
+      ({ area }) => c.x >= area.x0 && c.x <= area.x1 && c.y >= area.y0 && c.y <= area.y1
+    );
+    if (covered) notes.set(n, EXPO_FAB_NOTE);
   }
   return notes;
 }
 
+function findExpoFabs(all: DescribeNode[], model: ExpoFabModel): ExpoFab[] {
+  const icons = all.filter((n) => model.isIcon(n) && hasIconSize(n.frame));
+  if (icons.length === 0) return [];
+  for (const axis of expoFabAxesToTry(all, icons[0]!.frame, model)) {
+    const fabs = icons
+      .filter((icon) => isSnapped(icon.frame, model, axis))
+      .map((icon) => toExpoFab(icon, all, model, axis));
+    if (fabs.length > 0) return fabs;
+  }
+  return [];
+}
+
+function toExpoFab(
+  icon: DescribeNode,
+  all: DescribeNode[],
+  model: ExpoFabModel,
+  axis: ExpoFabAcrossAxis
+): ExpoFab {
+  const caption = all.find((n) => isCaptionOf(n, icon.frame, model, axis));
+  return { icon, caption, area: expoFabArea(icon.frame, model, axis, caption !== undefined) };
+}
+
+function hasIconSize(f: DescribeFrame): boolean {
+  return (
+    f.width > 0 &&
+    f.height > 0 &&
+    f.width <= EXPO_FAB_MAX_ICON_FRACTION &&
+    f.height <= EXPO_FAB_MAX_ICON_FRACTION
+  );
+}
+
 /**
- * The touch area of the Tools button whose icon has frame `f`, or undefined
- * when the icon does not sit where Expo snaps it. A landscape UI on the iOS
- * simulator keeps portrait-native frames, so the UI's side edge can be the
- * top or bottom of the frame space.
+ * The axes a snapped icon may sit across, most likely first. A landscape UI
+ * on the iOS simulator keeps portrait-native frames, where the UI's side edge
+ * is the top or bottom of the frame space. The tree does not report the
+ * orientation, so it is read from the text: a line of text runs across the
+ * UI, which is down the frame space when the UI is rotated.
  */
-function expoFabArea(f: DescribeFrame, model: ExpoFabModel, hasCaption: boolean) {
-  if (f.width <= 0 || f.height <= 0) return undefined;
-  if (f.width > EXPO_FAB_MAX_ICON_FRACTION || f.height > EXPO_FAB_MAX_ICON_FRACTION) {
-    return undefined;
+function expoFabAxesToTry(
+  all: DescribeNode[],
+  iconFrame: DescribeFrame,
+  model: ExpoFabModel
+): ExpoFabAcrossAxis[] {
+  if (!model.portraitNativeFrames) return ["x"];
+  const unitX = iconFrame.width / EXPO_FAB_ICON;
+  const unitY = iconFrame.height / EXPO_FAB_ICON;
+  let wide = 0;
+  let tall = 0;
+  for (const n of all) {
+    if (!n.label || !/text/i.test(n.role)) continue;
+    const w = n.frame.width / unitX;
+    const h = n.frame.height / unitY;
+    if (w > h) wide++;
+    else if (h > w) tall++;
   }
-  const ptX = f.width / EXPO_FAB_ICON;
-  const ptY = f.height / EXPO_FAB_ICON;
-  const cx = f.x + f.width / 2;
-  const cy = f.y + f.height / 2;
-  const snapped = (fromEdge: number, pt: number) =>
-    model.edgeToCentre.some(([min, max]) => fromEdge / pt >= min && fromEdge / pt <= max);
-  const alongAfter = hasCaption ? model.alongAfter : model.alongAfterWithoutCaption;
-  if (snapped(cx, ptX) || snapped(1 - cx, ptX)) {
+  if (wide > tall) return ["x"];
+  if (tall > wide) return ["y"];
+  return ["x", "y"];
+}
+
+function isSnapped(f: DescribeFrame, model: ExpoFabModel, axis: ExpoFabAcrossAxis): boolean {
+  const c = centreOf(f);
+  const unit = (axis === "x" ? f.width : f.height) / EXPO_FAB_ICON;
+  const pos = axis === "x" ? c.x : c.y;
+  const fromEdges = [pos / unit, (1 - pos) / unit];
+  return fromEdges.some((d) => model.edgeToCentre.some(([min, max]) => d >= min && d <= max));
+}
+
+// The offset from the icon centre to `n`'s centre in icon units, across the
+// edge and along it.
+function offsetFromIcon(n: DescribeNode, iconFrame: DescribeFrame, axis: ExpoFabAcrossAxis) {
+  const icon = centreOf(iconFrame);
+  const c = centreOf(n.frame);
+  const dx = (c.x - icon.x) / (iconFrame.width / EXPO_FAB_ICON);
+  const dy = (c.y - icon.y) / (iconFrame.height / EXPO_FAB_ICON);
+  return axis === "x" ? { across: dx, along: dy } : { across: dy, along: dx };
+}
+
+/**
+ * The "Tools" caption sits centred under the icon, inside the button. With
+ * portrait-native frames the UI's "under" may be either way along the edge.
+ */
+function isCaptionOf(
+  n: DescribeNode,
+  iconFrame: DescribeFrame,
+  model: ExpoFabModel,
+  axis: ExpoFabAcrossAxis
+): boolean {
+  if (n.label !== "Tools" || !/text/i.test(n.role)) return false;
+  const { across, along } = offsetFromIcon(n, iconFrame, axis);
+  const below = axis === "x" ? along : Math.abs(along);
+  return Math.abs(across) <= EXPO_FAB_ICON / 2 && below > 0 && below <= model.withCaption.after;
+}
+
+function expoFabArea(
+  f: DescribeFrame,
+  model: ExpoFabModel,
+  axis: ExpoFabAcrossAxis,
+  hasCaption: boolean
+): ExpoFab["area"] {
+  const unitX = f.width / EXPO_FAB_ICON;
+  const unitY = f.height / EXPO_FAB_ICON;
+  const c = centreOf(f);
+  const reach = hasCaption ? model.withCaption : model.withoutCaption;
+  if (axis === "x") {
     return {
-      x0: cx - model.halfAcross * ptX,
-      x1: cx + model.halfAcross * ptX,
-      y0: cy - model.alongBefore * ptY,
-      y1: cy + alongAfter * ptY,
+      x0: c.x - model.halfAcross * unitX,
+      x1: c.x + model.halfAcross * unitX,
+      y0: c.y - reach.before * unitY,
+      y1: c.y + reach.after * unitY,
     };
   }
-  if (model.portraitNativeFrames && (snapped(cy, ptY) || snapped(1 - cy, ptY))) {
-    const along = Math.max(model.alongBefore, alongAfter);
-    return {
-      x0: cx - along * ptX,
-      x1: cx + along * ptX,
-      y0: cy - model.halfAcross * ptY,
-      y1: cy + model.halfAcross * ptY,
-    };
-  }
-  return undefined;
+  // Which way the UI's top lies along the frame's x axis depends on the
+  // landscape rotation, which the tree does not report.
+  const along = Math.max(reach.before, reach.after);
+  return {
+    x0: c.x - along * unitX,
+    x1: c.x + along * unitX,
+    y0: c.y - model.halfAcross * unitY,
+    y1: c.y + model.halfAcross * unitY,
+  };
 }
 
 function renderNested(
