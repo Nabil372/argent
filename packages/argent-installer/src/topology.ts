@@ -110,37 +110,82 @@ export function cliEntryOf(packageRoot: string | null): string | null {
   return fs.existsSync(cli) ? cli : null;
 }
 
+// Before 0.27.0 the MCP server spawned its tool-server with a bare `node`,
+// which an editor started without the shell PATH can't resolve, so a pinned
+// entry still fails there.
+const MIN_PINNABLE_VERSION = "0.27.0";
+
 /**
  * Absolute paths that launch the global install without PATH: its CLI
- * entrypoint (`<root>/dist/cli.js`) and a `node` binary, preferring the one
- * beside its bin link (the version that installed it), else the first on
- * PATH. Both are the bin dir's name, not the binary's realpath: Homebrew's
- * `bin/node` link survives `brew upgrade` where the Cellar path a resolved
- * execPath names does not. The bin dir itself IS resolved, so an fnm
- * multishell link (per-shell, gone at logout) yields the version dir behind
- * it. Null when there is no global install or its layout can't be resolved.
+ * entrypoint (`<root>/dist/cli.js`) and a `node` binary that satisfies the
+ * package's `engines`, preferring the one beside its bin link (the version
+ * that installed it), else the first on PATH. Both keep the bin dir's own
+ * name, not the binary's realpath: Homebrew's `bin/node` and
+ * `opt/node@22/bin/node` links survive `brew upgrade` where the Cellar path
+ * they resolve to does not. Only an fnm multishell dir (per-shell, gone at
+ * logout) is resolved, to the version dir behind it. Null when there is no
+ * global install, its layout can't be resolved, or it predates
+ * MIN_PINNABLE_VERSION.
  */
 export function getGloballyInstalledLaunchPaths(): { cli: string; node: string | null } | null {
   const binaryPath = whichAll(MCP_BINARY_NAME).find(isPinnablePath) ?? null;
-  const cli = cliEntryOf(packageRootOfBinary(binaryPath));
-  if (!binaryPath || !cli) return null;
+  const packageRoot = packageRootOfBinary(binaryPath);
+  const cli = cliEntryOf(packageRoot);
+  if (!binaryPath || !packageRoot || !cli) return null;
+  const manifest = readLaunchManifest(packageRoot);
+  const version = semver.valid(manifest.version ?? null);
+  if (!version || semver.lt(version, MIN_PINNABLE_VERSION)) return null;
   // `which -a` echoes relative PATH entries as-is; the editor would resolve a
   // relative `node` against its own cwd, so anchor them to this one.
   const binDirs = [binaryPath, ...whichAll("node").filter(isPinnablePath)].map((bin) =>
     path.dirname(path.resolve(bin))
   );
-  return { cli, node: binDirs.map(nodeBeside).find((node) => node !== null) ?? null };
+  const node = binDirs
+    .map(nodeBeside)
+    .find((candidate) => candidate !== null && runsEngines(candidate, manifest.engines?.node));
+  return { cli, node: node ?? null };
+}
+
+function readLaunchManifest(packageRoot: string): {
+  version?: string;
+  engines?: { node?: string };
+} {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+  } catch {
+    return {};
+  }
 }
 
 function nodeBeside(binDir: string): string | null {
-  let realDir = binDir;
-  try {
-    realDir = fs.realpathSync(binDir);
-  } catch {
-    // keep the unresolved dir
+  let dir = binDir;
+  if (isFnmMultishell(binDir)) {
+    try {
+      dir = fs.realpathSync(binDir);
+    } catch {
+      // keep the unresolved dir
+    }
   }
-  const node = path.join(realDir, process.platform === "win32" ? "node.exe" : "node");
+  const node = path.join(dir, process.platform === "win32" ? "node.exe" : "node");
   return fs.existsSync(node) ? node : null;
+}
+
+function isFnmMultishell(dir: string): boolean {
+  return dir.split(path.sep).includes("fnm_multishells");
+}
+
+function runsEngines(node: string, range: string | undefined): boolean {
+  if (!range) return true;
+  try {
+    const version = execFileSync(node, ["-p", "process.versions.node"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    }).trim();
+    return semver.satisfies(version, range);
+  } catch {
+    return false;
+  }
 }
 
 /**

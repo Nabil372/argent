@@ -36,7 +36,7 @@ beforeEach(() => {
   fs.mkdirSync(path.join(pkg, "dist"), { recursive: true });
   fs.writeFileSync(
     path.join(pkg, "package.json"),
-    JSON.stringify({ name: "@swmansion/argent", bin: { argent: "dist/cli.js" } })
+    JSON.stringify({ name: "@swmansion/argent", version: "0.30.0", bin: { argent: "dist/cli.js" } })
   );
   cli = path.join(pkg, "dist", "cli.js");
   fs.writeFileSync(cli, "#!/usr/bin/env node\n", { mode: 0o755 });
@@ -94,6 +94,51 @@ describe.skipIf(process.platform === "win32")("resolveGlobalCommandMode", () => 
     fs.symlinkSync(path.join(prefix, "bin"), path.join(multishell, "bin"));
     vi.stubEnv("PATH", `${path.join(multishell, "bin")}${path.delimiter}${process.env.PATH}`);
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
+  });
+
+  it("keeps the name of a symlinked bin dir (Homebrew opt/node@22 -> Cellar keg)", () => {
+    const keg = path.join(tmp, "Cellar", "node@22", "22.1.0", "bin");
+    fs.mkdirSync(keg, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(keg, "node"));
+    const opt = path.join(tmp, "opt", "node@22");
+    fs.mkdirSync(path.dirname(opt), { recursive: true });
+    fs.symlinkSync(path.dirname(keg), opt);
+    prependPath(path.join(opt, "bin"));
+    expect(resolveGlobalCommandMode()).toEqual({
+      kind: "global-node",
+      node: path.join(opt, "bin", "node"),
+      cli,
+    });
+  });
+
+  it("skips a sibling node older than the package's engines range", () => {
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({
+        name: "@swmansion/argent",
+        version: "0.30.0",
+        bin: { argent: "dist/cli.js" },
+        engines: { node: ">=20.12.0" },
+      })
+    );
+    fs.writeFileSync(path.join(prefix, "bin", "node"), "#!/bin/sh\necho 18.20.8\n", {
+      mode: 0o755,
+    });
+    const node = linkPathNode();
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
+  });
+
+  it("writes bare argent for an install older than 0.27.0", () => {
+    linkPrefixNode();
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({
+        name: "@swmansion/argent",
+        version: "0.26.0",
+        bin: { argent: "dist/cli.js" },
+      })
+    );
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
   });
 
   it("writes bare argent when no node is on PATH (bunx init)", () => {
