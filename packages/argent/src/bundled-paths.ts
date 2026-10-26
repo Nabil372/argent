@@ -14,9 +14,9 @@ const distDir = path.dirname(fileURLToPath(import.meta.url));
 // PnP, locked-down CI), which is why argent ships no postinstall script.
 function readPackageVersion(): string | undefined {
   try {
-    const pkg = JSON.parse(
-      fs.readFileSync(path.join(distDir, "..", "package.json"), "utf8")
-    ) as { version?: string };
+    const pkg = JSON.parse(fs.readFileSync(path.join(distDir, "..", "package.json"), "utf8")) as {
+      version?: string;
+    };
     return pkg.version;
   } catch {
     return undefined;

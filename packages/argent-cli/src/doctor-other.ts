@@ -51,7 +51,7 @@ export function globalBehindCheck(
 }
 
 /** Config readers treat a file that doesn't parse as empty, silently dropping its settings. */
-export function unparsableConfigChecks(cwd: string): DoctorCheck[] {
+function unparsableConfigChecks(cwd: string): DoctorCheck[] {
   const files = [...new Set([configFilePath("global"), configFilePath("project", { cwd })])];
   return files.flatMap((file) => {
     const error = configParseError(file);
