@@ -222,6 +222,10 @@ describe("getAutoScreenshotDelayMs", () => {
     }
   });
 
+  it("keeps run-sequence waiting the full 3s for the screen to settle", () => {
+    expect(AUTO_SCREENSHOT_DELAY_MS_BY_TOOL["run-sequence"]).toBe(3000);
+  });
+
   it("returns default 1400ms for an unknown tool", () => {
     expect(getAutoScreenshotDelayMs("some-new-tool")).toBe(1400);
   });
