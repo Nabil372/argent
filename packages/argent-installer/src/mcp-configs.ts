@@ -53,6 +53,11 @@ export interface McpServerEntry {
   switchedOffBy?: SwitchOffKey[];
   /** The directory the editor starts the command in, when the entry sets one. */
   cwd?: string;
+  /**
+   * A remote (HTTP/SSE) server the editor connects to instead of starting a
+   * command; `command` is then "". Editors prefer it over a `command` beside it.
+   */
+  url?: string;
 }
 
 type SwitchOffKey = "enabled" | "disabled";
@@ -207,11 +212,15 @@ function deleteIfEmpty(parent: Record<string, unknown>, key: string): void {
   }
 }
 
+// `url` (Claude Code, VS Code, Cursor, Kiro, Zed, Codex, opencode), `serverUrl`
+// (Windsurf), `httpUrl` (Gemini).
+const REMOTE_URL_KEYS = ["url", "serverUrl", "httpUrl"] as const;
+
 // Absent → null; present but unrecognizable → the { command: "" } sentinel
-// (see McpConfigAdapter.getArgentEntry). Env vars ride along (opencode spells
-// the key `environment`): they mark a hand-tuned entry and can make a command
-// resolvable in the client when this shell's probe misses it (nvm PATH), so
-// classification must see them.
+// (see McpConfigAdapter.getArgentEntry); a remote entry → { command: "", url }.
+// Env vars ride along (opencode spells the key `environment`): they mark a
+// hand-tuned entry and can make a command resolvable in the client when this
+// shell's probe misses it (nvm PATH), so classification must see them.
 function normalizeServerEntry(raw: unknown): McpServerEntry | null {
   if (raw === undefined || raw === null) return null;
   if (isRecord(raw)) {
@@ -229,6 +238,10 @@ function normalizeServerEntry(raw: unknown): McpServerEntry | null {
       ...(switchedOffBy.length > 0 ? { switchedOffBy } : {}),
       ...(typeof raw.cwd === "string" && raw.cwd ? { cwd: raw.cwd } : {}),
     };
+    const url = REMOTE_URL_KEYS.map((key) => raw[key]).find(
+      (value): value is string => typeof value === "string" && value !== ""
+    );
+    if (url) return { command: "", args: [], url, ...extra };
     // opencode stores the command as a single array: { command: [cmd, ...args] }.
     if (Array.isArray(raw.command) && raw.command.every((c) => typeof c === "string")) {
       const [command = "", ...args] = raw.command as string[];
@@ -342,6 +355,25 @@ function parseTomlStrict(filePath: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/** A config.toml that exists but does not parse, which Codex refuses to start with. */
+export function isInvalidToml(filePath: string): boolean {
+  if (!fs.existsSync(filePath)) return false;
+  try {
+    parseTomlText(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+// readToml reads a broken file as {}, so writing that back would wipe it.
+function readTomlForEdit(filePath: string): Record<string, unknown> {
+  if (isInvalidToml(filePath)) {
+    throw new Error(`${filePath} is not valid TOML; fix its syntax, then run this again`);
+  }
+  return readToml(filePath);
 }
 
 function parseYamlStrict(filePath: string): Record<string, unknown> | null {
@@ -1315,7 +1347,7 @@ const codexAdapter: McpConfigAdapter = {
   },
 
   write(configPath: string, entry: McpServerEntry): void {
-    const config = readToml(configPath);
+    const config = readTomlForEdit(configPath);
     const servers = (config.mcp_servers ?? {}) as Record<string, unknown>;
     servers[MCP_SERVER_KEY] = {
       command: entry.command,
@@ -1355,8 +1387,8 @@ const codexAdapter: McpConfigAdapter = {
       return;
     }
 
+    const config = readTomlForEdit(configPath) as CodexConfig;
     const tools = getAvailableToolIds();
-    const config = readToml(configPath) as CodexConfig;
 
     config.mcp_servers ??= {};
     config.mcp_servers.argent ??= {};
@@ -1930,7 +1962,7 @@ function removeArgentSection(existing: string): string {
 export function injectCodexRules(configPath: string, rulesDir: string): string | null {
   const rules = readAndConcatRules(rulesDir);
   if (!rules) return null;
-  const config = readToml(configPath);
+  const config = readTomlForEdit(configPath);
   const existing = config.developer_instructions as string | undefined;
   config.developer_instructions = injectArgentSection(existing, rules);
   writeToml(configPath, config);

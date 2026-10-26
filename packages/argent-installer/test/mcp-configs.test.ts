@@ -296,6 +296,31 @@ describe("getArgentEntry env passthrough", () => {
   });
 });
 
+describe("remote entries", () => {
+  it("reads each editor's URL key, keeps the switch-off key and prefers the URL to a command", () => {
+    const read = (name: string, raw: Record<string, unknown>) => {
+      const adapter = ALL_ADAPTERS.find((a) => a.name === name)!;
+      const file = path.join(tmpDir, `${name}.json`);
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { argent: raw } }));
+      return adapter.getArgentEntry(file);
+    };
+    const url = "http://127.0.0.1:9/mcp";
+    expect(read("Claude Code", { type: "http", url, command: "argent", args: ["mcp"] })).toEqual({
+      command: "",
+      args: [],
+      url,
+    });
+    expect(read("Windsurf", { serverUrl: url, disabled: true })).toEqual({
+      command: "",
+      args: [],
+      url,
+      switchedOffBy: ["disabled"],
+    });
+    expect(read("Gemini", { httpUrl: url })?.url).toBe(url);
+    expect(isArgentManagedEntry({ command: "", args: [], url })).toBe(false);
+  });
+});
+
 describe("disabled entries", () => {
   it("marks opencode `enabled: false` and Windsurf-style `disabled: true`", () => {
     const opencode = ALL_ADAPTERS.find((a) => a.name === "opencode")!;
@@ -1050,6 +1075,14 @@ describe("Codex adapter", () => {
     const content = fs.readFileSync(configPath, "utf8");
     expect(content).toContain("[mcp_servers.argent]");
     expect(content).toContain('command = "argent"');
+  });
+
+  it("refuses to rewrite a config.toml that does not parse", () => {
+    const configPath = path.join(tmpDir, "config.toml");
+    const broken = 'model = "o3"\n[mcp_servers.other]\nargs = ["x"\n';
+    fs.writeFileSync(configPath, broken);
+    expect(() => adapter.write(configPath, getMcpEntry())).toThrow(/not valid TOML/);
+    expect(fs.readFileSync(configPath, "utf8")).toBe(broken);
   });
 
   it("removes argent entry and returns true", () => {

@@ -423,14 +423,11 @@ describe("update — customized MCP entries survive the refresh and the sweep", 
   });
 
   it("repairs a corrupted (unparseable) argent entry instead of skipping it as customized", async () => {
-    // A mangled entry (merge-conflict remnant, url form) normalizes to
-    // getArgentEntry's { command: "" } sentinel — the classification must
-    // repair it to the stock command, not label it "customized".
+    // A mangled entry (merge-conflict remnant) normalizes to getArgentEntry's
+    // { command: "" } sentinel — the classification must repair it to the
+    // stock command, not label it "customized".
     const mcpJson = path.join(projDir, ".mcp.json");
-    fs.writeFileSync(
-      mcpJson,
-      JSON.stringify({ mcpServers: { argent: { url: "http://localhost:9999" } } })
-    );
+    fs.writeFileSync(mcpJson, JSON.stringify({ mcpServers: { argent: { args: ["mcp"] } } }));
     // The mocked package-manager run lands the global target so the run
     // reaches the refresh.
     childProcessMock.execFileSync.mockImplementation(((_bin: string, args: string[]) => {
@@ -449,5 +446,24 @@ describe("update — customized MCP entries survive the refresh and the sweep", 
     ).mcpServers.argent;
     expect(entry.command).toBe("argent");
     expect(entry.args).toEqual(["mcp"]);
+  });
+
+  it("leaves a remote (url) argent entry untouched", async () => {
+    const mcpJson = path.join(projDir, ".mcp.json");
+    fs.writeFileSync(
+      mcpJson,
+      JSON.stringify({ mcpServers: { argent: { type: "http", url: "http://localhost:9999" } } })
+    );
+    const before = fs.readFileSync(mcpJson, "utf8");
+    childProcessMock.execFileSync.mockImplementation(((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args.some((a) => a.includes("@swmansion/argent"))) {
+        topologyState.globalVersion = "99.0.0";
+      }
+      return undefined;
+    }) as never);
+
+    await update(["--yes"]);
+
+    expect(fs.readFileSync(mcpJson, "utf8")).toBe(before);
   });
 });

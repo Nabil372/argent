@@ -715,7 +715,10 @@ export async function update(args: string[]): Promise<void> {
           continue;
         }
         const isUnreadableSentinel =
-          existing !== null && existing.command === "" && existing.args.length === 0;
+          existing !== null &&
+          existing.command === "" &&
+          existing.args.length === 0 &&
+          !existing.url;
         if (existing !== null && !isUnreadableSentinel && !isArgentManagedEntry(existing)) {
           results.push(
             `${pc.yellow("!")} ${adapter.name} left a customized entry untouched ${pc.dim(configPath)}`

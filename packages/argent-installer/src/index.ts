@@ -35,6 +35,7 @@ export {
   isArgentDisabledInClaudeProject,
   isSwitchedOffInEditor,
   hasCodexRules,
+  isInvalidToml,
   type McpConfigAdapter,
   type McpServerEntry,
 } from "./mcp-configs.js";
