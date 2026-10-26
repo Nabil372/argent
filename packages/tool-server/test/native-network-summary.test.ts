@@ -203,15 +203,17 @@ describe("native-network-logs execute", () => {
     evicted = false
   ) => {
     const stored = [...log];
+    let flagged = evicted;
     const clearNetworkLog = vi.fn(() => {
       stored.length = 0;
+      flagged = false;
     });
     const api = {
       isConnected: () => true,
       activateNetworkInspection: () => {},
       getNetworkLog: () => [...stored],
       clearNetworkLog,
-      networkLogEvicted: () => evicted,
+      networkLogEvicted: () => flagged,
     } as unknown as NativeDevtoolsApi;
     const result = nativeNetworkLogsTool.execute(
       { nativeDevtools: api },
@@ -284,5 +286,14 @@ describe("native-network-logs execute", () => {
   it("flags a log only once it evicted events", async () => {
     expect((await run(log, {}, true).result).truncated).toBe(true);
     expect((await run(log, {}, false).result).truncated).toBeUndefined();
+  });
+
+  it("flags evicted events in format events too", async () => {
+    expect((await run(log, { format: "events" }, true).result).truncated).toBe(true);
+    expect((await run(log, { format: "events" }, false).result).truncated).toBeUndefined();
+  });
+
+  it("still flags a log it clears while reading", async () => {
+    expect((await run(log, { clear: true }, true).result).truncated).toBe(true);
   });
 });

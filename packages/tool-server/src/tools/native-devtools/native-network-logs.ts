@@ -52,7 +52,7 @@ interface NativeRequestRow {
 
 type Result =
   | NativeDevtoolsPrecheckBlock
-  | { status: "ok"; count: number; events: NetworkEvent[] }
+  | { status: "ok"; count: number; events: NetworkEvent[]; truncated?: true }
   | {
       status: "ok";
       count: number;
@@ -129,7 +129,7 @@ export const nativeNetworkLogsTool: ToolDefinition<Params, Result> = {
   description: `Retrieve network requests captured at the native NSURLProtocol level. 
 Unlike the JS-level network inspector (view-network-logs), this captures ALL network traffic from the app including native modules, Swift/Objective-C networking, and background transfers that never pass through JS XMLHttpRequest or fetch. 
 Use when you need to inspect native-level HTTP traffic that is invisible to the JS-level capture. 
-Returns { status, count, totalRequests, requests } with one row per request (method, url, status, mimeType, bytes, durationMs, error). finalUrl is set when a redirect ended elsewhere; status and mimeType are then those of finalUrl. A row with no bytes, durationMs or error has not finished: it is still running, or the app cancelled it. truncated: true means the log reached its 1000-event limit, so older requests are missing, totalRequests counts only what is left, and A row without method and url lost its first events, to that limit or to a clear: true read while it was in flight. Pass format: "events" for the raw CDP events with headers (most request bodies are not captured, and response bodies never are).
+Returns { status, count, totalRequests, requests } with one row per request (method, url, status, mimeType, bytes, durationMs, error). finalUrl is set when a redirect ended elsewhere; status and mimeType are then those of finalUrl. A row with no bytes, durationMs or error has not finished: it is still running, or the app cancelled it. truncated: true means the log reached its 1000-event limit, so older requests are missing, totalRequests counts only what is left, and A row without method and url lost its first events, to that limit or to a clear: true read while it was in flight. Pass format: "events" for the raw CDP events with headers (most request bodies are not captured, and response bodies never are); it returns { status, count, events } plus the same truncated: true when the oldest events, usually the requestWillBeSent ones holding request headers, were dropped.
 If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help. Restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If the same status comes back after that restart, stop restarting: follow the message, which names the terminal fallback. If status is connect_pending: the app is injected and still connecting. Do not restart it, wait a few seconds and retry. If status is init_failed: the simulator's native-devtools environment could not be initialised. Follow the message (re-boot the simulator) rather than retrying this tool.
 A not-running app comes back as one of those statuses rather than a failure. An app that is not connected does too, except on a device whose devtools agent argent attached to rather than armed itself: there it fails with \`NATIVE_DEVTOOLS_NOT_CONNECTED\`, since no restart of ours can complete a handshake we do not own. Failures are separate: an Apple system app is rejected outright (terminal: never retry it), while a missing host dependency or a udid that is not an Apple device is not.`,
   zodSchema,
@@ -169,9 +169,10 @@ A not-running app comes back as one of those statuses rather than a failure. An 
     if (params.clear) api.clearNetworkLog(params.bundleId);
     // slice(-0) would return everything, so cut from the front instead.
     const mostRecent = <T>(items: T[]) => items.slice(Math.max(0, items.length - params.limit));
+    const truncated = evicted ? { truncated: true as const } : {};
     if (params.format === "events") {
       const events = mostRecent(log);
-      return { status: "ok", count: events.length, events };
+      return { status: "ok", count: events.length, events, ...truncated };
     }
     const all = summarizeRequests(log);
     const requests = mostRecent(all);
@@ -180,7 +181,7 @@ A not-running app comes back as one of those statuses rather than a failure. An 
       count: requests.length,
       totalRequests: all.length,
       requests,
-      ...(evicted && { truncated: true as const }),
+      ...truncated,
     };
   },
 };
