@@ -94,6 +94,38 @@ function findDeclaringProjectRoot(startDir: string): string | null {
   }
 }
 
+// Package root of the first `argent` on PATH: the install `argent update
+// --global` resolves as its target. Null when there is none or it is not a
+// symlink into an argent package (Windows wrappers, shims).
+function pathGlobalInstallRoot(): string | null {
+  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
+    if (!dir) continue;
+    try {
+      const root = path.dirname(path.dirname(fs.realpathSync(path.join(dir, "argent"))));
+      const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
+        name?: string;
+      };
+      return pkg.name === PACKAGE_NAME ? root : null;
+    } catch {
+      // no argent in this dir, keep looking
+    }
+  }
+  return null;
+}
+
+// npx / dlx / bunx caches, which serve a session without being the global
+// install an update targets.
+const TEMP_RUNNER_MARKERS = ["_npx", `${path.sep}dlx-`, path.join("bun", "install", "cache")];
+
+function runningGlobalInstallRoot(): string | null {
+  try {
+    const root = fs.realpathSync(path.dirname(__dirname));
+    return TEMP_RUNNER_MARKERS.some((marker) => root.includes(marker)) ? null : root;
+  } catch {
+    return null;
+  }
+}
+
 // Pin the target on the spawned `argent update` so it never re-guesses from cwd.
 function targetFlagsFor(target: "global" | "local" | "both"): string[] {
   if (target === "both") return ["--global", "--local"];
@@ -190,6 +222,23 @@ export const updateArgentTool: ToolDefinition<{
         return {
           message:
             "Argent found an installable update, but could not determine its version. Please try again later.",
+        };
+      }
+    }
+
+    // A pinned MCP entry can serve a global install other than the first one
+    // on PATH (two nvm versions); the spawned updater would update the PATH
+    // one and leave this session's server running the old version.
+    if (running.kind === "global" && effectiveTarget !== "local") {
+      const servingRoot = runningGlobalInstallRoot();
+      const pathRoot = pathGlobalInstallRoot();
+      if (servingRoot && pathRoot && servingRoot !== pathRoot) {
+        return {
+          message:
+            `This session runs Argent from ${servingRoot}, but \`argent\` on PATH is the install at ` +
+            `${pathRoot}, which is the one an update would change. Ask the user to run ` +
+            "`argent update` in a terminal and then restart the editor, which reconnects it to the " +
+            "updated install.",
         };
       }
     }

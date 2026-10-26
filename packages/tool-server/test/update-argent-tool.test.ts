@@ -96,6 +96,8 @@ describe("update-argent tool", () => {
     // A cwd with no ancestor declaring argent, so findDeclaringProjectRoot is
     // deterministic (os.tmpdir() ancestors never declare the package).
     process.chdir(tmpDir);
+    // No `argent` on PATH unless a test stages one.
+    vi.stubEnv("PATH", tmpDir);
     const mod = await import("../src/tools/system/update-argent");
     updateArgentTool = mod.updateArgentTool;
   });
@@ -107,6 +109,7 @@ describe("update-argent tool", () => {
     else process.env.ARGENT_INSTALL_KIND = savedInstallKind;
     if (savedProjectRoot === undefined) delete process.env.ARGENT_PROJECT_ROOT;
     else process.env.ARGENT_PROJECT_ROOT = savedProjectRoot;
+    vi.unstubAllEnvs();
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -116,6 +119,31 @@ describe("update-argent tool", () => {
     expect((result as { message: string }).message).toContain("1.0.0 -> v99.0.0");
     expect((result as { message: string }).message).toContain("restart");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "refuses when `argent` on PATH is a different global install than the one serving",
+    async () => {
+      const otherRoot = path.join(tmpDir, "prefix", "lib", "node_modules", "@swmansion", "argent");
+      fs.mkdirSync(path.join(otherRoot, "dist"), { recursive: true });
+      fs.writeFileSync(
+        path.join(otherRoot, "package.json"),
+        JSON.stringify({ name: "@swmansion/argent" })
+      );
+      fs.writeFileSync(path.join(otherRoot, "dist", "cli.js"), "");
+      const bin = path.join(tmpDir, "prefix", "bin");
+      fs.mkdirSync(bin);
+      fs.symlinkSync(path.join(otherRoot, "dist", "cli.js"), path.join(bin, "argent"));
+      vi.stubEnv("PATH", bin);
+
+      const result = await updateArgentTool.execute({}, {}, undefined);
+      vi.advanceTimersByTime(5000);
+
+      const message = (result as { message: string }).message;
+      expect(message).toContain(fs.realpathSync(otherRoot));
+      expect(message).toContain("`argent update` in a terminal");
+      expect(mockSpawn).not.toHaveBeenCalled();
+    }
+  );
 
   it("spawns `argent update` with a pinned target flag (not npx) after 2 seconds", async () => {
     await updateArgentTool.execute({}, { target: "global" }, undefined);
