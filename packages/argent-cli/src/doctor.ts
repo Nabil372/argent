@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -74,6 +75,32 @@ export function updateCommand(runningLocal: boolean, globalPm: PackageManager, a
   return !runningLocal && globalPm !== "npm"
     ? formatShellCommand(globalInstallCommand(globalPm, `${PACKAGE_NAME}@latest`))
     : `${argentCmd} update`;
+}
+
+// `argent update` only installs when a newer version exists, so it can't
+// repair a broken copy of the current one: these reinstall it.
+
+/**
+ * pnpm, bun and Yarn classic trust their install state and skip a package
+ * dir that was deleted or damaged, so only their forced install restores it.
+ */
+export function localReinstallCommand(
+  pm: PackageManager,
+  projectRoot: string,
+  packageRoot: string,
+  installCmd: string
+): string {
+  if (pm === "pnpm" || pm === "bun") return `${pm} install --force`;
+  if (pm === "yarn" && !fs.existsSync(path.join(projectRoot, ".yarnrc.yml"))) {
+    return "yarn install --force";
+  }
+  return `delete ${home(packageRoot)}, then ${installCmd}`;
+}
+
+/** bun skips a global package that is already at the requested version. */
+export function globalReinstallCommand(pm: PackageManager): string {
+  const cmd = globalInstallCommand(pm, PACKAGE_NAME);
+  return formatShellCommand(pm === "bun" ? { ...cmd, args: [...cmd.args, "--force"] } : cmd);
 }
 
 /**
@@ -157,13 +184,11 @@ export async function collectDoctorReport(options: {
   };
   const running = options.paths.version ?? getInstalledVersion() ?? "unknown";
   const globalPm = globalPackageManagerOf(packageRoot);
-  // `argent update` only installs when a newer version exists, so it can't
-  // repair a broken copy of the current one.
-  const reinstall = runningLocal
-    ? projectPm === "pnpm"
-      ? "Reinstall argent: pnpm install --force"
-      : `Reinstall argent: delete ${home(packageRoot)}, then ${ctx.installCmd}`
-    : `Reinstall argent: ${formatShellCommand(globalInstallCommand(globalPm, PACKAGE_NAME))}`;
+  const reinstall = `Reinstall argent: ${
+    runningLocal
+      ? localReinstallCommand(projectPm, projectRoot, packageRoot, ctx.installCmd)
+      : globalReinstallCommand(globalPm)
+  }`;
   const updateCmd = updateCommand(runningLocal, globalPm, ctx.argentCmd);
   const linked = await getResolvedToolsUrl();
   const entryToolsUrls: EntryToolsUrl[] = [];

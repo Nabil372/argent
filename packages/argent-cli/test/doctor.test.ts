@@ -6,6 +6,8 @@ import * as http from "node:http";
 import {
   collectDoctorReport,
   doctor,
+  globalReinstallCommand,
+  localReinstallCommand,
   renderDoctorReport,
   stripPackageBinDirs,
   updateCommand,
@@ -93,6 +95,24 @@ describe.skipIf(process.platform === "win32")("permissionFix", () => {
     expect(permissionFix("/", "u+rwx", { recursive: true })).toBe(
       `sudo chown -R "$USER" '/' && chmod u+rwx '/'`
     );
+  });
+});
+
+describe("reinstall commands", () => {
+  it("forces the install where a plain one skips a damaged package dir", () => {
+    const local = (pm: "npm" | "pnpm" | "yarn" | "bun") =>
+      localReinstallCommand(pm, projectRoot, "/proj/node_modules/@swmansion/argent", "x install");
+    expect(local("pnpm")).toBe("pnpm install --force");
+    expect(local("bun")).toBe("bun install --force");
+    expect(local("yarn")).toBe("yarn install --force");
+    expect(local("npm")).toBe("delete /proj/node_modules/@swmansion/argent, then x install");
+    fs.writeFileSync(path.join(projectRoot, ".yarnrc.yml"), "nodeLinker: node-modules\n");
+    expect(local("yarn")).toMatch(/^delete .*, then x install$/);
+  });
+
+  it("forces bun's global reinstall", () => {
+    expect(globalReinstallCommand("bun")).toBe("bun add -g @swmansion/argent --force");
+    expect(globalReinstallCommand("npm")).toBe("npm install -g @swmansion/argent");
   });
 });
 
