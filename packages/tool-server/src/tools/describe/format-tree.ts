@@ -1,4 +1,5 @@
 import type { DescribeFrame, DescribeNode, DescribeSource } from "./contract";
+import { SCROLL_INDICATOR_LABELS } from "./scroll-indicator-labels";
 
 // Token-efficient text rendering of an already-pruned DescribeNode tree: the
 // per-platform adapters (and the Android v2 trimmer in uiautomator-parser) do
@@ -157,6 +158,8 @@ function renderNested(
   return lines;
 }
 
+type RenderMode = "flat" | "nested";
+
 interface FormatDescribeOptions {
   source: DescribeSource;
 }
@@ -209,10 +212,16 @@ const TEXT_RUN_ROLES = new Set([
 // ax-service reports UIKit scroll indicators as labelled AXGroups. They sit
 // over the content they scroll, alert button stacks included, and no scroll
 // can separate an indicator from its own content.
-const SCROLL_INDICATOR_LABEL = /^(vertical|horizontal) scroll bar\b/i;
+const SCROLL_INDICATOR_PREFIXES = SCROLL_INDICATOR_LABELS.map((l) => l.toLowerCase());
+// A text or image inside a button is its label. A flat list also mixes leaves
+// with the groups that hold them (a tab bar and its buttons), so an element
+// well inside a group is skipped there. Any other element inside another one,
+// or inside a group of about its own size, is covered.
+const FLAT_CONTAINER_ROLES = new Set(["AXGroup", "AXTabBar"]);
+const FLAT_SAME_SIZE_RATIO = 0.8;
 const OVERLAP_MAX_ELEMENT_AREA = 0.5;
 const OVERLAP_MIN_RATIO = 0.25;
-const OVERLAP_MAX_RATIO = 0.95;
+const OVERLAP_CONTAINED_RATIO = 0.95;
 const OVERLAP_NAME_MAX = 40;
 const OVERLAP_PARTNERS_MAX = 3;
 
@@ -240,11 +249,16 @@ function overlapRatio(a: DescribeFrame, b: DescribeFrame): number {
   return (width * height) / Math.min(frameArea(a), frameArea(b));
 }
 
+function isScrollIndicator(n: DescribeNode): boolean {
+  const label = (n.label ?? "").toLowerCase();
+  return SCROLL_INDICATOR_PREFIXES.some((prefix) => label.startsWith(prefix));
+}
+
 function isOverlapCandidate(n: DescribeNode): boolean {
   return (
     Boolean(n.label || n.identifier || n.value) &&
     !OVERLAP_SKIP_ROLES.has(n.role) &&
-    !SCROLL_INDICATOR_LABEL.test(n.label ?? "") &&
+    !isScrollIndicator(n) &&
     frameArea(n.frame) < OVERLAP_MAX_ELEMENT_AREA
   );
 }
@@ -304,6 +318,15 @@ function nestedCandidates(root: DescribeNode): OverlapCandidate[] {
   return candidates;
 }
 
+function oneHoldsTheOther(a: DescribeNode, b: DescribeNode, mode: RenderMode): boolean {
+  const [inner, outer] = frameArea(a.frame) <= frameArea(b.frame) ? [a, b] : [b, a];
+  if (PASSIVE_ROLES.has(inner.role)) return true;
+  const sizeRatio = frameArea(inner.frame) / frameArea(outer.frame);
+  return (
+    mode === "flat" && FLAT_CONTAINER_ROLES.has(outer.role) && sizeRatio < FLAT_SAME_SIZE_RATIO
+  );
+}
+
 function isAncestorPair(a: OverlapCandidate, b: OverlapCandidate): boolean {
   return (a.start <= b.start && b.start <= a.end) || (b.start <= a.start && a.start <= b.end);
 }
@@ -317,10 +340,10 @@ function overlapName(n: DescribeNode): string {
   return `"${escapeForLine(raw).replace(/"/g, "'")}"`;
 }
 
-// Partly overlapping elements (a tab bar over a list row) carry no stacking
-// order in the element list, so a tap at either centre may hit the other.
-// Ancestors overlap their descendants by design, so those pairs are skipped.
-function overlapNotes(candidates: OverlapCandidate[]): Map<DescribeNode, string> {
+// Overlapping elements (a tab bar over a list row) carry no stacking order in
+// the element list, so a tap at either centre may hit the other. Ancestors
+// overlap their descendants by design, so those pairs are skipped.
+function overlapNotes(candidates: OverlapCandidate[], mode: RenderMode): Map<DescribeNode, string> {
   const partners = new Map<DescribeNode, OverlapPartner[]>();
   const addPartner = (self: DescribeNode, other: DescribeNode, ratio: number) => {
     const list = partners.get(self) ?? [];
@@ -334,7 +357,8 @@ function overlapNotes(candidates: OverlapCandidate[]): Map<DescribeNode, string>
       const a = first.node;
       const b = second.node;
       const ratio = overlapRatio(a.frame, b.frame);
-      if (ratio <= OVERLAP_MIN_RATIO || ratio >= OVERLAP_MAX_RATIO) continue;
+      if (ratio <= OVERLAP_MIN_RATIO) continue;
+      if (ratio >= OVERLAP_CONTAINED_RATIO && oneHoldsTheOther(a, b, mode)) continue;
       if (bothIn(PASSIVE_ROLES, a, b) || bothIn(TEXT_RUN_ROLES, a, b)) continue;
       addPartner(a, b, ratio);
       addPartner(b, a, ratio);
@@ -358,7 +382,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
   // The iOS providers emit a flat list of leaves under a synthetic root; the
   // sources below return a real parent/child tree, whose descendants beyond
   // depth 1 are only visible in nested mode.
-  const mode: "flat" | "nested" =
+  const mode: RenderMode =
     opts.source === "uiautomator" ||
     opts.source === "android-devtools" ||
     opts.source === "cdp-dom" ||
@@ -404,7 +428,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
   // Vega has no tap, so the note's advice does not apply there.
   const notes = isVega
     ? new Map<DescribeNode, string>()
-    : overlapNotes(mode === "flat" ? flatCandidates(root) : nestedCandidates(root));
+    : overlapNotes(mode === "flat" ? flatCandidates(root) : nestedCandidates(root), mode);
   const body =
     mode === "flat"
       ? renderFlat(root, contentRoles, opts.source, notes)
