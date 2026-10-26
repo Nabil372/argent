@@ -31,7 +31,7 @@ function node(children: DescribeNode[] = []): DescribeNode {
 }
 
 function treeOf(root: DescribeNode): DescribeTreeData {
-  return { tree: root, source: "test" } as DescribeTreeData;
+  return { tree: root, source: "cdp-dom" };
 }
 
 const content = treeOf(node([node()]));
