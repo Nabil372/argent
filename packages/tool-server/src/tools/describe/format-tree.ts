@@ -56,10 +56,13 @@ function formatAttr(name: string, value: string | undefined): string {
   return ` ${name}="${escapeForLine(value)}"`;
 }
 
-function formatFlags(n: DescribeNode): string {
+/** Sources whose platform cannot long-press, so `long-clickable` would be a dead end. */
+const NO_LONG_PRESS_SOURCES: ReadonlySet<DescribeSource> = new Set(["harmony-uitest"]);
+
+function formatFlags(n: DescribeNode, source: DescribeSource): string {
   const flags: string[] = [];
   if (n.clickable) flags.push("clickable");
-  if (n.longClickable) flags.push("long-clickable");
+  if (n.longClickable && !NO_LONG_PRESS_SOURCES.has(source)) flags.push("long-clickable");
   if (n.scrollable) flags.push("scrollable");
   // The Chromium walker reports `checked` without `checkable`, so the state
   // flag cannot be gated on the pair.
@@ -96,7 +99,12 @@ function shouldEmit(n: DescribeNode, contentRoles: ReadonlySet<string>): boolean
   return hasContent(n) || contentRoles.has(n.role);
 }
 
-function formatLine(n: DescribeNode, indent: number, note?: string): string {
+function formatLine(
+  n: DescribeNode,
+  indent: number,
+  source: DescribeSource,
+  note?: string
+): string {
   const pad = "  ".repeat(indent);
   // iOS reports a text input's placeholder as both label and value; printing
   // it twice costs bytes for no signal.
@@ -104,7 +112,7 @@ function formatLine(n: DescribeNode, indent: number, note?: string): string {
   const labelPart = formatLabel(n.label);
   const valuePart = formatAttr("value", dedupedValue);
   const idPart = formatAttr("id", n.identifier);
-  const flagPart = formatFlags(n);
+  const flagPart = formatFlags(n, source);
   const notePart = note ? ` [${note}]` : "";
   const annotations = `${labelPart}${valuePart}${idPart}${flagPart}${notePart}`.trim();
   const annotated = annotations ? ` ${annotations}` : "";
@@ -114,13 +122,14 @@ function formatLine(n: DescribeNode, indent: number, note?: string): string {
 function renderFlat(
   root: DescribeNode,
   contentRoles: ReadonlySet<string>,
+  source: DescribeSource,
   notes: Map<DescribeNode, string>
 ): string[] {
   return root.children
     .filter((n) => shouldEmit(n, contentRoles))
     .slice()
     .sort((a, b) => a.frame.y - b.frame.y || a.frame.x - b.frame.x)
-    .map((n) => formatLine(n, 1, notes.get(n)));
+    .map((n) => formatLine(n, 1, source, notes.get(n)));
 }
 
 interface ExpoFabModel {
@@ -297,6 +306,7 @@ function expoFabArea(f: DescribeFrame, model: ExpoFabModel, hasCaption: boolean)
 function renderNested(
   root: DescribeNode,
   contentRoles: ReadonlySet<string>,
+  source: DescribeSource,
   notes: Map<DescribeNode, string>
 ): string[] {
   const lines: string[] = [];
@@ -310,7 +320,7 @@ function renderNested(
   while (stack.length > 0) {
     const { node, depth } = stack.pop()!;
     if (shouldEmit(node, contentRoles) || node.children.length > 0) {
-      lines.push(formatLine(node, depth, notes.get(node)));
+      lines.push(formatLine(node, depth, source, notes.get(node)));
     }
     for (let i = node.children.length - 1; i >= 0; i--) {
       stack.push({ node: node.children[i]!, depth: depth + 1 });
@@ -334,6 +344,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
     opts.source === "android-devtools" ||
     opts.source === "cdp-dom" ||
     opts.source === "vega-automation" ||
+    opts.source === "harmony-uitest" ||
     // Physical iOS: the runner reports a parent/child tree. Nested mode keeps that structure.
     opts.source === "xcuitest-runner"
       ? "nested"
@@ -375,7 +386,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
   const notes = fabModel ? expoDevButtonNotes(root, fabModel) : new Map<DescribeNode, string>();
   const body =
     mode === "flat"
-      ? renderFlat(root, contentRoles, notes)
-      : renderNested(root, contentRoles, notes);
+      ? renderFlat(root, contentRoles, opts.source, notes)
+      : renderNested(root, contentRoles, opts.source, notes);
   return [...header, ...body].join("\n").replace(/\n+$/, "\n");
 }
