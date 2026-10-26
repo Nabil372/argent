@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveInstallableUpdateTarget } from "@argent/installer";
-import { otherSection } from "../src/doctor-other.js";
+import { globalBehindCheck, otherSection } from "../src/doctor-other.js";
 import { type DoctorContext } from "../src/doctor-shared.js";
 
 vi.mock("@argent/installer", async (importOriginal) => ({
@@ -47,5 +47,48 @@ describe("otherSection update check", () => {
     registry("0.30.1", null);
     const { checks } = await otherSection(ctx, "0.30.0", false, "argent update", "npm");
     expect(checks.some((c) => c.label.startsWith("Global install"))).toBe(false);
+  });
+
+  it("offers the version argent update would install, asked through the right manager", async () => {
+    registry("0.31.0", "0.31.0");
+    const noGlobal = { ...ctx, global: null };
+    const { checks } = await otherSection(noGlobal, "0.30.0", false, "argent update", "pnpm");
+    expect(checks.slice(1)).toEqual([
+      expect.objectContaining({
+        status: "warn",
+        label: "Update available: v0.30.0 → v0.31.0",
+        fix: "argent update",
+      }),
+    ]);
+    expect(resolveInstallableUpdateTarget).toHaveBeenLastCalledWith("pnpm", "0.30.0");
+  });
+
+  it("reports a release the minimum-release-age policy holds back", async () => {
+    registry("0.31.0", null);
+    const noGlobal = { ...ctx, global: null };
+    const { checks } = await otherSection(noGlobal, "0.30.0", false, "argent update", "npm");
+    expect(checks[1]).toMatchObject({
+      status: "info",
+      label: expect.stringMatching(/held by your minimum-release-age policy/),
+    });
+  });
+});
+
+describe("globalBehindCheck", () => {
+  it("names the global install's own package manager in the fix", () => {
+    const pnpmGlobal = {
+      bin: "/Users/me/Library/pnpm/argent",
+      root: "/Users/me/Library/pnpm/global/5/node_modules/@swmansion/argent",
+      version: "1.0.0",
+    };
+    expect(globalBehindCheck(pnpmGlobal, "2.0.0", "2.0.0")).toMatchObject({
+      status: "warn",
+      fix: expect.stringMatching(/^pnpm add -g @swmansion\/argent@latest/),
+    });
+  });
+
+  it("stays quiet when the global install is already the latest", () => {
+    const global = { bin: "/usr/local/bin/argent", root: null, version: "2.0.0" };
+    expect(globalBehindCheck(global, "1.0.0", "2.0.0")).toBeNull();
   });
 });
