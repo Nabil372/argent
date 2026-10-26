@@ -43,6 +43,10 @@ The `node` path names the `node` next to the global install. When that `node` is
 
 The first `argent update` from a version that writes only the `argent` command keeps that command, because the old version runs the update. Run `argent update` once more to write the absolute paths.
 
+In Claude Code, a project config file with the `argent` command has priority over the global config file. When the global config file has absolute paths, `init` and `argent update` show a warning for such a project config file. An editor that you open from a terminal can run that project entry.
+
+The `update-argent` tool stops when the `argent` command is not on the `PATH` of the tool-server. Then run `argent update` in a terminal and restart the editor.
+
 The absolute paths belong to one machine. If you sync a global config file such as `~/.cursor/mcp.json` between machines, `argent update` on each machine rewrites it with the paths of that machine.
 
 ## Add the MCP server by hand
