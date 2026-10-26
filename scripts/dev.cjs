@@ -91,10 +91,8 @@ if (process.platform === "darwin") {
       console.warn("⚠ argent-private submodule unavailable — using pre-built dylibs\n");
     } else {
       console.error("✗ argent-private submodule unavailable and no pre-built dylibs found.");
-      console.error("  Grant SSH access to github.com/software-mansion-labs/argent-private");
-      console.error(
-        "  or obtain pre-built dylibs and place them in packages/native-devtools-ios/dylibs/"
-      );
+      console.error("  Get SSH access to github.com/software-mansion/argent-private,");
+      console.error("  or download the pre-built dylibs: npm run download:native-binaries");
       process.exit(1);
     }
   }
@@ -331,10 +329,10 @@ async function main() {
 
   console.log(`Starting dev tool-server on port ${PORT}...`);
 
-  const toolServer = spawn("npx", ["ts-node", "src/index.ts"], {
+  const toolServer = spawn("npx", ["ts-node", "src/index.ts", "start"], {
     cwd: TOOL_SERVER_PKG,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PORT: String(PORT) },
+    env: { ...process.env, ARGENT_PORT: String(PORT) },
   });
 
   toolServerPid = toolServer.pid;
