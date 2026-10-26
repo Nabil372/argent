@@ -373,12 +373,16 @@ describe("compactAutoDescribe", () => {
     "android-devtools",
     "cdp-dom",
     "harmony-uitest",
-  ])("replaces the %s preamble with the legend and keeps the tree", (source) => {
+  ])("keeps the %s Source and Mode lines, swaps the coordinate lines for the legend", (source) => {
     const full = formatDescribeTree(root, { source });
     const tree = full.slice(full.indexOf("\n\nROOT  ") + 1);
     expect(tree.startsWith("\nROOT  AXGroup")).toBe(true);
     expect(tree).toContain('AXButton "Continue"');
-    expect(compactAutoDescribe(full)).toBe(`${AUTO_DESCRIBE_LEGEND}\n${tree}`);
+    const [sourceLine, modeLine] = full.split("\n");
+    expect(sourceLine).toBe(`Source: ${source}`);
+    expect(compactAutoDescribe(full)).toBe(
+      `${sourceLine}\n${modeLine}\n${AUTO_DESCRIBE_LEGEND}\n${tree}`
+    );
   });
 
   it.each(["vega-automation", "xcuitest-runner"])(

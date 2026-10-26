@@ -76,7 +76,7 @@ const LISTING = {
   ],
 };
 
-// describe's full header, which the adapter swaps for AUTO_DESCRIBE_LEGEND.
+// describe's full header; the adapter swaps its coordinate lines for AUTO_DESCRIBE_LEGEND.
 const DESCRIBE_PREAMBLE = [
   "Source: ax-service",
   "Mode: flat",
@@ -289,7 +289,7 @@ describe("startMcpServer tool calls", () => {
 
     expect(result.isError).toBeFalsy();
     const content = result.content as Array<{ type: string; text?: string }>;
-    const tree = `${AUTO_DESCRIBE_LEGEND}\n${DESCRIBE_TREE}`;
+    const tree = `Source: ax-service\nMode: flat\n${AUTO_DESCRIBE_LEGEND}\n${DESCRIBE_TREE}`;
     expect(content.at(-1)).toEqual({ type: "text", text: `${AUTO_DESCRIBE_HEADER}\n${tree}` });
 
     const logged = readFileSync(join(TEST_HOME, "mcp-calls.log"), "utf8")
