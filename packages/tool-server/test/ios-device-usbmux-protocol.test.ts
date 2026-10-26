@@ -25,6 +25,7 @@ import { postRunnerCommand } from "../src/utils/ios-device/runner-http";
 import {
   buildUsbmuxConnectError,
   createDeadline,
+  isUsbmuxDeviceAvailable,
   openUsbmuxRunnerSocket,
   writePacket,
 } from "../src/utils/ios-device/usbmux";
@@ -310,6 +311,7 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
   const socketDirs: string[] = [];
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await Promise.all(
       openServers
         .splice(0)
@@ -390,6 +392,27 @@ describe("openUsbmuxRunnerSocket against a fake usbmuxd", () => {
     openServers.push(server);
     return { connectRequests };
   };
+
+  it.each([DEVICE_UDID, "00008030-000000000000AAAA"])(
+    "checks live availability by exact UDID against %s without opening a runner port",
+    async (listedUdid) => {
+      const socketPath = await createSocketPath();
+      const fake = await startFakeUsbmuxd(socketPath, [{ id: 42, serial: listedUdid }], 0);
+      const createConnection = net.createConnection.bind(net);
+      vi.spyOn(net, "createConnection").mockImplementationOnce(() => createConnection(socketPath));
+
+      expect(await isUsbmuxDeviceAvailable(DEVICE_UDID)).toBe(listedUdid === DEVICE_UDID);
+      expect(fake.connectRequests).toEqual([]);
+    }
+  );
+
+  it("reports unavailable when usbmuxd cannot be reached", async () => {
+    const socketPath = await createSocketPath();
+    const createConnection = net.createConnection.bind(net);
+    vi.spyOn(net, "createConnection").mockImplementationOnce(() => createConnection(socketPath));
+
+    await expect(isUsbmuxDeviceAvailable(DEVICE_UDID)).resolves.toBe(false);
+  });
 
   it("resolves the mux DeviceID and connects with the port in network byte order", async () => {
     const socketPath = await createSocketPath();

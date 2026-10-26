@@ -1,5 +1,14 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { listIosPhysicalDevices } from "../src/utils/ios-device/devicectl";
+import { isUsbmuxDeviceAvailable } from "../src/utils/ios-device/usbmux";
+
+vi.mock("../src/utils/ios-device/usbmux", () => ({
+  isUsbmuxDeviceAvailable: vi.fn(async () => false),
+}));
+
+beforeEach(() => {
+  vi.mocked(isUsbmuxDeviceAvailable).mockReset().mockResolvedValue(false);
+});
 
 const fake = vi.hoisted(() => ({
   payload: null as unknown,
@@ -122,6 +131,34 @@ describe("listIosPhysicalDevices filters on hardwareProperties.reality", () => {
       tunnelState: "connected",
     });
     expect(fake.argv.slice(0, 3)).toEqual(["devicectl", "list", "devices"]);
+    expect(isUsbmuxDeviceAvailable).not.toHaveBeenCalled();
+  });
+});
+
+describe("listIosPhysicalDevices checks localNetwork devices through usbmux", () => {
+  it("distinguishes a live usbfluxd device from cached pairing, then detects detach", async () => {
+    const liveUdid = PHYSICAL_ROW.hardwareProperties.udid;
+    const staleUdid = "00008120-000A44443333801E";
+    fake.payload = {
+      result: {
+        devices: [liveUdid, staleUdid].map((udid) => ({
+          ...PHYSICAL_ROW,
+          hardwareProperties: { ...PHYSICAL_ROW.hardwareProperties, udid },
+          connectionProperties: { transportType: "localNetwork", tunnelState: "connected" },
+        })),
+      },
+    };
+    vi.mocked(isUsbmuxDeviceAvailable).mockImplementation(async (udid) => udid === liveUdid);
+
+    expect((await listIosPhysicalDevices()).map((d) => [d.udid, d.availableThroughUsbmux])).toEqual(
+      [
+        [liveUdid, true],
+        [staleUdid, false],
+      ]
+    );
+
+    vi.mocked(isUsbmuxDeviceAvailable).mockResolvedValue(false);
+    expect((await listIosPhysicalDevices()).every((d) => !d.availableThroughUsbmux)).toBe(true);
   });
 });
 

@@ -529,12 +529,9 @@ describe("list-devices", () => {
     });
   });
 
-  it("derives physical iOS state from transportType alone and sorts connected first", async () => {
-    // Live-captured shapes: a cabled phone is "wired", a Wi-Fi-paired phone
-    // last seen days ago lists as "disconnected"/"localNetwork", and a freshly
-    // unplugged phone keeps tunnelState "connected" while the tunnel migrates
-    // to Wi-Fi (hardware-verified, devicectl 518.x). Only the wired one is reachable
-    // over usbmux, so only it may present as "connected".
+  it("uses wired transport or live usbmux availability and sorts connected first", async () => {
+    // CoreDevice can keep a connected tunnel after unplugging. Only a live
+    // usbmux entry makes a localNetwork device usable, as with usbfluxd.
     vi.mocked(listIosPhysicalDevices).mockResolvedValueOnce([
       {
         udid: "00008120-000A44443333801E",
@@ -544,6 +541,7 @@ describe("list-devices", () => {
         developerModeEnabled: true,
         pairingState: "paired",
         transportType: "localNetwork",
+        availableThroughUsbmux: false,
         tunnelState: "disconnected",
       },
       {
@@ -554,6 +552,7 @@ describe("list-devices", () => {
         developerModeEnabled: true,
         pairingState: "paired",
         transportType: "wired",
+        availableThroughUsbmux: false,
         tunnelState: "connected",
       },
       {
@@ -564,6 +563,18 @@ describe("list-devices", () => {
         developerModeEnabled: true,
         pairingState: "paired",
         transportType: "localNetwork",
+        availableThroughUsbmux: false,
+        tunnelState: "connected",
+      },
+      {
+        udid: "00008120-000C66665555A01E",
+        name: "usbfluxd iPhone",
+        model: "iPhone 15",
+        osVersion: "18.7.8",
+        developerModeEnabled: true,
+        pairingState: "paired",
+        transportType: "localNetwork",
+        availableThroughUsbmux: true,
         tunnelState: "connected",
       },
     ]);
@@ -588,16 +599,18 @@ describe("list-devices", () => {
     }>;
     expect(physical.map((d) => [d.name, d.state])).toEqual([
       ["Desk iPhone", "connected"],
+      ["usbfluxd iPhone", "connected"],
       ["Office iPhone", "paired"],
       ["Unplugged iPhone", "paired"],
     ]);
     // pairingState/tunnelState ride along so callers can see WHY a row is paired.
-    expect(physical[1]).toMatchObject({ pairingState: "paired", tunnelState: "disconnected" });
+    expect(physical[2]).toMatchObject({ pairingState: "paired", tunnelState: "disconnected" });
     // The Wi-Fi-migrated tunnel reads "connected" yet usbmux cannot reach it.
-    expect(physical[2]).toMatchObject({ state: "paired", tunnelState: "connected" });
+    expect(physical[3]).toMatchObject({ state: "paired", tunnelState: "connected" });
     // The paired phone sinks below every usable device, booted simulators
     // included; flow auto-bind keys on state "connected" and skips it.
     expect(byName("Desk iPhone")).toBeLessThan(byName("Office iPhone"));
+    expect(byName("usbfluxd iPhone")).toBeLessThan(byName("Office iPhone"));
     expect(byName("iPhone 16")).toBeLessThan(byName("Office iPhone"));
   });
 });
