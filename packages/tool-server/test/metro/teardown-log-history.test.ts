@@ -471,6 +471,20 @@ describe("debugger-log-registry tail", () => {
     expect(result.entries?.map((e) => e.message)).toEqual(["b"]);
   });
 
+  it.each(["log", "info", "debug", "timeEnd"])(
+    "accepts and filters by the %s level",
+    async (level) => {
+      await connectWith([
+        { level: "warning", message: "other" },
+        { level, message: "wanted" },
+      ]);
+
+      const result = await read({ tail: 5, levels: [level] });
+
+      expect(result.entries).toEqual([expect.objectContaining({ level, message: "wanted" })]);
+    }
+  );
+
   it.each([
     ["an unknown level", { tail: 3, levels: ["warn"] }],
     ["a zero tail", { tail: 0 }],

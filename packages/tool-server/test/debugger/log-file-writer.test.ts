@@ -214,6 +214,17 @@ describe("LogFileWriter", () => {
     expect(ids.at(-1)).toBe(TAIL_MAX + 6);
   });
 
+  it("tail() keeps each entry's level and timestamp as logged", () => {
+    writer.write(makeEntry(0, { level: "timeEnd" }));
+    writer.write(makeEntry(1, { level: "error" }));
+
+    expect(writer.tail({ limit: 2 })).toEqual([
+      expect.objectContaining({ level: "timeEnd", timestamp: makeEntry(0).timestamp }),
+      expect.objectContaining({ level: "error", timestamp: makeEntry(1).timestamp }),
+    ]);
+    expect(writer.tail({ levels: ["timeEnd"], limit: 1 }).map((e) => e.id)).toEqual([0]);
+  });
+
   it("caps tail at 100 entries and 300 chars, the numbers the skills promise", () => {
     expect(TAIL_MAX).toBe(100);
     expect(TAIL_MESSAGE_CHARS).toBe(300);
@@ -228,6 +239,22 @@ describe("LogFileWriter", () => {
     expect(emoji).toBe(`${pad}…`);
     expect(emoji.isWellFormed()).toBe(true);
     expect(long).toBe(`${"y".repeat(TAIL_MESSAGE_CHARS)}…`);
+  });
+
+  it("tail() leaves a message of exactly TAIL_MESSAGE_CHARS uncut", () => {
+    const exact = "z".repeat(TAIL_MESSAGE_CHARS);
+    writer.write(makeEntry(0, { message: exact }));
+
+    expect(writer.tail({ limit: 1 })[0].message).toBe(exact);
+  });
+
+  it("tail() keeps a surrogate pair that ends right at the cut", () => {
+    const head = `${"x".repeat(TAIL_MESSAGE_CHARS - 2)}\u{1F600}`;
+    writer.write(makeEntry(0, { message: `${head}tail` }));
+
+    const { message } = writer.tail({ limit: 1 })[0];
+    expect(message).toBe(`${head}…`);
+    expect(message.isWellFormed()).toBe(true);
   });
 
   it("close() deletes the file", () => {
