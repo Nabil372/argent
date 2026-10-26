@@ -1,8 +1,19 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { z } from "zod";
 import { Registry } from "@argent/registry";
 import type { ToolContext } from "@argent/registry";
 import { createRunSequenceTool } from "../src/tools/run-sequence";
+import { waitForScreenIdle } from "../src/tools/await-screen-idle";
+
+vi.mock("../src/tools/await-screen-idle", () => ({ waitForScreenIdle: vi.fn() }));
+
+const idle = vi.mocked(waitForScreenIdle);
+const SETTLED = { settled: true, waitedMs: 150, polls: 4, aborted: false };
+const CAPPED = { settled: false, waitedMs: 1000, polls: 12, aborted: false };
+
+beforeEach(() => {
+  idle.mockReset().mockResolvedValue(SETTLED);
+});
 
 // A minimal registry stub: records every invokeTool call and returns a marker.
 function makeMockRegistry() {
@@ -28,14 +39,21 @@ function mockRegistry(invokeImpl?: (id: string, args: unknown) => unknown): Regi
   } as unknown as Registry;
 }
 
+// Step dispatches and settle waits, in call order; a settle reads as "await-screen-idle".
 function invokedTools(registry: Registry): string[] {
-  return (registry.invokeTool as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0] as string);
+  const invoke = (registry.invokeTool as ReturnType<typeof vi.fn>).mock;
+  const calls = [
+    ...invoke.calls.map((c, i) => ({ order: invoke.invocationCallOrder[i]!, id: c[0] as string })),
+    ...idle.mock.invocationCallOrder.map((order) => ({ order, id: "await-screen-idle" })),
+  ];
+  return calls.sort((a, b) => a.order - b.order).map((c) => c.id);
 }
 
 async function settledAfter(
   steps: Array<{ tool: string; args: Record<string, unknown> }>,
   udid = IOS
 ): Promise<string[]> {
+  idle.mockClear();
   const registry = mockRegistry();
   await createRunSequenceTool(registry).execute(
     {},
@@ -128,13 +146,16 @@ describe("run-sequence", () => {
       y: 0.3,
       udid: IOS,
     });
-    expect(registry.invokeTool).toHaveBeenNthCalledWith(2, "await-screen-idle", {
-      udid: IOS,
+    expect(idle).toHaveBeenCalledTimes(1);
+    expect(idle).toHaveBeenCalledWith(registry, expect.objectContaining({ id: IOS }), {
       timeoutMs: 1000,
       pollIntervalMs: 50,
       minStableMs: 100,
+      signal: undefined,
+      stopOnReadError: true,
     });
-    expect(registry.invokeTool).toHaveBeenNthCalledWith(3, "keyboard", { text: "hi", udid: IOS });
+    expect(registry.invokeTool).toHaveBeenNthCalledWith(2, "keyboard", { text: "hi", udid: IOS });
+    expect(invokedTools(registry)).toEqual(["gesture-tap", "await-screen-idle", "keyboard"]);
   });
 
   it("skips the settle wait with settle:false", async () => {
@@ -153,8 +174,25 @@ describe("run-sequence", () => {
       }
     );
 
-    expect(registry.invokeTool).toHaveBeenCalledTimes(2);
+    expect(idle).not.toHaveBeenCalled();
     expect(registry.invokeTool).toHaveBeenNthCalledWith(2, "keyboard", { text: "hi", udid: IOS });
+  });
+
+  it("skips the settle wait after a step that passes settle:false", async () => {
+    const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 }, delayMs: 0 };
+    const registry = mockRegistry();
+
+    await createRunSequenceTool(registry).execute(
+      {},
+      { udid: IOS, steps: [{ ...tap, settle: false }, tap, tap] }
+    );
+
+    expect(invokedTools(registry)).toEqual([
+      "gesture-tap",
+      "gesture-tap",
+      "await-screen-idle",
+      "gesture-tap",
+    ]);
   });
 
   it("settles after a key or text that submits or dismisses, not after editing keys", async () => {
@@ -246,10 +284,8 @@ describe("run-sequence", () => {
   });
 
   it("keeps going when the settle wait fails", async () => {
-    const registry = mockRegistry((id) => {
-      if (id === "await-screen-idle") throw new Error("no tree");
-      return { tapped: true };
-    });
+    idle.mockRejectedValue(new Error("no tree"));
+    const registry = mockRegistry(() => ({ tapped: true }));
 
     const result = await createRunSequenceTool(registry).execute(
       {},
@@ -266,19 +302,20 @@ describe("run-sequence", () => {
     expect(result.steps.every((s) => "result" in s)).toBe(true);
   });
 
-  it.each([
-    ["hits its cap", () => ({ settled: false, waitedMs: 1000, polls: 3 })],
-    [
-      "fails",
-      () => {
-        throw new Error("no tree");
-      },
-    ],
-  ])("stops settling for the rest of the sequence once a wait %s", async (_label, idle) => {
-    const registry = mockRegistry((id) => (id === "await-screen-idle" ? idle() : { ok: true }));
-    const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 }, delayMs: 0 };
+  const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 }, delayMs: 0 };
 
-    await createRunSequenceTool(registry).execute({}, { udid: IOS, steps: [tap, tap, tap] });
+  it.each([
+    ["a read fails", () => Promise.resolve({ ...CAPPED, polls: 1, readError: "no page" })],
+    ["one read takes the whole cap", () => Promise.resolve({ ...CAPPED, polls: 2 })],
+    ["the wait throws", () => Promise.reject(new Error("no tree"))],
+  ])("stops settling for the rest of the sequence once %s", async (_label, outcome) => {
+    idle.mockImplementation(outcome);
+    const registry = mockRegistry();
+
+    const result = await createRunSequenceTool(registry).execute(
+      {},
+      { udid: IOS, steps: [tap, tap, tap] }
+    );
 
     expect(invokedTools(registry)).toEqual([
       "gesture-tap",
@@ -286,15 +323,17 @@ describe("run-sequence", () => {
       "gesture-tap",
       "gesture-tap",
     ]);
+    expect(result.note).toMatch(/after step 1: the element tree could not be read/);
   });
 
-  it("keeps settling while each wait settles", async () => {
-    const registry = mockRegistry((id) =>
-      id === "await-screen-idle" ? { settled: true, waitedMs: 150, polls: 4 } : { ok: true }
-    );
-    const tap = { tool: "gesture-tap", args: { x: 0.5, y: 0.5 }, delayMs: 0 };
+  it("keeps settling after one capped wait, so a later transition is still caught", async () => {
+    idle.mockResolvedValueOnce(CAPPED);
+    const registry = mockRegistry();
 
-    await createRunSequenceTool(registry).execute({}, { udid: IOS, steps: [tap, tap, tap] });
+    const result = await createRunSequenceTool(registry).execute(
+      {},
+      { udid: IOS, steps: [tap, tap, tap] }
+    );
 
     expect(invokedTools(registry)).toEqual([
       "gesture-tap",
@@ -303,6 +342,49 @@ describe("run-sequence", () => {
       "await-screen-idle",
       "gesture-tap",
     ]);
+    expect(result.note).toBeUndefined();
+  });
+
+  it("stops settling after two capped waits in a row and says so", async () => {
+    idle.mockResolvedValue(CAPPED);
+    const registry = mockRegistry();
+
+    const result = await createRunSequenceTool(registry).execute(
+      {},
+      { udid: IOS, steps: [tap, tap, tap, tap] }
+    );
+
+    expect(invokedTools(registry)).toEqual([
+      "gesture-tap",
+      "await-screen-idle",
+      "gesture-tap",
+      "await-screen-idle",
+      "gesture-tap",
+      "gesture-tap",
+    ]);
+    expect(result.note).toMatch(/after step 2: the screen was still changing/);
+  });
+
+  it("resets the capped count when a wait settles", async () => {
+    idle.mockResolvedValueOnce(CAPPED).mockResolvedValueOnce(SETTLED).mockResolvedValueOnce(CAPPED);
+    const registry = mockRegistry();
+
+    await createRunSequenceTool(registry).execute({}, { udid: IOS, steps: [tap, tap, tap, tap] });
+
+    expect(idle).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not record a settle wait as a tool invocation", async () => {
+    const registry = mockRegistry();
+    const recordChildInvocation = vi.fn(() => () => {});
+
+    await createRunSequenceTool(registry).execute({}, { udid: IOS, steps: [tap, tap] }, {
+      recordChildInvocation,
+    } as unknown as ToolContext);
+
+    expect(registry.invokeTool).toHaveBeenCalledTimes(2);
+    expect(recordChildInvocation).toHaveBeenCalledTimes(2);
+    expect(idle).toHaveBeenCalledTimes(1);
   });
 
   it("stops at an unrecognized tool without invoking it", async () => {

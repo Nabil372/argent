@@ -12,6 +12,7 @@ import { assertSupported, UnsupportedOperationError } from "../../utils/capabili
 import { sleepOrAbort, DEFAULT_INTER_STEP_DELAY_MS } from "../../utils/timing";
 import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
 import { AWAIT_UI_ELEMENT_TOOL_ID, isUnmetUiWaitResult } from "../await-ui-element";
+import { waitForScreenIdle } from "../await-screen-idle";
 
 // No tool here returns an image or an artifact handle — that is what keeps a
 // sequence to the single capture the MCP layer appends after the last step.
@@ -62,7 +63,13 @@ const zodSchema = z.object({
           .number()
           .optional()
           .describe(
-            `Wait time in ms after this step before the next (default ${DEFAULT_INTER_STEP_DELAY_MS}). Added after the settle wait, so 0 means no extra wait, not back-to-back dispatch; for that pass the top-level settle:false (next to udid and steps, not inside a step).`
+            `Wait time in ms after this step before the next (default ${DEFAULT_INTER_STEP_DELAY_MS}). Added after the settle wait, so 0 means no extra wait, not back-to-back dispatch; for that also pass settle:false on this step or at the top level.`
+          ),
+        settle: z
+          .boolean()
+          .optional()
+          .describe(
+            "false skips the settle wait after this step only. Goes next to tool and args; inside args it is passed to the tool instead."
           ),
       })
     )
@@ -72,7 +79,7 @@ const zodSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Top-level, applies to the whole sequence (a per-step settle key is ignored). Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements are already moving, but not motion that starts more than ~100ms after the step (a sheet opened after a fetch) or animations that leave the tree unchanged (a native iOS push), so keep await-ui-element gates for those. If one wait hits the 1s cap (a spinner, a slow tree read), the rest of the sequence skips it. Set false for timing-critical input (games, double-taps split across steps)."
+      "Applies to the whole sequence; a step's own settle:false skips it after that step only. Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements are already moving, but not motion that starts more than ~100ms after the step (a sheet opened after a fetch) or animations that leave the tree unchanged (a native iOS push), so keep await-ui-element gates for those. A wait can hit the 1s cap after a momentum swipe, a push or a spinner. The rest of the sequence skips the wait once two waits in a row hit the cap, or the tree cannot be read within it, and the result's note says so. Set false for timing-critical input (games, double-taps split across steps)."
     ),
 });
 
@@ -95,8 +102,10 @@ const SETTLE_AFTER = new Set([
 const SETTLE_KEYS = new Set(["enter", "return", "escape", "esc"]);
 const SETTLE_IDLE_TOOL_ID = "await-screen-idle";
 const SETTLE_TIMEOUT_MS = 1000;
+const MAX_CAPPED_SETTLES_IN_A_ROW = 2;
 
 type Params = z.infer<typeof zodSchema>;
+type Step = Params["steps"][number];
 
 function keyMayMoveUi(args: Record<string, unknown> | undefined): boolean {
   const key = args?.key;
@@ -114,12 +123,58 @@ function canSettle(registry: Registry, device: DeviceInfo): boolean {
   }
 }
 
+function settlesBetween(step: Step, next: Step | undefined): boolean {
+  return (
+    next !== undefined &&
+    next.tool !== AWAIT_UI_ELEMENT_TOOL_ID &&
+    next.tool !== "shake" &&
+    step.settle !== false &&
+    SETTLE_AFTER.has(step.tool) &&
+    (step.tool !== "keyboard" || keyMayMoveUi(step.args))
+  );
+}
+
+type SettleVerdict = "settled" | "aborted" | "capped" | "unreadable";
+
+async function settleScreen(
+  registry: Registry,
+  device: DeviceInfo,
+  signal: AbortSignal | undefined
+): Promise<SettleVerdict> {
+  try {
+    const idle = await waitForScreenIdle(registry, device, {
+      timeoutMs: SETTLE_TIMEOUT_MS,
+      pollIntervalMs: 50,
+      minStableMs: 100,
+      signal,
+      stopOnReadError: true,
+    });
+    if (idle.settled) return "settled";
+    if (idle.aborted) return "aborted";
+    // Two polls fit only one complete read, so no two reads could have matched.
+    if (idle.readError !== undefined || idle.polls <= 2) return "unreadable";
+    return "capped";
+  } catch {
+    return "unreadable";
+  }
+}
+
+const SETTLE_STOPPED_REASON: Record<"capped" | "unreadable", string> = {
+  capped: `the screen was still changing when ${MAX_CAPPED_SETTLES_IN_A_ROW} waits in a row hit their ${SETTLE_TIMEOUT_MS}ms cap`,
+  unreadable: `the element tree could not be read within ${SETTLE_TIMEOUT_MS}ms`,
+};
+
+function settleStoppedNote(afterStep: number, reason: "capped" | "unreadable"): string {
+  return `Stopped waiting for the screen to settle after step ${afterStep}: ${SETTLE_STOPPED_REASON[reason]}. Later steps ran without the wait.`;
+}
+
 type StepResult = { tool: string; result: unknown } | { tool: string; error: string };
 
 type RunSequenceResult = {
   completed: number;
   total: number;
   steps: StepResult[];
+  note?: string;
 };
 
 // Gates only the *outer* invocation: every step resolves its own platform from
@@ -221,10 +276,9 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
       const { udid, steps } = params;
       const device = resolveDevice(udid);
       const results: StepResult[] = [];
-      // Cleared once a wait fails or hits its cap: a screen that never goes
-      // still (a spinner) or a tree read slower than the cap would otherwise
-      // add the full timeout to every remaining step and buy nothing.
       let settle = params.settle !== false;
+      let cappedInARow = 0;
+      let note: string | undefined;
       // The HTTP layer aborts `signal` on client disconnect, and `longRunning`
       // drops the MCP adapter's own fetch timeout — so honour the signal between
       // steps and on the inter-step delay instead of running the rest of the
@@ -287,24 +341,19 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
           break;
         }
 
-        const next = steps[results.length];
-        if (
-          settle &&
-          next &&
-          next.tool !== AWAIT_UI_ELEMENT_TOOL_ID &&
-          next.tool !== "shake" &&
-          SETTLE_AFTER.has(step.tool) &&
-          (step.tool !== "keyboard" || keyMayMoveUi(step.args)) &&
-          canSettle(registry, device)
-        ) {
-          // Best effort: a failed or capped wait never fails the sequence.
-          const idle = await invokeSubTool<{ settled?: boolean }>(
-            registry,
-            ctx,
-            SETTLE_IDLE_TOOL_ID,
-            { udid, timeoutMs: SETTLE_TIMEOUT_MS, pollIntervalMs: 50, minStableMs: 100 }
-          ).catch(() => undefined);
-          if (!idle || idle.settled === false) settle = false;
+        if (settle && settlesBetween(step, steps[results.length]) && canSettle(registry, device)) {
+          const verdict = await settleScreen(registry, device, signal);
+          cappedInARow = verdict === "capped" ? cappedInARow + 1 : 0;
+          const stopReason =
+            verdict === "unreadable"
+              ? "unreadable"
+              : cappedInARow >= MAX_CAPPED_SETTLES_IN_A_ROW
+                ? "capped"
+                : undefined;
+          if (stopReason) {
+            settle = false;
+            note = settleStoppedNote(results.length, stopReason);
+          }
         }
 
         const delay = step.delayMs ?? DEFAULT_INTER_STEP_DELAY_MS;
@@ -315,6 +364,7 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
         completed: results.filter((r) => "result" in r).length,
         total: steps.length,
         steps: results,
+        ...(note ? { note } : {}),
       };
     },
   };
