@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AXServiceApi, AXDescribeResponse } from "../src/blueprints/ax-service";
 import { createAwaitScreenIdleTool } from "../src/tools/await-screen-idle";
 import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
+import type { DescribeNode } from "../src/tools/describe/contract";
 
 // execute() probes the target's form factor (isTvOsSimulator) before polling —
 // a real `xcrun simctl list` that never caches for this fake UDID, so it re-runs
@@ -576,17 +577,26 @@ describe("await-screen-idle tool", () => {
       expect(result.ambientMotion).toBeUndefined();
     });
 
-    it("keeps waiting while a looping spinner has a progress role", async () => {
-      const node = (role: string, label: string, y: number) => ({
+    it.each([
+      ["a progress bar", ["progressbar"]],
+      ["an activity indicator", ["ActivityIndicator"]],
+      ["a progress bar inside a group", ["group", "progressbar"]],
+    ])("keeps waiting while a looping spinner is %s", async (_, roles) => {
+      const node = (role: string, label: string, y: number, children: DescribeNode[] = []) => ({
         role,
         label,
         frame: { x: 0.4, y, width: 0.1, height: 0.05 },
-        children: [],
+        children,
       });
+      const spinner = (y: number) =>
+        roles.reduceRight<DescribeNode[]>(
+          (children, role) => [node(role, "Loading", y, children)],
+          []
+        );
       const tree = (i: number) => ({
         role: "html",
         frame: { x: 0, y: 0, width: 1, height: 1 },
-        children: [node("h1", "Products", 0.1), node("progressbar", "Loading", bobY(i))],
+        children: [node("h1", "Products", 0.1), ...spinner(bobY(i))],
       });
       let i = 0;
       const chromium = {
@@ -603,6 +613,159 @@ describe("await-screen-idle tool", () => {
       );
 
       expect(result.settled).toBe(false);
+    });
+
+    describe("on a simulated clock with default timing", () => {
+      // Reads land exactly every 200 ms, so these pin the rules at their boundaries.
+      beforeEach(() => {
+        vi.useFakeTimers();
+      });
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      const runOnClock = async (frames: AXDescribeResponse[]) => {
+        const pending = createAwaitScreenIdleTool(
+          iosRegistry(makeSequencedAXService(frames))
+        ).execute({}, { udid: IOS_UDID });
+        await vi.runAllTimersAsync();
+        return pending;
+      };
+      const shakeUntil = (lastMovingRead: number) =>
+        Array.from({ length: lastMovingRead + 1 }, (_, i) =>
+          screen({ label: "field", y: i % 2 ? 0.52 : 0.5 })
+        );
+
+      it("counts a shake as a loop once it has swung for seven poll intervals", async () => {
+        const result = await runOnClock(shakeUntil(8));
+
+        expect(result.settled).toBe(true);
+        expect(result.ambientMotion).toBe(true);
+      });
+
+      it("waits out a shake that stops a poll before that", async () => {
+        const result = await runOnClock(shakeUntil(7));
+
+        expect(result.settled).toBe(true);
+        expect(result.ambientMotion).toBeUndefined();
+      });
+
+      it("keeps waiting while a very bouncy spring rings", async () => {
+        // Each swing repeats the one before within a quarter swing, but shrinks.
+        const springY = (i: number) => 0.5 + 0.3 * 0.8 ** (i / 2) * Math.cos((Math.PI * i) / 2);
+        const result = await runOnClock(
+          Array.from({ length: 60 }, (_, i) => screen({ label: "card", y: springY(i) }))
+        );
+
+        expect(result.settled).toBe(false);
+      });
+
+      it("settles on a loop that the AX service lists twice on two reads in a row", async () => {
+        // The second listing comes from a collection pass half a poll earlier.
+        const waveY = (i: number) => 0.27 + 0.03 * Math.sin((2 * Math.PI * i) / 7);
+        const result = await runOnClock(
+          Array.from({ length: 40 }, (_, i) => {
+            const hand = { label: "hand", y: waveY(i) };
+            const listedTwice = i % 4 === 1 || i % 4 === 2;
+            return listedTwice ? screen({ ...hand, y: waveY(i - 0.5) }, hand) : screen(hand);
+          })
+        );
+
+        expect(result.settled).toBe(true);
+        expect(result.ambientMotion).toBe(true);
+      });
+
+      it("forgets loop evidence on every blank read", async () => {
+        const result = await runOnClock(
+          Array.from({ length: 30 }, (_, i) =>
+            i % 8 === 7 ? axResponse([]) : screen({ label: "hand", y: bobY(i) })
+          )
+        );
+
+        expect(result.settled).toBe(false);
+      });
+    });
+
+    it("settles on a small pulse whose turns jitter by one rounding step", async () => {
+      const cycle = [0, 0.01, 0.02, 0.01, 0.02, 0.03, 0.02, 0.01];
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen({ label: "badge", y: 0.2, width: 0.36 + cycle[i % cycle.length]! })
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("keeps waiting while a loop also drifts on another axis", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen({ label: "hand", x: 0.1 + i * 0.012, y: bobY(i) })
+        )
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("counts children that overhang a pulsing card by a rounding step as one animation", async () => {
+      const card = { x: 0.2, y: 0.3, width: 0.6, height: 0.3 };
+      const children = [0.32, 0.4, 0.48, 0.53].map((y) => ({
+        x: 0.194,
+        y,
+        width: 0.2,
+        height: 0.05,
+      }));
+      const scaled = (b: typeof card, s: number) => ({
+        x: 0.5 + (b.x - 0.5) * s,
+        y: 0.45 + (b.y - 0.45) * s,
+        width: b.width * s,
+        height: b.height * s,
+      });
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) => {
+          const s = i % 2 ? 1.1 : 1;
+          return screen(
+            { label: "card", ...scaled(card, s) },
+            ...children.map((c, k) => ({ label: `line-${k}`, ...scaled(c, s) }))
+          );
+        }),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("does not report ambient motion when nothing moves", async () => {
+      // A still node the AX service lists twice on every other read.
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) => {
+          const hand = { label: "hand", y: 0.3 };
+          return i % 2 ? screen(hand, hand) : screen(hand);
+        })
+      );
+
+      expect(result.ambientMotion).toBeUndefined();
+    });
+
+    it("settles on a loop whose container shares its role and label with another node", async () => {
+      // Unlabeled containers share one identity; this one bobs around its children.
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "", y: 0.05, height: 0.05 },
+            { label: "", y: bobY(i), height: 0.2 },
+            { label: "arrow", y: bobY(i) + 0.01 },
+            { label: "Got it", y: bobY(i) + 0.1 }
+          )
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
     });
 
     it("forgets loop evidence across a blank read", async () => {

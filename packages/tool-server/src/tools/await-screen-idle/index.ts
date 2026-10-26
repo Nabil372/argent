@@ -108,18 +108,45 @@ function treeSignature(root: DescribeNode): string {
   return parts.join("\n");
 }
 
+type Box = [number, number, number, number];
+
+function overlaps(a: number[], b: number[]): boolean {
+  const [ax, ay, aw, ah] = a as Box;
+  const [bx, by, bw, bh] = b as Box;
+  return ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah;
+}
+
+/**
+ * Two overlapping boxes of one size: one node the AX service listed twice
+ * because it moved between its two collection passes.
+ */
+function listedTwice(boxes: number[][]): boolean {
+  if (boxes.length !== 2) return false;
+  const [a, b] = boxes as [Box, Box];
+  const round = (n: number) => Math.round(n * 100) / 100;
+  return round(a[2]) === round(b[2]) && round(a[3]) === round(b[3]) && overlaps(a, b);
+}
+
+function nearest(boxes: number[][], target: number[]): number[] {
+  const distance = (box: number[]) => box.reduce((sum, v, i) => sum + Math.abs(v - target[i]!), 0);
+  return boxes.reduce((best, box) => (distance(box) < distance(best) ? box : best));
+}
+
 /**
  * Frame of every node whose role/label/value is unique on the screen, keyed by
  * that identity, plus the structure the identities form. Nodes that share an
- * identity (grid cells, list rows, a node the AX service listed twice) cannot
- * be followed from read to read, so they are kept as one set of frames per
- * identity.
+ * identity (grid cells, list rows) cannot be followed from read to read, so
+ * they are kept as one list of frames per identity. A followed node that the
+ * AX service listed twice keeps the listing nearest its last frame.
  */
-function frameSnapshot(root: DescribeNode): {
+function frameSnapshot(
+  root: DescribeNode,
+  lastRaw: Map<string, number[]>
+): {
   structure: string;
   frames: Map<string, number[]>;
   raw: Map<string, number[]>;
-  shared: Map<string, string>;
+  shared: Map<string, number[][]>;
 } {
   const round = (n: number) => Math.round(n * 100) / 100;
   const byIdentity = new Map<string, DescribeNode[]>();
@@ -132,19 +159,18 @@ function frameSnapshot(root: DescribeNode): {
 
   const frames = new Map<string, number[]>();
   const raw = new Map<string, number[]>();
-  const shared = new Map<string, string>();
+  const shared = new Map<string, number[][]>();
   for (const [id, nodes] of byIdentity) {
     const boxes = nodes.map(({ frame: f }) => [f.x, f.y, f.width, f.height]);
-    if (boxes.length === 1) {
-      raw.set(id, boxes[0]!);
-      frames.set(id, boxes[0]!.map(round));
+    const last = lastRaw.get(id);
+    const box = boxes.length === 1 ? boxes[0] : last && listedTwice(boxes) && nearest(boxes, last);
+    if (box) {
+      raw.set(id, box);
+      frames.set(id, box.map(round));
     } else {
       shared.set(
         id,
-        boxes
-          .map((b) => b.map(round).join(","))
-          .sort()
-          .join(";")
+        boxes.map((b) => b.map(round))
       );
     }
   }
@@ -152,13 +178,22 @@ function frameSnapshot(root: DescribeNode): {
 }
 
 /**
- * Whether nodes that share an identity moved between two reads. An identity
+ * Where nodes that share an identity moved to between two reads. An identity
  * that only turned shared or unique is skipped: the AX service sometimes lists
  * a moving node twice for one read.
  */
-function sharedMoved(prev: Map<string, string>, next: Map<string, string>): boolean {
-  for (const [id, boxes] of next) if (prev.has(id) && prev.get(id) !== boxes) return true;
-  return false;
+function movedSharedBoxes(
+  prev: Map<string, number[][]>,
+  next: Map<string, number[][]>
+): number[][] {
+  const moved: number[][] = [];
+  for (const [id, boxes] of next) {
+    const before = prev.get(id);
+    if (!before) continue;
+    const seen = new Set(before.map((b) => b.join(",")));
+    moved.push(...boxes.filter((b) => !seen.has(b.join(","))));
+  }
+  return moved;
 }
 
 /**
@@ -190,21 +225,44 @@ interface AxisMotion {
   turns: number[];
   /** When the axis first turned since its turns were last cleared. */
   swingSince: number;
+  /** Widest distance between two turns in a row since `swingSince`. */
+  widestSwing: number;
   lastMovedAt: number;
 }
 
 function newAxis(): AxisMotion {
-  return { sign: 0, turns: [], swingSince: Infinity, lastMovedAt: -Infinity };
+  return { sign: 0, turns: [], swingSince: Infinity, widestSwing: 0, lastMovedAt: -Infinity };
 }
+
+/** Frames are rounded to this step. */
+const ROUND_STEP = 0.01;
+
+/** Absorbs floating point error in differences of rounded values (0.39 - 0.38). */
+const FLOAT_SLACK = 1e-9;
 
 /**
  * How far a turn may land from the matching earlier turn and still repeat the
  * swing: a quarter of the swing, absorbing where the polls happen to sample a
- * cycle, and at least the 0.01 rounding step.
+ * cycle, and at least the rounding step.
  */
 function swingTolerance(turns: number[]): number {
   const [a, b] = turns.slice(-3);
-  return Math.max(0.01, 0.25 * Math.abs(b! - a!));
+  return Math.max(ROUND_STEP, 0.25 * Math.abs(b! - a!)) + FLOAT_SLACK;
+}
+
+/**
+ * Share of its widest swing a loop keeps. A very bouncy spring repeats each
+ * swing within the tolerance above, but has lost most of its swing by the time
+ * it has rung for `MIN_LOOP_POLLS`.
+ */
+const MIN_SWING_KEPT = 0.75;
+
+function swingHolds(axis: AxisMotion): boolean {
+  const [b, c] = axis.turns.slice(-2);
+  const swing = Math.abs(c! - b!);
+  // Rounding can shift each end of both swings by half a step.
+  const roundingSlack = 2 * ROUND_STEP;
+  return swing >= MIN_SWING_KEPT * axis.widestSwing - roundingSlack - FLOAT_SLACK;
 }
 
 /**
@@ -231,11 +289,16 @@ function trackAxis(axis: AxisMotion, from: number, to: number, nowMs: number): v
   // keeps its last direction, so only a real sign flip is a turn.
   if (axis.sign !== 0 && axis.sign !== sign) {
     if (axis.turns.length === 0) axis.swingSince = nowMs;
+    const lastTurn = axis.turns.at(-1);
+    if (lastTurn !== undefined) {
+      axis.widestSwing = Math.max(axis.widestSwing, Math.abs(from - lastTurn));
+    }
     axis.turns = [...axis.turns, from].slice(-3);
   }
   if (swingRepeats(axis) && !insideSwing(axis, to)) {
     axis.turns = [];
     axis.swingSince = Infinity;
+    axis.widestSwing = 0;
   }
   axis.sign = sign;
   axis.lastMovedAt = nowMs;
@@ -260,9 +323,9 @@ function movesInSync(a: number[][], b: number[][], polls: number): boolean {
 }
 
 function encloses(outer: number[], inner: number[]): boolean {
-  const [ox, oy, ow, oh] = outer as [number, number, number, number];
-  const [ix, iy, iw, ih] = inner as [number, number, number, number];
-  const slack = 0.01;
+  const [ox, oy, ow, oh] = outer as Box;
+  const [ix, iy, iw, ih] = inner as Box;
+  const slack = ROUND_STEP + FLOAT_SLACK;
   return (
     ix >= ox - slack && iy >= oy - slack && ix + iw <= ox + ow + slack && iy + ih <= oy + oh + slack
   );
@@ -287,7 +350,8 @@ class AmbientMotion {
   private structureSince = 0;
   private lastFrames = new Map<string, number[]>();
   private lastRaw = new Map<string, number[]>();
-  private lastShared = new Map<string, string>();
+  private lastShared = new Map<string, number[][]>();
+  /** Last read where a node that shares its identity moved outside every moving node. */
   private sharedMovedAt = -Infinity;
   private readonly motion = new Map<string, AxisMotion[]>();
   /** Unrounded frame change per node, indexed by poll. */
@@ -315,7 +379,7 @@ class AmbientMotion {
     windowMs: number,
     minLoopMs: number
   ): boolean {
-    const snap = frameSnapshot(root);
+    const snap = frameSnapshot(root, this.lastRaw);
     if (snap.structure !== this.structure) {
       this.reset();
       this.structure = snap.structure;
@@ -344,17 +408,22 @@ class AmbientMotion {
       this.motion.get(id)!.forEach((axis, i) => trackAxis(axis, prev[i]!, frame[i]!, nowMs));
     }
     this.lastFrames = new Map([...this.lastFrames, ...snap.frames]);
-    if (sharedMoved(this.lastShared, snap.shared)) this.sharedMovedAt = nowMs;
+    const movedRecently = (axis: AxisMotion) => nowMs - axis.lastMovedAt < windowMs;
+    const recent = [...this.motion].filter(([, axes]) => axes.some(movedRecently));
+    const moverFrames = recent.map(([id]) => this.lastFrames.get(id)!);
+    const movesWithAMover = (box: number[]) =>
+      moverFrames.some((frame) => encloses(frame, box) || encloses(box, frame));
+    if (!movedSharedBoxes(this.lastShared, snap.shared).every(movesWithAMover)) {
+      this.sharedMovedAt = nowMs;
+    }
     this.lastShared = snap.shared;
 
     if (nowMs - this.structureSince < minStableMs) return false;
     if (nowMs - this.sharedMovedAt < windowMs) return false;
     if (showsProgressIndicator(root)) return false;
-    const movedRecently = (axis: AxisMotion) => nowMs - axis.lastMovedAt < windowMs;
-    const recent = [...this.motion].filter(([, axes]) => axes.some(movedRecently));
     if (recent.length === 0) return false;
     const keepsLooping = (axis: AxisMotion) =>
-      swingRepeats(axis) && nowMs - axis.swingSince >= minLoopMs;
+      swingRepeats(axis) && swingHolds(axis) && nowMs - axis.swingSince >= minLoopMs;
     const isLoop = (axes: AxisMotion[]) => axes.filter(movedRecently).every(keepsLooping);
     if (!recent.every(([, axes]) => isLoop(axes))) return false;
     const animations = countGroups(
@@ -421,9 +490,12 @@ Polls the same accessibility / DOM tree as \`describe\` every pollIntervalMs (de
 has content and that content holds identical for minStableMs (default ${DEFAULT_MIN_STABLE_MS}ms), or timeoutMs (default
 ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls<flag:harmonyos>, note?</flag:harmonyos> }; settled=false means the screen never went
 still before the timeout. A screen where only up to ${MAX_AMBIENT_MOVERS} looping animations keep moving (a bobbing hint, a
-pulsing badge), each swinging for at least ${MIN_LOOP_POLLS} poll intervals, counts as settled and adds ambientMotion: true;
-those elements are still moving. A screen that shows a progress bar or spinner role is waited out. A loop that changes a
-label or value (an animated "Loading..." label) is a content change and is waited out. <flag:harmonyos>A note on settled=true
+pulsing badge) counts as settled and adds ambientMotion: true; those elements are still moving. A loop counts once it has
+swung through a full period and for at least ${MIN_LOOP_POLLS} poll intervals, so a loop slower than about 2s rarely settles
+within the default timeout. A progress bar or spinner role on screen turns that path off, but an indicator whose frame
+holds still (an indeterminate bar) settles like any still screen, and so does a loop that changes a label or value (an
+animated "Loading..." label) once one step holds for minStableMs. settled=true does not mean loading finished: confirm
+the content you expect with await-ui-element. <flag:harmonyos>A note on settled=true
 means the screen it settled on is not live: a suspended HarmonyOS panel settles instantly on its last frame, and taps land
 nowhere until it is woken.
 </flag:harmonyos>Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
