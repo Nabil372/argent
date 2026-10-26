@@ -150,7 +150,8 @@ export function resolveLocalCommandMode(root: string): McpCommandMode {
 // Pins the global install's cli.js with a node that launches it (see
 // getGloballyInstalledLaunchPaths). Gated by isGlobalNodeEntry so argent only
 // writes a shape it will recognise as its own in update/cleanup: an `npm link`
-// checkout outside node_modules, or no node at all (bunx init), stays bare.
+// checkout outside node_modules, or no real node on PATH (bunx, whose `node`
+// is a link to bun), stays bare.
 export function resolveGlobalCommandMode(): McpCommandMode {
   const launch = getGloballyInstalledLaunchPaths();
   if (!launch?.node) return { kind: "global" };

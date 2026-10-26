@@ -141,13 +141,27 @@ describe.skipIf(process.platform === "win32")("resolveGlobalCommandMode", () => 
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
   });
 
-  it("writes bare argent when no node is on PATH (bunx init)", () => {
+  it("writes bare argent when no node is on PATH", () => {
     fs.rmSync(path.join(prefix, "bin", "argent"));
     const which = path.join(tmp, "which-only");
     fs.mkdirSync(which);
     fs.symlinkSync("/usr/bin/which", path.join(which, "which"));
     fs.symlinkSync(cli, path.join(which, "argent"));
     vi.stubEnv("PATH", which);
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
+  });
+
+  it("writes bare argent when the only node on PATH is bun's shim (bunx init)", () => {
+    const bun = path.join(tmp, "bun", "bin", "bun");
+    fs.mkdirSync(path.dirname(bun), { recursive: true });
+    fs.writeFileSync(bun, "#!/bin/sh\necho 24.3.0\n", { mode: 0o755 });
+    const shimDir = path.join(tmp, "bun-node-30e609e08");
+    fs.mkdirSync(shimDir);
+    fs.symlinkSync(bun, path.join(shimDir, "node"));
+    const which = path.join(tmp, "which-only");
+    fs.mkdirSync(which);
+    fs.symlinkSync("/usr/bin/which", path.join(which, "which"));
+    vi.stubEnv("PATH", [shimDir, path.join(prefix, "bin"), which].join(path.delimiter));
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global" });
   });
 

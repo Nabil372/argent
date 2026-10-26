@@ -142,7 +142,12 @@ export function getGloballyInstalledLaunchPaths(): { cli: string; node: string |
   );
   const node = binDirs
     .map(nodeBeside)
-    .find((candidate) => candidate !== null && runsEngines(candidate, manifest.engines?.node));
+    .find(
+      (candidate) =>
+        candidate !== null &&
+        !isBunShim(candidate) &&
+        runsEngines(candidate, manifest.engines?.node)
+    );
   return { cli, node: node ?? null };
 }
 
@@ -168,6 +173,15 @@ function nodeBeside(binDir: string): string | null {
   }
   const node = path.join(dir, process.platform === "win32" ? "node.exe" : "node");
   return fs.existsSync(node) ? node : null;
+}
+
+// bunx and `bun --bun` put a temp dir on PATH whose `node` links to bun itself.
+function isBunShim(node: string): boolean {
+  try {
+    return /^bun(\.exe)?$/i.test(path.basename(fs.realpathSync(node)));
+  } catch {
+    return false;
+  }
 }
 
 function isFnmMultishell(dir: string): boolean {
