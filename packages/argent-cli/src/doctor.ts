@@ -232,18 +232,32 @@ const MARKS: Record<CheckStatus, string> = {
   info: pc.dim("·"),
 };
 
+/**
+ * Labels and details carry text from editor configs (args, env values), so a
+ * control character could move the cursor or recolour a row in the terminal.
+ */
+function printable(text: string): string {
+  return [...text]
+    .map((ch) => {
+      const code = ch.codePointAt(0)!;
+      const control = code < 0x20 || (code >= 0x7f && code <= 0x9f);
+      return control ? `\\x${code.toString(16).padStart(2, "0")}` : ch;
+    })
+    .join("");
+}
+
 export function renderDoctorReport(report: DoctorReport): string {
   const lines: string[] = [
     `${pc.bold("argent doctor")}  v${report.version} · node v${report.node} · ${report.platform}`,
-    pc.dim(`project: ${home(report.projectRoot)}`),
+    pc.dim(`project: ${printable(home(report.projectRoot))}`),
   ];
   for (const section of report.sections) {
     if (section.checks.length === 0) continue;
     lines.push("", pc.bold(section.title));
     for (const c of section.checks) {
-      lines.push(`  ${MARKS[c.status]} ${c.label}`);
-      if (c.detail) lines.push(`      ${pc.dim(c.detail)}`);
-      if (c.fix && c.status !== "ok") lines.push(`      ${pc.cyan("→")} ${c.fix}`);
+      lines.push(`  ${MARKS[c.status]} ${printable(c.label)}`);
+      if (c.detail) lines.push(`      ${pc.dim(printable(c.detail))}`);
+      if (c.fix && c.status !== "ok") lines.push(`      ${pc.cyan("→")} ${printable(c.fix)}`);
     }
   }
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;

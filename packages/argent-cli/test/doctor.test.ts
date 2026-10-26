@@ -53,6 +53,40 @@ describe("renderDoctorReport", () => {
     expect(out).toContain("argent init");
     expect(out).not.toContain("never shown");
     expect(out).toContain("1 error, 0 warnings");
+    expect(out).toContain("v1.0.0 · node v24.0.0 · darwin arm64");
+    expect(out.split("\n")).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("Editors (MCP config)"),
+        expect.stringMatching(/^ {2}\S*✓\S* Claude Code: argent mcp$/),
+        expect.stringMatching(/^ {2}\S*✗\S* Cursor: argent mcp$/),
+      ])
+    );
+  });
+
+  it("escapes control characters that come from editor configs", () => {
+    const out = renderDoctorReport({
+      version: "1.0.0",
+      node: "24.0.0",
+      platform: "darwin arm64",
+      projectRoot,
+      errors: 0,
+      warnings: 0,
+      sections: [
+        {
+          title: "Tool-server",
+          checks: [
+            {
+              status: "error",
+              label: "Linked to http://h/x\r\u001b[2K  ✓ fake row\nnext",
+              detail: "\u001b[8m",
+              fix: "a\u009bb",
+            },
+          ],
+        },
+      ],
+    });
+    expect(out).not.toMatch(/[\r\u009b]|\u001b\[(2K|8m)/);
+    expect(out).toContain("http://h/x\\x0d\\x1b[2K  ✓ fake row\\x0anext");
   });
 });
 
