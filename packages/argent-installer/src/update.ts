@@ -38,6 +38,7 @@ import {
   resolveProjectRoot,
   RULES_DIR,
   AGENTS_DIR,
+  isSamePath,
   type InstallMode,
 } from "./utils.js";
 import { parseTargetFlags, decideInstallTargets, promptInstallTargets } from "./install-targets.js";
@@ -719,6 +720,12 @@ export async function update(args: string[]): Promise<void> {
         // the MCP entry itself is protected.
         adaptersByScope.get(normScope)!.add(adapter);
         if (skipEntryRewrite && normScope === "local") continue;
+        // At $HOME, Cursor, Codex, Gemini and Kiro read one file for both
+        // scopes; its global row (listed next) owns the entry.
+        const globalPath = adapter.globalPath();
+        if (scope === "project" && globalPath !== null && isSamePath(configPath, globalPath)) {
+          continue;
+        }
         let existing: McpServerEntry | null;
         try {
           existing = adapter.getArgentEntry(configPath);
