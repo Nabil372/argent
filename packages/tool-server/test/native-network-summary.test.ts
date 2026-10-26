@@ -167,6 +167,23 @@ describe("native-network-logs request summary", () => {
     ]);
     expect(rows.map((r) => r.durationMs)).toEqual([5012, 60000]);
   });
+
+  it("prefers the dylib's duration over the timestamp difference", () => {
+    const [row] = summarizeRequests([
+      ev("Network.requestWillBeSent", {
+        requestId: "1",
+        timestamp: 10,
+        request: { method: "GET", url: "http://x/big" },
+      }),
+      ev("Network.loadingFinished", {
+        requestId: "1",
+        timestamp: 10.236,
+        encodedDataLength: 1048576,
+        nativeDevtoolsDurationMs: 213.4,
+      }),
+    ]);
+    expect(row?.durationMs).toBe(213);
+  });
 });
 
 describe("native-network-logs execute", () => {

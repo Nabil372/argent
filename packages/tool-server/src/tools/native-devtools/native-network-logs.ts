@@ -86,10 +86,10 @@ function summarizeRequests(events: NetworkEvent[]): NativeRequestRow[] {
     const t = typeof p.timestamp === "number" ? p.timestamp : undefined;
     const finish = () => {
       if (typeof p.encodedDataLength === "number") row.bytes = p.encodedDataLength;
-      if (t !== undefined && row.start !== undefined)
-        row.durationMs = Math.round((t - row.start) * 1000);
-      else if (typeof p.nativeDevtoolsDurationMs === "number")
+      if (typeof p.nativeDevtoolsDurationMs === "number")
         row.durationMs = Math.round(p.nativeDevtoolsDurationMs);
+      else if (t !== undefined && row.start !== undefined)
+        row.durationMs = Math.round((t - row.start) * 1000);
     };
     switch (e.method) {
       case "Network.requestWillBeSent":
