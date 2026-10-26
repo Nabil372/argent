@@ -19,6 +19,8 @@ interface McpWriteResult {
   adapters: McpConfigAdapter[];
   /** One summary line per adapter. */
   lines: string[];
+  /** Adapters whose entry the editor has switched off, left as they were. */
+  switchedOff: McpConfigAdapter[];
 }
 
 // Step 1c — write the MCP config files. Local mode points project-scope
@@ -88,12 +90,14 @@ export function writeMcpConfigs(args: {
     } catch {
       return false;
     }
-    return (
-      existing !== null && existing.command !== MCP_BINARY_NAME && isArgentManagedEntry(existing)
-    );
+    if (existing === null || existing.command === MCP_BINARY_NAME) return false;
+    // A cwd makes the entry customized, which is all the more reason to keep it.
+    const { cwd: _cwd, ...withoutCwd } = existing;
+    return isArgentManagedEntry(withoutCwd);
   };
 
   const lines: string[] = [];
+  const switchedOff: McpConfigAdapter[] = [];
 
   // Rewriting an entry the editor has switched off would drop the switch and
   // silently turn argent back on.
@@ -106,6 +110,7 @@ export function writeMcpConfigs(args: {
     lines.push(
       `${pc.yellow("!")} ${adapter.name} left a switched-off entry untouched ${pc.dim(configPath)}`
     );
+    switchedOff.push(adapter);
     return true;
   };
 
@@ -163,5 +168,5 @@ export function writeMcpConfigs(args: {
     }
   }
 
-  return { adapters, lines };
+  return { adapters, lines, switchedOff };
 }

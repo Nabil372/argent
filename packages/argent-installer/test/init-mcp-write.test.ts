@@ -83,6 +83,83 @@ describe("writeMcpConfigs — switched-off entries", () => {
   });
 });
 
+describe("writeMcpConfigs — switched-off entries in fallback configs", () => {
+  const kiro = getAdapterByName("Kiro")!;
+  const switchedOff = JSON.stringify({
+    mcpServers: { argent: { command: "argent", args: ["mcp"], disabled: true } },
+  });
+  let savedHome: string | undefined;
+
+  beforeEach(() => {
+    savedHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+  });
+
+  afterEach(() => {
+    process.env.HOME = savedHome;
+  });
+
+  it("keeps a global-only editor's switched-off entry under project scope", () => {
+    const windsurf = getAdapterByName("Windsurf")!;
+    const file = path.join(tmpDir, ".codeium", "windsurf", "mcp_config.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, switchedOff);
+
+    const result = writeMcpConfigs({
+      selectedAdapters: [windsurf],
+      installMode: "global",
+      scope: "local",
+      effectiveRoot: tmpDir,
+      projectRoot: tmpDir,
+    });
+
+    expect(fs.readFileSync(file, "utf8")).toBe(switchedOff);
+    expect(result.lines.join("\n")).toContain("left a switched-off entry untouched");
+    expect(result.switchedOff).toEqual([windsurf]);
+  });
+
+  it("keeps a project-only editor's switched-off entry under global scope", () => {
+    const projectOnly = { ...kiro, globalPath: () => null };
+    const file = kiro.projectPath(tmpDir)!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, switchedOff);
+
+    const result = writeMcpConfigs({
+      selectedAdapters: [projectOnly],
+      installMode: "global",
+      scope: "global",
+      effectiveRoot: tmpDir,
+      projectRoot: tmpDir,
+    });
+
+    expect(fs.readFileSync(file, "utf8")).toBe(switchedOff);
+    expect(result.switchedOff).toEqual([projectOnly]);
+  });
+
+  it("still tries the write when the existing entry can't be read", () => {
+    const unreadable = {
+      ...kiro,
+      getArgentEntry: () => {
+        throw new Error("EACCES: permission denied");
+      },
+      write: () => {
+        throw new Error("EACCES: permission denied");
+      },
+    };
+
+    const result = writeMcpConfigs({
+      selectedAdapters: [unreadable],
+      installMode: "global",
+      scope: "local",
+      effectiveRoot: tmpDir,
+      projectRoot: tmpDir,
+    });
+
+    expect(result.lines.join("\n")).toMatch(/x.*Kiro: .*EACCES/);
+    expect(result.switchedOff).toEqual([]);
+  });
+});
+
 describe("writeMcpConfigs — global mode over a committed local entry", () => {
   it("keeps the committed local-mode entry when the project is STILL local (record present)", () => {
     // Coexistence: the project keeps its local devDependency (marked by the
@@ -123,6 +200,41 @@ describe("writeMcpConfigs — global mode over a committed local entry", () => {
     });
 
     expect(fs.readFileSync(mcpJson, "utf8")).toBe(before);
+  });
+
+  it("keeps a committed local-mode entry that sets a cwd", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "proj", devDependencies: { "@swmansion/argent": "^1.0.0" } })
+    );
+    const vscode = getAdapterByName("VS Code")!;
+    const file = vscode.projectPath(tmpDir)!;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        servers: {
+          argent: {
+            type: "stdio",
+            command: "node",
+            args: ["node_modules/@swmansion/argent/dist/cli.js", "mcp"],
+            cwd: "${workspaceFolder}",
+          },
+        },
+      })
+    );
+    const before = fs.readFileSync(file, "utf8");
+
+    const { lines } = writeMcpConfigs({
+      selectedAdapters: [vscode],
+      installMode: "global",
+      scope: "local",
+      effectiveRoot: tmpDir,
+      projectRoot: tmpDir,
+    });
+
+    expect(fs.readFileSync(file, "utf8")).toBe(before);
+    expect(lines.join("\n")).toContain("kept the committed local-mode entry");
   });
 
   it("rewrites the dead local entry when the project ABANDONED local mode", () => {
