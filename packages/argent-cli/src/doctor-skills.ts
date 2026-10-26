@@ -22,7 +22,7 @@ import {
   isUnreadable,
   realPath,
 } from "./doctor-shared.js";
-import { configuredScopes, rootFor } from "./doctor-editors.js";
+import { claudeLocalKey, configuredScopes, rootFor } from "./doctor-editors.js";
 
 // `argent doctor`: the Skills & rules section.
 
@@ -108,7 +108,7 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     scope: c.scope === "project" ? ("local" as const) : ("global" as const),
   }));
   const claude = ALL_ADAPTERS.find((a) => a.name === "Claude Code");
-  if (claude && hasClaudeLocalScopeEntry(rootFor(ctx, claude))) {
+  if (claude && hasClaudeLocalScopeEntry(claudeLocalKey(ctx))) {
     configured.push({ adapter: claude, scope: "local" });
   }
   const adapters = [...new Set(configured.map((c) => c.adapter))];

@@ -111,8 +111,8 @@ export function globalReinstallCommand(pm: PackageManager): string {
 function doctorProjectRoot(cwd: string): string {
   const resolved = resolveProjectRoot(cwd);
   if (!samePath(resolved, homedir()) || samePath(cwd, homedir())) return resolved;
-  const key = claudeProjectKey(cwd);
-  return samePath(key, homedir()) ? cwd : key;
+  const top = gitToplevel(cwd);
+  return samePath(top, homedir()) ? cwd : top;
 }
 
 /** The PATH launchd hands apps started from the Dock (its default when unset). */
@@ -168,10 +168,12 @@ export async function collectDoctorReport(options: {
   const projectPm = detectProjectPackageManager(projectRoot);
   const localCmd = localArgentCmd(projectRoot);
   const [guiPath, npmGlobal] = await Promise.all([launchdPath(), npmGlobalHasArgent()]);
+  const gitRoot = gitToplevel(cwd);
   const ctx: DoctorContext = {
     projectRoot,
-    claudeRoot: claudeProjectKey(cwd),
-    gitRoot: gitToplevel(cwd),
+    claudeRoot: gitRoot,
+    claudeKey: claudeProjectKey(cwd),
+    gitRoot,
     cwd,
     mode,
     global,

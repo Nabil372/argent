@@ -1,12 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execFileSync } from "node:child_process";
+import { homedir } from "node:os";
 import { AUTH_TOKEN_ENV } from "@argent/tools-client";
 import {
   ALL_ADAPTERS,
   detectAdapters,
   findConfiguredAdapterScopes,
   isArgentDisabledInClaudeProject,
+  isInvalidToml,
   isSwitchedOffInEditor,
   probeLocalInstall,
   readManifestDeclaration,
@@ -26,7 +27,14 @@ import {
   samePath,
 } from "./doctor-shared.js";
 import { probeProjectInstall } from "./doctor-install.js";
-import { type CwdSupport, classifyMcpEntry, formatEntry } from "./doctor-entries.js";
+import {
+  type CwdSupport,
+  type EntryContext,
+  classifyMcpEntry,
+  expandEnvReferences,
+  formatEntry,
+  hasUnresolvedVariable,
+} from "./doctor-entries.js";
 
 // `argent doctor`: the Editors section.
 
@@ -40,9 +48,7 @@ const CWD_SUPPORT: Record<string, CwdSupport> = {
   "Kiro": "absolute-only",
 };
 
-// Claude Code starts one entry per name: local scope wins over project, project over user.
-const CLAUDE_SCOPE_RANK = { local: 2, project: 1, global: 0 } as const;
-type ClaudeScope = keyof typeof CLAUDE_SCOPE_RANK;
+type EntryScope = "local" | "project" | "global";
 
 /** Claude Code rejects a config file that is not strict JSON (comments, trailing commas). */
 export function isStrictJson(configPath: string): boolean {
@@ -72,8 +78,8 @@ function isYarnBerryProject(root: string): boolean {
 const GIT_ROOT_EDITORS = new Set(["Codex", "opencode"]);
 
 /**
- * Claude Code has its own idea of the project (claudeProjectKey), Codex and
- * opencode find theirs at the git root; other editors use projectRoot.
+ * Claude Code reads its .claude dir from the checkout it runs in, Codex and
+ * opencode find their project config at the git root; other editors use projectRoot.
  */
 export function rootFor(ctx: DoctorContext, adapter: McpConfigAdapter | string | null): string {
   const name = typeof adapter === "string" ? adapter : adapter?.name;
@@ -82,18 +88,97 @@ export function rootFor(ctx: DoctorContext, adapter: McpConfigAdapter | string |
   return ctx.projectRoot;
 }
 
-// An editor's project config is looked up in its own project and, when doctor's
-// root is a package inside it, in that package too (init may have written it).
+/** The ~/.claude.json key of Claude Code's local scope and /mcp toggles for this project. */
+export function claudeLocalKey(ctx: DoctorContext): string {
+  return ctx.claudeKey ?? rootFor(ctx, "Claude Code");
+}
+
+function selfAndAncestors(dir: string): string[] {
+  const dirs = [path.resolve(dir)];
+  while (path.dirname(dirs.at(-1)!) !== dirs.at(-1)) dirs.push(path.dirname(dirs.at(-1)!));
+  return dirs;
+}
+
+// Claude Code reads .mcp.json from the directory it starts in and every one
+// above it. Other editors' project config is looked up in their own project
+// and, when doctor's root is a package inside it, in that package too (init
+// may have written it).
+function projectRoots(ctx: DoctorContext, adapter: McpConfigAdapter): string[] {
+  return adapter.name === "Claude Code"
+    ? [...new Set([...selfAndAncestors(ctx.cwd), ctx.projectRoot])]
+    : [...new Set([rootFor(ctx, adapter), ctx.projectRoot])];
+}
+
 export function configuredScopes(
   ctx: DoctorContext
 ): ReturnType<typeof findConfiguredAdapterScopes> {
   return ALL_ADAPTERS.flatMap((adapter) => {
-    const roots = [...new Set([rootFor(ctx, adapter), ctx.projectRoot])];
     const seen = new Set<string>();
-    return roots
+    return projectRoots(ctx, adapter)
       .flatMap((root) => findConfiguredAdapterScopes([adapter], root))
       .filter((c) => !seen.has(realPath(c.configPath)) && seen.add(realPath(c.configPath)));
   });
+}
+
+/** home() for every path inside a free-form location such as `~/.claude.json (… for /Users/me/app)`. */
+function homeInText(text: string): string {
+  const h = homedir();
+  if (!h || h === path.sep) return text;
+  const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return text.replace(new RegExp(`${escaped}(?=[\\\\/)\\s]|$)`, "g"), "~");
+}
+
+/** Where each editor starts an entry's command, and how it expands the entry. */
+function spawnRules(ctx: DoctorContext, editor: string, scope: "project" | "global") {
+  const scopeDir = scope === "project" ? ctx.projectRoot : homedir();
+  switch (editor) {
+    case "Claude Code":
+    case "Codex":
+    case "Gemini":
+    case "opencode":
+      return { spawnDir: ctx.cwd, spawnsInLaunchDir: true };
+    case "Cursor":
+      return { spawnDir: scopeDir, expandsTilde: true };
+    case "VS Code":
+      return { spawnDir: scopeDir, expandsTilde: true, appendsPath: true };
+    case "Zed":
+      return { spawnDir: ctx.projectRoot };
+    default:
+      return {};
+  }
+}
+
+interface Found {
+  adapter: McpConfigAdapter;
+  adapterName: string;
+  entry: McpServerEntry;
+  scope: "project" | "global";
+  location: string;
+  /** The scope the editor ranks the entry by, for editors that start only one. */
+  rankedScope?: EntryScope;
+  /** Higher wins among one editor's ranked entries. */
+  rank?: number;
+}
+
+// Claude Code starts one entry per name: local scope over project, a closer
+// .mcp.json over one further up, project over user. Gemini starts the project
+// entry when both scopes define one.
+function rankOf(adapterName: string, scope: EntryScope, configPath?: string): number | undefined {
+  if (adapterName === "Claude Code") {
+    if (scope === "local") return Number.MAX_SAFE_INTEGER;
+    // Every .mcp.json is in an ancestor of cwd: the longer path is the closer one.
+    return scope === "project" ? 1 + path.dirname(configPath!).length : 0;
+  }
+  if (adapterName === "Gemini") return scope === "project" ? 1 : 0;
+  return undefined;
+}
+
+function unusedLabel(f: Found, winner: Found): string {
+  const winnerName =
+    f.rankedScope === "project" && winner.rankedScope === "project"
+      ? "closer .mcp.json"
+      : `${winner.rankedScope}-scope`;
+  return `${f.adapterName}: ${formatEntry(f.entry)} (unused: the ${winnerName} entry wins)`;
 }
 
 export function editorsSection(
@@ -129,14 +214,6 @@ export function editorsSection(
     yarnBerry: isYarnBerryProject(projectRoot),
   };
 
-  interface Found {
-    adapter: McpConfigAdapter;
-    adapterName: string;
-    entry: McpServerEntry;
-    scope: "project" | "global";
-    location: string;
-    claudeScope?: ClaudeScope;
-  }
   const found: Found[] = [];
   const notes: DoctorCheck[] = [];
   // Configured, but in a file the editor can't parse.
@@ -144,17 +221,35 @@ export function editorsSection(
   // A recorded .mcp.json rejection: Claude Code skips the project entry.
   let mcpjsonRejected = false;
 
-  // findConfiguredAdapterScopes reads an unreadable file as "no entry".
+  // findConfiguredAdapterScopes reads an unreadable or unparseable TOML file as "no entry".
   for (const adapter of ALL_ADAPTERS) {
-    for (const configPath of [adapter.projectPath(projectRoot), adapter.globalPath()]) {
-      if (!configPath || !isUnreadable(configPath) || unparsed.has(adapter.name)) continue;
-      checks.push(
-        check("error", `${adapter.name}: can't read its config file`, {
-          detail: home(configPath),
-          fix: permissionFix(configPath, "u+r"),
-        })
-      );
-      unparsed.add(adapter.name);
+    const paths = [
+      ...projectRoots(ctx, adapter).map((root) => adapter.projectPath(root)),
+      adapter.globalPath(),
+    ];
+    for (const configPath of paths) {
+      if (!configPath || unparsed.has(adapter.name)) continue;
+      if (isUnreadable(configPath)) {
+        checks.push(
+          check("error", `${adapter.name}: can't read its config file`, {
+            detail: home(configPath),
+            fix: permissionFix(configPath, "u+r"),
+          })
+        );
+        unparsed.add(adapter.name);
+      } else if (configPath.endsWith(".toml") && isInvalidToml(configPath)) {
+        checks.push(
+          check(
+            "error",
+            `${adapter.name}: the config file is not valid TOML, so ${adapter.name} won't load it`,
+            {
+              detail: home(configPath),
+              fix: "Fix the TOML syntax (argent init leaves the file alone until it parses)",
+            }
+          )
+        );
+        unparsed.add(adapter.name);
+      }
     }
   }
 
@@ -182,7 +277,8 @@ export function editorsSection(
       entry,
       scope,
       location: `${home(configPath)} (${scope})`,
-      ...(adapter.name === "Claude Code" ? { claudeScope: scope } : {}),
+      rankedScope: scope,
+      rank: rankOf(adapter.name, scope, configPath),
     });
     if (
       adapter.name === "Gemini" &&
@@ -202,6 +298,26 @@ export function editorsSection(
     }
   }
 
+  // Claude Code files its local scope under the main checkout's key, but reads
+  // a rejection from the .claude dir of the checkout it runs in.
+  const shadowingFindings = (adapter: McpConfigAdapter, hasProjectEntry: boolean) => {
+    const options = { exactProjectKey: true };
+    if (adapter.name !== "Claude Code") {
+      return adapter.findShadowingConfigs!(
+        rootFor(ctx, adapter),
+        hasProjectEntry ? "local" : "global",
+        options
+      );
+    }
+    const localScope = adapter.findShadowingConfigs!(claudeLocalKey(ctx), "global", options);
+    const rejections = hasProjectEntry
+      ? adapter.findShadowingConfigs!(rootFor(ctx, adapter), "local", options).filter(
+          (f) => !f.location.startsWith("~/.claude.json")
+        )
+      : [];
+    return [...localScope, ...rejections];
+  };
+
   // Scopes outside the projectPath/globalPath pair: VS Code's user-profile
   // mcp.json, Claude Code's local scope and its recorded .mcp.json rejections.
   for (const adapter of ALL_ADAPTERS) {
@@ -209,19 +325,20 @@ export function editorsSection(
     const isClaude = adapter.name === "Claude Code";
     const hasProjectEntry = configured.some((c) => c.adapter === adapter && c.scope === "project");
     try {
-      for (const finding of adapter.findShadowingConfigs(
-        rootFor(ctx, adapter),
-        hasProjectEntry ? "local" : "global",
-        { exactProjectKey: true }
-      )) {
+      for (const finding of shadowingFindings(adapter, hasProjectEntry)) {
+        const location = isClaude
+          ? homeInText(finding.location)
+          : `${homeInText(finding.location)} (global)`;
         if (finding.entry) {
+          const rankedScope: EntryScope = isClaude ? "local" : "global";
           found.push({
             adapter,
             adapterName: adapter.name,
             entry: finding.entry,
             scope: isClaude ? "project" : "global",
-            location: finding.location,
-            ...(isClaude ? { claudeScope: "local" as const } : {}),
+            location,
+            rankedScope,
+            rank: rankOf(adapter.name, rankedScope),
           });
         }
         const rejection =
@@ -230,9 +347,9 @@ export function editorsSection(
         if (!finding.entry || (!isClaude && hasProjectEntry)) {
           notes.push(
             check("warn", `${adapter.name}: ${finding.reason}`, {
-              detail: finding.location,
+              detail: location,
               ...(rejection
-                ? { fix: `Remove "argent" from disabledMcpjsonServers in ${finding.location}` }
+                ? { fix: `Remove "argent" from disabledMcpjsonServers in ${location}` }
                 : {}),
             })
           );
@@ -243,11 +360,16 @@ export function editorsSection(
     }
   }
 
-  const isRejected = (f: Found) => mcpjsonRejected && f.claudeScope === "project";
-  const claudeRanks = found.flatMap((f) =>
-    f.claudeScope && !isRejected(f) ? [CLAUDE_SCOPE_RANK[f.claudeScope]] : []
-  );
-  const claudeWinner = claudeRanks.length > 0 ? Math.max(...claudeRanks) : null;
+  const isRejected = (f: Found) =>
+    mcpjsonRejected && f.adapterName === "Claude Code" && f.rankedScope === "project";
+  // An entry the editor skips as invalid can't outrank the one it starts.
+  const isUnparsed = (f: Found) => f.entry.command === "" && !f.entry.url;
+  const winners = new Map<string, Found>();
+  for (const f of found) {
+    if (f.rank === undefined || isRejected(f) || isUnparsed(f)) continue;
+    const best = winners.get(f.adapterName);
+    if (!best || f.rank > best.rank!) winners.set(f.adapterName, f);
+  }
   for (const f of found) {
     if (isRejected(f)) {
       checks.push(
@@ -261,48 +383,39 @@ export function editorsSection(
       );
       continue;
     }
-    if (f.claudeScope && CLAUDE_SCOPE_RANK[f.claudeScope] < claudeWinner!) {
-      const winner = (Object.keys(CLAUDE_SCOPE_RANK) as ClaudeScope[]).find(
-        (k) => CLAUDE_SCOPE_RANK[k] === claudeWinner
-      );
-      checks.push(
-        check(
-          "info",
-          `${f.adapterName}: ${formatEntry(f.entry)} (unused: the ${winner}-scope entry wins)`,
-          {
-            detail: f.location,
-          }
-        )
-      );
+    const winner = winners.get(f.adapterName);
+    if (winner && winner !== f && !isUnparsed(f)) {
+      checks.push(check("info", unusedLabel(f, winner), { detail: f.location }));
       continue;
     }
     // Only the key the editor honours switches the entry off.
     const honoured = f.adapter.switchOffKey;
-    const entry = isSwitchedOffInEditor(f.adapter, f.entry)
+    const switchedOff = isSwitchedOffInEditor(f.adapter, f.entry);
+    const entry = switchedOff
       ? { ...f.entry, switchedOffBy: [honoured!] }
       : { ...f.entry, switchedOffBy: undefined };
-    const result = classifyMcpEntry(entry, {
+    const entryContext: EntryContext = {
       ...entryCtx,
+      ...spawnRules(ctx, f.adapterName, f.scope),
       scope: f.scope,
-      claudeLocal: f.claudeScope === "local",
+      claudeLocal: f.adapterName === "Claude Code" && f.rankedScope === "local",
       cwdSupport: CWD_SUPPORT[f.adapterName],
-    });
+    };
+    const result = classifyMcpEntry(entry, entryContext);
     checks.push({
       ...result,
       label: `${f.adapterName}: ${result.label}`,
       detail: [f.location, result.detail].filter(Boolean).join(" · "),
     });
-    if (!entry.switchedOffBy) startedEntries.push(f.entry);
-    const url = f.entry.env?.ARGENT_TOOLS_URL;
-    if (url) {
-      entryToolsUrls.push({ editor: f.adapterName, url, token: f.entry.env?.[AUTH_TOKEN_ENV] });
-    }
+    if (switchedOff) continue;
+    startedEntries.push(f.entry);
+    collectToolsUrl(f, entryToolsUrls);
   }
   checks.push(...notes);
 
   if (
-    claudeWinner !== null &&
-    isArgentDisabledInClaudeProject(rootFor(ctx, "Claude Code"), { exactProjectKey: true })
+    winners.has("Claude Code") &&
+    isArgentDisabledInClaudeProject(claudeLocalKey(ctx), { exactProjectKey: true })
   ) {
     checks.push(
       check("warn", "Claude Code: argent is switched off for this project", {
@@ -352,32 +465,57 @@ export function editorsSection(
 }
 
 /**
- * The key Claude Code files a directory's local-scope state under in
- * ~/.claude.json, and the project whose .mcp.json it loads: the main checkout
- * of its git repo (linked worktrees and monorepo packages share it), or the
- * directory itself outside git.
+ * The remote an entry's server would link to. The server reads ARGENT_TOOLS_URL
+ * and the token from its whole environment, the editor's own included, after
+ * the editor expands `${VAR}` in the entry's values.
  */
-export function claudeProjectKey(cwd: string): string {
-  const commonDir = gitRevParse(cwd, "--git-common-dir");
-  const absolute = commonDir && realPath(path.resolve(cwd, commonDir));
-  return absolute && path.basename(absolute) === ".git" ? path.dirname(absolute) : realPath(cwd);
+function collectToolsUrl(f: Found, entryToolsUrls: EntryToolsUrl[]): void {
+  const rawUrl = f.entry.env?.ARGENT_TOOLS_URL;
+  if (!rawUrl) return;
+  const url = expandEnvReferences(rawUrl);
+  const rawToken = f.entry.env?.[AUTH_TOKEN_ENV];
+  const token =
+    rawToken === undefined ? process.env[AUTH_TOKEN_ENV] : expandEnvReferences(rawToken);
+  if (hasUnresolvedVariable(url) || (token && hasUnresolvedVariable(token))) return;
+  entryToolsUrls.push({ editor: f.adapterName, url, token });
+}
+
+/** The nearest directory at or above `dir` holding `.git`: the repo, worktree or submodule root. */
+function findGitTop(dir: string): string | null {
+  return selfAndAncestors(dir).find((d) => fs.existsSync(path.join(d, ".git"))) ?? null;
 }
 
 /** The top of cwd's git checkout (a linked worktree's own dir), or cwd outside git. */
 export function gitToplevel(cwd: string): string {
-  return realPath(gitRevParse(cwd, "--show-toplevel") || cwd);
+  return realPath(findGitTop(cwd) ?? cwd);
 }
 
-function gitRevParse(cwd: string, flag: string): string | null {
+/** The common git dir a linked worktree's `.git` file points at, through its gitdir's `commondir`. */
+function linkedCommonDir(dotGit: string): string | null {
   try {
-    return execFileSync("git", ["rev-parse", flag], {
-      cwd,
-      encoding: "utf8",
-      timeout: 2_000,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    if (fs.statSync(dotGit).isDirectory()) return null;
+    const gitDirLine = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"));
+    if (!gitDirLine) return null;
+    const gitDir = path.resolve(path.dirname(dotGit), gitDirLine[1]!.trim());
+    const commonDir = fs.readFileSync(path.join(gitDir, "commondir"), "utf8").trim();
+    return realPath(path.resolve(gitDir, commonDir));
   } catch {
-    // Not a git repo, or no git.
     return null;
   }
+}
+
+/**
+ * The key Claude Code files a directory's local-scope state under in
+ * ~/.claude.json: the main checkout for a linked worktree, the bare repo for a
+ * worktree of one, the checkout itself for a repo or submodule, and the
+ * directory itself outside git. Read from the files rather than by running
+ * git: on a Mac without the Command Line Tools, /usr/bin/git opens their
+ * install dialog.
+ */
+export function claudeProjectKey(cwd: string): string {
+  const top = findGitTop(cwd);
+  if (!top) return realPath(cwd);
+  const common = linkedCommonDir(path.join(top, ".git"));
+  if (!common) return realPath(top);
+  return path.basename(common) === ".git" ? path.dirname(common) : common;
 }

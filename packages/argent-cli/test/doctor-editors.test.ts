@@ -4,8 +4,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { AGENTS_DIR, listBundledSkills, RULES_DIR, type McpServerEntry } from "@argent/installer";
-import { claudeProjectKey, editorsSection, isStrictJson } from "../src/doctor-editors.js";
-import { type DoctorContext } from "../src/doctor-shared.js";
+import {
+  claudeProjectKey,
+  editorsSection,
+  gitToplevel,
+  isStrictJson,
+} from "../src/doctor-editors.js";
+import { type DoctorContext, type EntryToolsUrl } from "../src/doctor-shared.js";
 import { skillsSection } from "../src/doctor-skills.js";
 
 let projectRoot: string;
@@ -43,6 +48,38 @@ describe("claudeProjectKey", () => {
 
   it("is the directory itself outside git", () => {
     expect(claudeProjectKey(projectRoot)).toBe(fs.realpathSync(projectRoot));
+  });
+
+  const linkWorktree = (worktree: string, gitDir: string, commonDir?: string) => {
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${gitDir}\n`);
+    if (commonDir) fs.writeFileSync(path.join(gitDir, "commondir"), commonDir);
+  };
+
+  it("is the bare repo for a worktree of one", () => {
+    const bare = path.join(projectRoot, "repo.git");
+    const wt = path.join(projectRoot, "wt-main");
+    linkWorktree(wt, path.join(bare, "worktrees", "wt-main"), "../..");
+    fs.mkdirSync(path.join(wt, "app"));
+    expect(claudeProjectKey(path.join(wt, "app"))).toBe(fs.realpathSync(bare));
+  });
+
+  it("is the submodule's own checkout", () => {
+    const sub = path.join(projectRoot, "super", "sub");
+    fs.mkdirSync(path.join(projectRoot, "super", ".git"), { recursive: true });
+    linkWorktree(sub, path.join(projectRoot, "super", ".git", "modules", "sub"));
+    fs.mkdirSync(path.join(sub, "pkg"));
+    expect(claudeProjectKey(path.join(sub, "pkg"))).toBe(fs.realpathSync(sub));
+  });
+});
+
+describe("gitToplevel", () => {
+  it("is the linked worktree's own root, not the main checkout", () => {
+    const wt = path.join(projectRoot, "wt");
+    fs.mkdirSync(path.join(wt, "src"), { recursive: true });
+    fs.writeFileSync(path.join(wt, ".git"), "gitdir: /elsewhere\n");
+    expect(gitToplevel(path.join(wt, "src"))).toBe(fs.realpathSync(wt));
   });
 });
 
@@ -238,12 +275,12 @@ describe("editor and skill sections", () => {
     const inPackage = {
       ...doctorCtx(),
       projectRoot: path.join(repo, "packages", "app"),
-      claudeRoot: repo,
+      claudeKey: repo,
     };
     expect(
       editorsSection(inPackage).checks.find((c) => c.label.startsWith("Claude Code"))?.status
     ).toBe("ok");
-    const alias = { ...inPackage, claudeRoot: `${repo}/` };
+    const alias = { ...inPackage, claudeKey: `${repo}/` };
     expect(
       editorsSection(alias).checks.some((c) => c.label.startsWith("Claude Code: argent"))
     ).toBe(false);
@@ -294,6 +331,279 @@ describe("editor and skill sections", () => {
     fs.writeFileSync(path.join(projectRoot, ".mcp.json"), "{,}");
     const checks = editorsSection(doctorCtx()).checks;
     expect(checks.filter((c) => c.status === "error")).toHaveLength(1);
+  });
+
+  const statusOf = (checks: { label: string; status: string }[], needle: string) =>
+    checks.find((c) => c.label.includes(needle))?.status;
+  const gone = { command: "/opt/gone/bin/argent", args: ["mcp"] };
+  const vscodeUserDir = () =>
+    process.platform === "darwin"
+      ? path.join(home, "Library", "Application Support", "Code", "User")
+      : path.join(home, ".config", "Code", "User");
+
+  it("reports a Codex config.toml that does not parse instead of calling argent unconfigured", () => {
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".codex", "config.toml"),
+      'model = "o3"\n[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n[mcp_servers.x]\nargs = ["a"\n'
+    );
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.status === "error")?.label).toMatch(/Codex: .*not valid TOML/);
+    expect(checks.some((c) => /not configured/.test(c.label))).toBe(false);
+  });
+
+  it("holds only Claude Code to strict JSON", () => {
+    fs.mkdirSync(path.join(projectRoot, ".vscode"));
+    fs.writeFileSync(
+      path.join(projectRoot, ".vscode", "mcp.json"),
+      '{ // argent\n "servers": { "argent": { "command": "argent", "args": ["mcp"] }, }, }'
+    );
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(statusOf(checks, "VS Code: argent mcp")).toBe("ok");
+    expect(checks.some((c) => c.status === "error")).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "reports an unreadable project .mcp.json",
+    () => {
+      const file = path.join(projectRoot, ".mcp.json");
+      writeJson(file, { mcpServers: { argent } });
+      fs.chmodSync(file, 0o000);
+      try {
+        const checks = editorsSection(doctorCtx()).checks;
+        expect(checks.find((c) => c.status === "error")?.label).toBe(
+          "Claude Code: can't read its config file"
+        );
+      } finally {
+        fs.chmodSync(file, 0o644);
+      }
+    }
+  );
+
+  it("prints shadowing locations under ~ with their scope", () => {
+    writeJson(path.join(vscodeUserDir(), "mcp.json"), { servers: { argent } });
+    const app = path.join(home, "dev", "app");
+    fs.mkdirSync(app, { recursive: true });
+    writeJson(path.join(home, ".claude.json"), {
+      projects: { [app]: { mcpServers: { argent } } },
+    });
+    const ctx = { ...doctorCtx(), projectRoot: app, cwd: app, claudeKey: app };
+    const details = editorsSection(ctx).checks.map((c) => c.detail ?? "");
+    expect(details.some((d) => d.startsWith("~/") && d.includes("mcp.json (global)"))).toBe(true);
+    expect(details).toContain("~/.claude.json (local-scope entry for ~/dev/app)");
+    expect(details.some((d) => d.includes(home))).toBe(false);
+  });
+
+  it("warns about Gemini's start folder only for a project entry, run from a subfolder", () => {
+    const sub = path.join(projectRoot, "sub");
+    fs.mkdirSync(sub);
+    const warning = (ctx: DoctorContext) =>
+      editorsSection(ctx).checks.find((c) => /only when started from it/.test(c.label));
+    writeJson(path.join(home, ".gemini", "settings.json"), { mcpServers: { argent } });
+    expect(warning({ ...doctorCtx(), cwd: sub })).toBeUndefined();
+    writeJson(path.join(projectRoot, ".gemini", "settings.json"), { mcpServers: { argent } });
+    expect(warning(doctorCtx())).toBeUndefined();
+    expect(warning({ ...doctorCtx(), cwd: sub })?.fix).toBe(
+      `Start Gemini from ${projectRoot.replace(home, "~")}`
+    );
+  });
+
+  it("starts only Gemini's project entry when both scopes define one", () => {
+    writeJson(path.join(home, ".gemini", "settings.json"), { mcpServers: { argent: gone } });
+    writeJson(path.join(projectRoot, ".gemini", "settings.json"), { mcpServers: { argent } });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.some((c) => c.status === "error")).toBe(false);
+    expect(checks.find((c) => c.label.includes("/opt/gone"))?.label).toMatch(
+      /unused: the project-scope entry wins/
+    );
+  });
+
+  it("looks for a .mcp.json rejection only next to a project entry", () => {
+    writeJson(path.join(home, ".claude.json"), { mcpServers: { argent } });
+    writeJson(path.join(projectRoot, ".claude", "settings.local.json"), {
+      disabledMcpjsonServers: ["argent"],
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.some((c) => /disabledMcpjsonServers/.test(c.label))).toBe(false);
+  });
+
+  it("notes a VS Code user-profile entry only beside a workspace entry", () => {
+    writeJson(path.join(vscodeUserDir(), "mcp.json"), { servers: { argent } });
+    const note = () =>
+      editorsSection(doctorCtx()).checks.find((c) => /can take precedence/.test(c.label));
+    expect(note()).toBeUndefined();
+    writeJson(path.join(projectRoot, ".vscode", "mcp.json"), { servers: { argent } });
+    expect(note()?.status).toBe("warn");
+  });
+
+  it("calls a .mcp.json entry under a stock local-scope one unused, without a warning", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent } });
+    localScope({ argent });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.some((c) => c.status === "warn")).toBe(false);
+    expect(checks.find((c) => c.label.includes("unused"))?.status).toBe("info");
+  });
+
+  it("does not let an entry Claude Code skips as invalid outrank the one it runs", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent: gone } });
+    localScope({ argent: "x" });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(statusOf(checks, "/opt/gone/bin/argent")).toBe("error");
+    expect(checks.some((c) => c.label.includes("unused"))).toBe(false);
+  });
+
+  it("ranks Claude Code's scopes: project over user, local over user", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent: gone } });
+    writeJson(path.join(home, ".claude.json"), { mcpServers: { argent } });
+    expect(statusOf(editorsSection(doctorCtx()).checks, "/opt/gone")).toBe("error");
+
+    fs.rmSync(path.join(projectRoot, ".mcp.json"));
+    writeJson(path.join(home, ".claude.json"), {
+      mcpServers: { argent: gone },
+      projects: { [projectRoot]: { mcpServers: { argent } } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.label.includes("/opt/gone"))?.label).toMatch(
+      /unused: the local-scope entry wins/
+    );
+    expect(checks.some((c) => c.status === "error")).toBe(false);
+  });
+
+  it("judges a broken local-scope entry beside a rejected .mcp.json, with Claude's own fix", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent } });
+    writeJson(path.join(projectRoot, ".claude", "settings.local.json"), {
+      disabledMcpjsonServers: ["argent"],
+    });
+    localScope({ argent: gone });
+    const broken = editorsSection(doctorCtx()).checks.find((c) => c.label.includes("/opt/gone"));
+    expect(broken).toMatchObject({
+      status: "error",
+      fix: expect.stringMatching(/claude mcp remove -s local argent/),
+    });
+  });
+
+  it("does not fail a rejected .mcp.json entry beside a healthy user entry", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent: gone } });
+    writeJson(path.join(projectRoot, ".claude", "settings.local.json"), {
+      disabledMcpjsonServers: ["argent"],
+    });
+    writeJson(path.join(home, ".claude.json"), { mcpServers: { argent } });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.some((c) => c.status === "error")).toBe(false);
+    expect(statusOf(checks, "(not loaded: rejected")).toBe("info");
+    expect(statusOf(checks, "Claude Code: argent mcp")).toBe("ok");
+  });
+
+  it("runs a Cursor project entry from the project root, wherever doctor runs", () => {
+    fs.mkdirSync(path.join(projectRoot, "node_modules", ".bin"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "node_modules", ".bin", "argent"), "");
+    writeJson(path.join(projectRoot, ".cursor", "mcp.json"), {
+      mcpServers: { argent: { command: "./node_modules/.bin/argent", args: ["mcp"] } },
+    });
+    const sub = path.join(projectRoot, "sub");
+    fs.mkdirSync(sub);
+    expect(statusOf(editorsSection({ ...doctorCtx(), cwd: sub }).checks, "Cursor")).toBe("ok");
+  });
+
+  it("finds the .mcp.json Claude Code reads above the folder it starts in, the closest winning", () => {
+    const src = path.join(projectRoot, "proj", "src");
+    fs.mkdirSync(src, { recursive: true });
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent: gone } });
+    const ctx = { ...doctorCtx(), projectRoot: path.join(projectRoot, "proj"), cwd: src };
+    expect(statusOf(editorsSection(ctx).checks, "/opt/gone")).toBe("error");
+
+    writeJson(path.join(projectRoot, "proj", ".mcp.json"), { mcpServers: { argent } });
+    const checks = editorsSection(ctx).checks;
+    expect(checks.find((c) => c.label.includes("/opt/gone"))?.label).toMatch(
+      /unused: the closer \.mcp\.json entry wins/
+    );
+    expect(checks.some((c) => c.status === "error")).toBe(false);
+  });
+
+  it("reads a linked worktree's own .mcp.json, not the main checkout's", () => {
+    const main = path.join(projectRoot, "repo");
+    const wt = path.join(projectRoot, "wt2");
+    writeJson(path.join(main, ".mcp.json"), { mcpServers: { argent: gone } });
+    writeJson(path.join(wt, ".mcp.json"), { mcpServers: { argent } });
+    const ctx = { ...doctorCtx(), projectRoot: wt, cwd: wt, claudeRoot: wt, claudeKey: main };
+    const checks = editorsSection(ctx).checks;
+    expect(checks.some((c) => c.label.includes("/opt/gone"))).toBe(false);
+    expect(statusOf(checks, "Claude Code: argent mcp")).toBe("ok");
+  });
+
+  it("reads Claude Code's /mcp toggle under its project key", () => {
+    const repo = path.join(projectRoot, "repo");
+    writeJson(path.join(home, ".claude.json"), {
+      projects: { [repo]: { mcpServers: { argent }, disabledMcpServers: ["argent"] } },
+    });
+    const ctx = { ...doctorCtx(), projectRoot: path.join(repo, "app"), claudeKey: repo };
+    expect(statusOf(editorsSection(ctx).checks, "switched off for this project")).toBe("warn");
+  });
+
+  it("probes the remote an entry links to with the values its server would see", () => {
+    vi.stubEnv("ARGENT_TEST_REMOTE", "http://127.0.0.1:9");
+    vi.stubEnv("ARGENT_AUTH_TOKEN", "good");
+    writeJson(path.join(projectRoot, ".mcp.json"), {
+      mcpServers: { argent: { ...argent, env: { ARGENT_TOOLS_URL: "${ARGENT_TEST_REMOTE}" } } },
+    });
+    const urls: EntryToolsUrl[] = [];
+    editorsSection(doctorCtx(), urls);
+    expect(urls).toEqual([{ editor: "Claude Code", url: "http://127.0.0.1:9", token: "good" }]);
+  });
+
+  it("does not probe the remote of a switched-off entry", () => {
+    writeJson(path.join(projectRoot, ".cursor", "mcp.json"), {
+      mcpServers: {
+        argent: { ...argent, disabled: true, env: { ARGENT_TOOLS_URL: "http://127.0.0.1:9" } },
+      },
+    });
+    const urls: EntryToolsUrl[] = [];
+    editorsSection(doctorCtx(), urls);
+    expect(urls).toEqual([]);
+  });
+
+  it("does not print an empty editor list", () => {
+    for (const mode of ["local", "global"] as const) {
+      const labels = editorsSection({ ...doctorCtx(), mode }).checks.map((c) => c.label);
+      expect(labels.some((l) => /^: no argent|Detected without argent: $/.test(l))).toBe(false);
+    }
+  });
+
+  it("names each editor's own switch-off key", () => {
+    writeJson(path.join(projectRoot, ".zed", "settings.json"), {
+      context_servers: { argent: { source: "custom", enabled: false, ...argent } },
+    });
+    writeJson(path.join(projectRoot, ".cursor", "mcp.json"), {
+      mcpServers: { argent: { ...argent, disabled: true } },
+    });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.label.startsWith("Zed"))?.detail).toMatch(/`enabled: false`/);
+    expect(checks.find((c) => c.label.startsWith("Cursor"))?.detail).toMatch(/`disabled: true`/);
+  });
+
+  it("labels ~/.cursor as global when doctor runs from ~", () => {
+    writeJson(path.join(home, ".cursor", "mcp.json"), { mcpServers: { argent } });
+    const checks = editorsSection({ ...doctorCtx(), projectRoot: home, cwd: home }).checks;
+    expect(checks.find((c) => c.label.startsWith("Cursor"))?.detail).toBe(
+      "~/.cursor/mcp.json (global)"
+    );
+  });
+
+  it("passes the project's install facts and commands to the entry checks", () => {
+    writeJson(path.join(projectRoot, ".mcp.json"), {
+      mcpServers: { argent: { command: "yarn", args: ["argent", "mcp"] } },
+    });
+    const ctx = { ...doctorCtx(), installCmd: "pnpm install" };
+    expect(editorsSection(ctx).checks.find((c) => c.label.startsWith("Claude Code"))?.fix).toBe(
+      "Add @swmansion/argent to devDependencies, then pnpm install"
+    );
+    writeJson(path.join(projectRoot, ".mcp.json"), {
+      mcpServers: { argent: { command: "argent", args: [] } },
+    });
+    const local = { ...doctorCtx(), argentCmd: "npx argent" };
+    expect(editorsSection(local).checks.find((c) => c.label.startsWith("Claude Code"))?.fix).toBe(
+      "npx argent init"
+    );
   });
 
   const installSkills = (dir: string) => {

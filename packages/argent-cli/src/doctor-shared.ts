@@ -36,8 +36,10 @@ export type ResolvedToolsUrl = Awaited<ReturnType<typeof getResolvedToolsUrl>>;
 /** Facts every section shares, probed once per run. */
 export interface DoctorContext {
   projectRoot: string;
-  /** Claude Code's project (see claudeProjectKey); projectRoot when unset. */
+  /** The checkout Claude Code runs in, whose .claude dir it reads; projectRoot when unset. */
   claudeRoot?: string;
+  /** Claude Code's ~/.claude.json key for this project (see claudeProjectKey); claudeRoot when unset. */
+  claudeKey?: string;
   /** cwd's git checkout, where Codex and opencode find project config; projectRoot when unset. */
   gitRoot?: string;
   /** Where doctor runs: global-scope `node <relative>` entries resolve from here. */
