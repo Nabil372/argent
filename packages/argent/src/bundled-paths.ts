@@ -84,23 +84,15 @@ export function findStablePackageDir(startDir: string, packageRoot: string): str
 // start, while cwd is still trustworthy; the launcher forwards both as
 // ARGENT_INSTALL_KIND / ARGENT_PROJECT_ROOT so update-argent doesn't re-infer
 // them from the detached server's editor-chosen cwd.
-function classifyInstall(): {
+export function classifyInstall(
+  packageRoot: string,
+  cwd: string
+): {
   kind: "global" | "local";
   projectRoot?: string;
   stablePackageDir?: string;
 } {
-  let packageRoot: string;
-  let dir: string;
-  let cwd: string;
-  try {
-    packageRoot = fs.realpathSync(path.join(distDir, ".."));
-    // cwd throws (ENOENT) when the shell's directory was deleted, and this runs
-    // at module import, before fatal handlers are installed.
-    cwd = process.cwd();
-    dir = cwd;
-  } catch {
-    return { kind: "global" };
-  }
+  let dir = cwd;
   for (;;) {
     try {
       const nmReal = fs.realpathSync(path.join(dir, "node_modules"));
@@ -121,6 +113,13 @@ function classifyInstall(): {
     if (parent === dir) break;
     dir = parent;
   }
+  // pnpm's global virtual store (enableGlobalVirtualStore) keeps the package
+  // outside every node_modules; only the project's link leads to it.
+  const stablePackageDir = findStablePackageDir(cwd, packageRoot);
+  if (stablePackageDir) {
+    const linkRoot = path.dirname(path.dirname(path.dirname(stablePackageDir)));
+    return { kind: "local", projectRoot: findDeclaringRoot(cwd) ?? linkRoot, stablePackageDir };
+  }
   // Yarn PnP has no node_modules anywhere: the package runs from the project's
   // .yarn dir. Falling through to "global" would point the update at a global
   // install the user may not even have.
@@ -131,7 +130,17 @@ function classifyInstall(): {
   return { kind: "global" };
 }
 
-const classifiedInstall = classifyInstall();
+function classifyRunningInstall(): ReturnType<typeof classifyInstall> {
+  try {
+    // cwd throws (ENOENT) when the shell's directory was deleted, and this runs
+    // at module import, before fatal handlers are installed.
+    return classifyInstall(fs.realpathSync(path.join(distDir, "..")), process.cwd());
+  } catch {
+    return { kind: "global" };
+  }
+}
+
+const classifiedInstall = classifyRunningInstall();
 
 // distDir is dist/ in the published package, so ".." is the
 // package root; prefer the version-stable alias when classification found one.
