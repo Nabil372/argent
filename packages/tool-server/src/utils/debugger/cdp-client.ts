@@ -9,7 +9,7 @@ import {
   type FailureKind,
 } from "@argent/registry";
 import * as crypto from "node:crypto";
-import { sleep } from "../timing";
+import { settleWithin, sleep } from "../timing";
 import {
   readBoxError,
   readBoxValue,
@@ -130,6 +130,24 @@ interface PendingBinding {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+function requestTimedOut(request: string): FailureError {
+  // The message carries its own recovery guidance: agents otherwise read
+  // this state as transient and retry-loop, each pass waiting out the
+  // full timeout.
+  return new FailureError(
+    `CDP request ${request} timed out — the runtime accepted the ` +
+      `connection but did not answer; it may be frozen, or paused at a breakpoint. ` +
+      `debugger-status can still report "connected" in this state (the socket is open). ` +
+      `Do not retry in a loop — restart the app, then reconnect and retry once.`,
+    {
+      error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
+      failure_stage: "debugger_cdp_send",
+      failure_area: "tool_server",
+      error_kind: "timeout",
+    }
+  );
+}
+
 interface RemoteObjectLike {
   type?: string;
   subtype?: string;
@@ -156,6 +174,17 @@ const POLL_NUDGE_INTERVAL_MS = 1000;
  * settles at the deadline is still read instead of reported as unsettled.
  */
 const READ_GRACE_MS = 2000;
+/**
+ * The least wait for a Promise once it is watched. Hermes runs the watch's
+ * callbacks in a later job, so a Promise that is already settled can still
+ * read as pending right after the watch.
+ */
+const SETTLE_GRACE_MS = 500;
+/**
+ * How long after the call gave up a late answer to its first request is still
+ * awaited, so the object group that answer fills can be released.
+ */
+const LATE_ANSWER_WINDOW_MS = 60_000;
 
 function evaluateError(
   message: string,
@@ -174,6 +203,7 @@ function evaluateError(
 function unsettled(timeout: number): FailureError {
   return evaluateError(
     `The expression ran, but the Promise it returned did not settle within ${timeout}ms. ` +
+      `If another debugger has the runtime paused at a breakpoint, resume it there. ` +
       `Do not run it again for its side effects; to skip the wait, evaluate ` +
       "`void (<expression>)` instead.",
     FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
@@ -182,14 +212,13 @@ function unsettled(timeout: number): FailureError {
 }
 
 /** No answer in time, though the expression ran (or finished late). */
-function resultTimedOut(timeout: number, cause: Error): FailureError {
+function resultTimedOut(timeout: number): FailureError {
   return evaluateError(
     `The expression ran, but its result did not arrive within ${timeout}ms; a Promise it ` +
       `returned may still be pending. Do not run it again for its side effects; to skip the ` +
       "wait, evaluate `void (<expression>)` instead.",
     FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
-    "timeout",
-    cause
+    "timeout"
   );
 }
 
@@ -250,11 +279,17 @@ export class CDPClient {
   private wsUrl: string;
   private sendOrigin: boolean;
 
-  constructor(wsUrl: string, options?: { sendOrigin?: boolean }) {
+  /**
+   * `releasesHandles: false` is for the legacy Hermes inspector (RN 0.72,
+   * Vega), which acknowledges `Runtime.releaseObjectGroup` without releasing
+   * anything, so asking it would get the wrong answer.
+   */
+  constructor(wsUrl: string, options?: { sendOrigin?: boolean; releasesHandles?: false }) {
     this.wsUrl = wsUrl;
     // Default true matches Metro / Expo. Chromium's devtools target rejects an
     // upgrade carrying an Origin header, so those callers pass `sendOrigin: false`.
     this.sendOrigin = options?.sendOrigin !== false;
+    this.releasesHandles = options?.releasesHandles;
   }
 
   connect(): Promise<void> {
@@ -449,23 +484,7 @@ export class CDPClient {
       const id = this.nextId++;
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(
-          // The message carries its own recovery guidance: agents otherwise read
-          // this state as transient and retry-loop, each pass waiting out the
-          // full timeout.
-          new FailureError(
-            `CDP request ${method} (id=${id}) timed out — the runtime accepted the ` +
-              `connection but did not answer; it may be frozen, or paused at a breakpoint. ` +
-              `debugger-status can still report "connected" in this state (the socket is open). ` +
-              `Do not retry in a loop — restart the app, then reconnect and retry once.`,
-            {
-              error_code: FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT,
-              failure_stage: "debugger_cdp_send",
-              failure_area: "tool_server",
-              error_kind: "timeout",
-            }
-          )
-        );
+        reject(requestTimedOut(`${method} (id=${id})`));
       }, timeout);
 
       this.pending.set(id, {
@@ -518,9 +537,10 @@ export class CDPClient {
    * reads after it keep at least `READ_GRACE_MS`.
    *
    * A runtime that cannot release handles (Hermes before RN 0.77 answers
-   * `Runtime.releaseObjectGroup` with "Unsupported method") would keep every
-   * result alive for the whole session, so there the expression is evaluated
-   * by value as `evaluate` does, and a Promise comes back unsettled.
+   * `Runtime.releaseObjectGroup` with "Unsupported method", and the legacy
+   * inspector of RN 0.72 and Vega acknowledges it as a no-op) would keep every
+   * result alive, so there the expression is evaluated by value as `evaluate`
+   * does, and a Promise comes back unsettled.
    */
   async evaluateAwaited(expression: string, options?: { timeout?: number }): Promise<unknown> {
     const timeout = options?.timeout ?? DEFAULT_TIMEOUT_MS;
@@ -529,11 +549,7 @@ export class CDPClient {
     const objectGroup = `argent-await-${crypto.randomUUID()}`;
     let ran = false;
     try {
-      const first = (await this.send(
-        "Runtime.evaluate",
-        { expression, objectGroup, returnByValue: false, awaitPromise: true },
-        timeout
-      )) as RemoteResult;
+      const first = await this.evaluateRemote(expression, objectGroup, timeout);
       ran = true;
       if (first.exceptionDetails) throw runtimeException(first.exceptionDetails);
       return await this.readRemote(first.result, objectGroup, deadline, timeout);
@@ -543,12 +559,42 @@ export class CDPClient {
         failureCode(err) === FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT &&
         (await this.answers())
       ) {
-        throw resultTimedOut(timeout, err as Error);
+        throw resultTimedOut(timeout);
       }
       throw err;
     } finally {
-      this.send("Runtime.releaseObjectGroup", { objectGroup }, 1000).catch(() => undefined);
+      this.releaseGroup(objectGroup);
     }
+  }
+
+  /**
+   * The first request, given `timeout` to answer. Its own send timeout is
+   * longer, because an answer that lands after the call gave up still puts
+   * its result in `objectGroup`, which the call has already released. The
+   * group is released again when that answer arrives.
+   */
+  private async evaluateRemote(
+    expression: string,
+    objectGroup: string,
+    timeout: number
+  ): Promise<RemoteResult> {
+    const request = this.send(
+      "Runtime.evaluate",
+      { expression, objectGroup, returnByValue: false, awaitPromise: true },
+      timeout + LATE_ANSWER_WINDOW_MS
+    ) as Promise<RemoteResult>;
+    const settled = await settleWithin(request, timeout);
+    if (settled.type === "value") return settled.value;
+    if (settled.type === "error") throw settled.cause;
+    request.then(
+      () => this.releaseGroup(objectGroup),
+      () => undefined
+    );
+    throw requestTimedOut("Runtime.evaluate");
+  }
+
+  private releaseGroup(objectGroup: string): void {
+    this.send("Runtime.releaseObjectGroup", { objectGroup }, 1000).catch(() => undefined);
   }
 
   /**
@@ -562,7 +608,7 @@ export class CDPClient {
       code === FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT &&
       signal?.failure_stage === "debugger_cdp_send"
     ) {
-      return resultTimedOut(timeout, err as Error);
+      return resultTimedOut(timeout);
     }
     if (code === FAILURE_CODES.DEBUGGER_CDP_NOT_CONNECTED) {
       return evaluateError(
@@ -584,8 +630,7 @@ export class CDPClient {
           error_kind: "unsupported",
           failure_area: "tool_server",
           failure_stage: "debugger_cdp_evaluate",
-        },
-        { cause: err as Error }
+        }
       );
     }
     return err;
@@ -658,12 +703,11 @@ export class CDPClient {
       );
     }
 
-    // The box is read at least once: a Promise that settled while the
-    // expression used up the budget is still a result.
+    const settleBy = Math.max(deadline, Date.now() + SETTLE_GRACE_MS);
     let state = await this.readBoxState(box, readBudget(), timeout);
     while (state === "pending") {
-      if (Date.now() >= deadline) throw unsettled(timeout);
-      await sleep(Math.min(PROMISE_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())));
+      if (Date.now() >= settleBy) throw unsettled(timeout);
+      await sleep(Math.min(PROMISE_POLL_INTERVAL_MS, Math.max(1, settleBy - Date.now())));
       state = await this.readBoxState(box, readBudget(), timeout);
     }
 
@@ -682,8 +726,9 @@ export class CDPClient {
 
   /**
    * Read the box's `state` with `Runtime.getProperties`, which runs no script
-   * in the app. A paused runtime would never run the callbacks, so it fails
-   * fast. A slow answer is waited for until `budget` runs out, with the
+   * in the app. A paused runtime would never run the callbacks, so a pause
+   * this client heard of fails fast; it hears `Debugger.paused` only where it
+   * sent `Debugger.enable`, which the Chromium path does not. A slow answer is waited for until `budget` runs out, with the
    * runtime nudged meanwhile: the legacy Hermes inspector only wakes the
    * runtime for an evaluate, and can leave a `getProperties` queued behind
    * other traffic until one arrives.

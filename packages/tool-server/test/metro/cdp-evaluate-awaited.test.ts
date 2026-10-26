@@ -5,6 +5,7 @@ import { CDPClient } from "../../src/utils/debugger/cdp-client";
 import { debuggerEvaluateTool } from "../../src/tools/debugger/debugger-evaluate";
 import { jsRuntimeDebuggerBlueprint } from "../../src/blueprints/js-runtime-debugger";
 import type { JsRuntimeDebuggerApi } from "../../src/blueprints/js-runtime-debugger";
+import { formatErrorForAgent } from "../../src/utils/format-error";
 
 /**
  * evaluateAwaited against this process's own V8 through `node:inspector`.
@@ -47,11 +48,15 @@ function timedOut(): FailureError {
   });
 }
 
-function makeClient(honoursAwaitPromise: boolean, hooks?: Hooks) {
+function makeClient(
+  honoursAwaitPromise: boolean,
+  hooks?: Hooks,
+  options?: ConstructorParameters<typeof CDPClient>[1]
+) {
   const session = new Session();
   session.connect();
   sessions.push(session);
-  const client = new CDPClient("ws://localhost:1");
+  const client = new CDPClient("ws://localhost:1", options);
   const calls: string[] = [];
   const sent: { method: string; params: any; timeout?: number }[] = [];
   (client as any).send = async (method: string, params: any = {}, timeout?: number) => {
@@ -294,10 +299,10 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
   it("keeps nothing alive when a Promise settles after the timeout", async () => {
     const { client, session } = hermesClient();
     const before = Object.keys(globalThis);
-    const expr = `(()=>{const o={big:new Array(1e5).fill(1)};${TRACK}return new Promise(r=>setTimeout(()=>r(o),300))})()`;
+    const expr = `(()=>{const o={big:new Array(1e5).fill(1)};${TRACK}return new Promise(r=>setTimeout(()=>r(o),800))})()`;
     const { signal } = await signalOf(() => client.evaluateAwaited(expr, { timeout: 100 }));
     expect(signal?.error_kind).toBe("timeout");
-    await new Promise((r) => setTimeout(r, 400));
+    await new Promise((r) => setTimeout(r, 300));
     expect(await collected(session)).toEqual([true]);
     expect(Object.keys(globalThis).filter((k) => !before.includes(k))).toEqual(["__wrs"]);
   });
@@ -412,8 +417,35 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
     );
     expect(signal?.error_kind).toBe("timeout");
     expect(err.message).toMatch(UNSETTLED);
-    expect(Date.now() - t0).toBeLessThan(700);
-    expect(sent.find((s) => s.method === "Runtime.evaluate")?.timeout).toBe(400);
+    expect(Date.now() - t0).toBeLessThan(1100);
+    expect(sent.find((s) => s.method === "Runtime.evaluate")?.timeout).toBeGreaterThan(400);
+  });
+
+  it("releases the object group again when the first answer lands after the timeout", async () => {
+    const { client, session } = hermesClient({
+      beforeSend: async (method, params) => {
+        if (method === "Runtime.evaluate" && params.expression !== "0")
+          await new Promise((r) => setTimeout(r, 300));
+      },
+    });
+    const { signal } = await signalOf(() =>
+      client.evaluateAwaited(`(()=>{const o={big:new Array(1e5).fill(1)};${TRACK}return o})()`, {
+        timeout: 100,
+      })
+    );
+    expect(signal?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(await collected(session)).toEqual([true]);
+  });
+
+  it("still reads a Promise whose callbacks run after the deadline passed", async () => {
+    const { client } = hermesClient();
+    expect(
+      await client.evaluateAwaited(
+        "(()=>{const t=Date.now();while(Date.now()-t<350);return {then(r){setTimeout(()=>r(1),100)}}})()",
+        { timeout: 300 }
+      )
+    ).toBe(1);
   });
 
   it("still reads a Promise that settled while the expression used up the budget", async () => {
@@ -456,7 +488,7 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
     expect(err.message).toMatch(
       /The expression ran, but the JS runtime paused on an exception at \S*index\.bundle:3 /
     );
-    expect(err.message).not.toMatch(/retry/);
+    expect(formatErrorForAgent(err)).not.toMatch(/retry/);
     expect(Date.now() - t0).toBeLessThan(1000);
   });
 
@@ -553,6 +585,12 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
     expect(calls).toEqual([PROBE, "Runtime.evaluate", "Runtime.evaluate"]);
   });
 
+  it("asks nothing and evaluates by value on the legacy inspector", async () => {
+    const { client, calls } = makeClient(false, undefined, { releasesHandles: false });
+    expect(await client.evaluateAwaited("({a:1})")).toEqual({ a: 1 });
+    expect(calls).toEqual(["Runtime.evaluate"]);
+  });
+
   it("asks again about release support when the first answer never came", async () => {
     let first = true;
     const { client, calls } = hermesClient({
@@ -604,6 +642,7 @@ describe("CDPClient.evaluateAwaited on a runtime that honours awaitPromise", () 
     });
     const { err, signal } = await signalOf(() => client.evaluateAwaited("new Promise(()=>{})"));
     expect(err.message).toMatch(/^The expression ran, but its result did not arrive within/);
+    expect(formatErrorForAgent(err)).not.toMatch(/retry/);
     expect(signal?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT);
   });
 
