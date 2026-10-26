@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { formatDescribeTree } from "../src/tools/describe/format-tree";
 import type { DescribeNode } from "../src/tools/describe/contract";
+import { parseUiAutomatorDump } from "../src/tools/describe/platforms/android/uiautomator-parser";
 
 function leaf(
   partial: Partial<DescribeNode> & { role: string; frame: DescribeNode["frame"] }
@@ -752,8 +753,9 @@ describe("formatDescribeTree — Expo dev Tools button", () => {
     expect(lineOf(out, "Expo FAB")).not.toContain("Tools button");
   });
 
-  it("adds no note outside iOS", () => {
+  it("does not look for the iOS gear on Android or the web", () => {
     expect(formatDescribeTree(root as any, { source: "uiautomator" })).not.toContain("Expo");
+    expect(formatDescribeTree(root as any, { source: "cdp-dom" })).not.toContain("Expo");
   });
 
   it("ignores the dev launcher's Settings tab icon", () => {
@@ -776,5 +778,52 @@ describe("formatDescribeTree — Expo dev Tools button", () => {
   it("adds nothing without the button", () => {
     const plain = { ...root, children: root.children.filter((n) => n.role !== "AXImage") };
     expect(formatDescribeTree(plain as any, { source: "ax-service" })).not.toContain("Expo");
+  });
+});
+
+describe("formatDescribeTree — Expo dev Tools button on Android", () => {
+  // A 1080 x 2400 px screen at 2.625 px/dp. The button snaps to the right
+  // edge below a 63 px status bar: its 26 dp icon is centred 42 dp from the
+  // edge, at (969.75, 173.25) px. The touch area runs 26 dp to each side,
+  // 26 dp above and 68 dp below that centre: x 901.5..1038, y 105..351.75.
+  const dump = (extra: string) => `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.example.app" content-desc="" bounds="[0,0][1080,2400]">
+    <node index="0" text="Skip" resource-id="" class="android.widget.Button" package="com.example.app" content-desc="" clickable="true" bounds="[880,140][1040,220]" />
+    <node index="1" text="Back" resource-id="" class="android.widget.Button" package="com.example.app" content-desc="" clickable="true" bounds="[20,140][150,220]" />
+    <node index="2" text="Help" resource-id="" class="android.widget.Button" package="com.example.app" content-desc="" clickable="true" bounds="[840,150][920,210]" />
+    <node index="3" text="Next" resource-id="" class="android.widget.Button" package="com.example.app" content-desc="" clickable="true" bounds="[900,300][1040,360]" />
+    ${extra}
+  </node>
+</hierarchy>`;
+  const fab = `<node index="4" text="" resource-id="" class="android.view.View" package="com.example.app" content-desc="Tools" bounds="[936,139][1004,207]" />
+    <node index="5" text="Tools" resource-id="" class="android.widget.TextView" package="com.example.app" content-desc="" bounds="[940,225][1000,255]" />`;
+
+  const describeAndroid = (xml: string) =>
+    formatDescribeTree(parseUiAutomatorDump(xml, 1080, 2400), { source: "uiautomator" });
+  const lineOf = (out: string, needle: string) => out.split("\n").find((l) => l.includes(needle))!;
+
+  it("marks app controls under the button's touch area", () => {
+    const out = describeAndroid(dump(fab));
+    expect(lineOf(out, '"Skip"')).toContain("under the Expo dev Tools button");
+    expect(lineOf(out, '"Next"')).toContain("under the Expo dev Tools button");
+  });
+
+  it("leaves controls whose centre is clear, the icon and its caption alone", () => {
+    const out = describeAndroid(dump(fab));
+    expect(lineOf(out, '"Back"')).not.toContain("Expo");
+    expect(lineOf(out, '"Help"')).not.toContain("Expo");
+    const toolsLines = out.split("\n").filter((l) => l.includes('"Tools"'));
+    expect(toolsLines).toHaveLength(2);
+    for (const line of toolsLines) expect(line).not.toContain("Expo");
+  });
+
+  it("ignores a Tools icon that is not snapped to a side edge", () => {
+    const moved = fab.replace("[936,139][1004,207]", "[700,139][768,207]");
+    expect(describeAndroid(dump(moved))).not.toContain("Expo");
+  });
+
+  it("adds nothing without the button", () => {
+    expect(describeAndroid(dump(""))).not.toContain("Expo");
   });
 });

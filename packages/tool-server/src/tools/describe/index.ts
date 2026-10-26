@@ -174,7 +174,7 @@ To tap an element use the centre of its frame: \`tap_x = frame.x + frame.width /
 can be applied to a line in isolation.
 The tree carries no z-order or occlusion information: an element listed at a point may be covered
 by an overlay (e.g. a toolbar over list rows), so check a screenshot when a tap lands unexpectedly.
-One exception on iOS: an element under the floating Tools button of an Expo development build gets a
+One exception: an element under the floating Tools button of an Expo development build gets a
 bracketed note, because a tap there can open the Expo dev menu; switch off "Tools button" in that menu
 before tapping it.
 
