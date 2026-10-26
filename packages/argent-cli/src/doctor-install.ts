@@ -41,6 +41,17 @@ function isExecutableFile(p: string): boolean {
   }
 }
 
+/** Whether a spawn with this PATH finds `command` (as named, or with a Windows PATHEXT suffix). */
+export function isOnPath(command: string, pathValue: string): boolean {
+  const exts =
+    process.platform === "win32"
+      ? ["", ...(process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)]
+      : [""];
+  return pathValue
+    .split(path.delimiter)
+    .some((dir) => dir && exts.some((ext) => isExecutableFile(path.join(dir, command + ext))));
+}
+
 function argentPackageRoot(bin: string): string | null {
   let dir: string;
   try {

@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { MCP_BINARY_NAME, type McpServerEntry } from "@argent/installer";
 import { type DoctorCheck, check, home, samePath } from "./doctor-shared.js";
-import { GLOBAL_SHIM_FIX, findGlobalArgent } from "./doctor-install.js";
+import { GLOBAL_SHIM_FIX, findGlobalArgent, isOnPath } from "./doctor-install.js";
 
 // `argent doctor`: whether an editor's MCP entry starts argent, judged the way its runner starts it.
 
@@ -154,9 +154,18 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
   if (pathLike && !fs.existsSync(path.resolve(base, entry.command))) {
     return deadPath(entry.command);
   }
+  // The editor's spawn looks a bare command up on the entry's own PATH.
+  const envPath = entry.env?.PATH ?? entry.env?.Path;
+  const entryPath = envPath !== undefined && !envPath.includes("${") ? envPath : null;
+  const notOnEntryPath = (): DoctorCheck | null =>
+    !pathLike && entryPath !== null && !isOnPath(entry.command, entryPath)
+      ? check("error", `${cmd} — \`${entry.command}\` is not on the PATH this entry sets`, {
+          detail: entryPath,
+          fix: `Add ${entry.command}'s bin dir to the entry's PATH, or use its absolute path`,
+        })
+      : null;
   if (bare === MCP_BINARY_NAME) {
     if (entry.args[0] !== "mcp") return badArgs();
-    const envPath = entry.env?.PATH ?? entry.env?.Path;
     const mayResolve = Object.keys(entry.env ?? {}).some((key) => RESOLUTION_ENV.test(key));
     const failingShim = (): DoctorCheck =>
       mayResolve
@@ -172,12 +181,11 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
         !!ctx.globalRunError && samePath(path.resolve(base, entry.command), ctx.globalBin);
       return isFailingShim ? failingShim() : check("ok", cmd);
     }
-    // The editor's spawn looks the command up on the entry's own PATH.
-    if (envPath !== undefined && !envPath.includes("${")) {
-      return findGlobalArgent(envPath)
+    if (entryPath !== null) {
+      return findGlobalArgent(entryPath)
         ? check("ok", cmd, { detail: "found on the PATH the entry sets" })
         : check("error", `${cmd} — \`argent\` is not on the PATH this entry sets`, {
-            detail: envPath,
+            detail: entryPath,
             fix: "Add argent's bin dir to the entry's PATH, or use argent's absolute path",
           });
     }
@@ -199,6 +207,8 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
     const at = nodeScriptIndex(entry.args);
     const script = at === -1 ? undefined : entry.args[at];
     if (!script || entry.args[at + 1] !== "mcp") return badArgs();
+    const noNode = notOnEntryPath();
+    if (noNode) return noNode;
     if (script.includes("${")) {
       return check("info", `${cmd} (uses an editor variable, not verified)`);
     }
@@ -216,6 +226,8 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
       (a, i) => ARGENT_PACKAGE_ARG.test(a) && entry.args[i + 1] === "mcp"
     );
     if (!startsMcp) return badArgs();
+    const noRunner = notOnEntryPath();
+    if (noRunner) return noRunner;
     // `npx -y argent@latest mcp`, `yarn dlx @swmansion/argent mcp`: fetched on start.
     const fetches =
       (bare === "npx" && !entry.args.some((a) => NPX_NO_INSTALL.has(a))) ||

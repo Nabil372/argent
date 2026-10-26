@@ -76,6 +76,28 @@ describe("classifyMcpEntry", () => {
     expect(classifyMcpEntry(entry, ctx({ globalOnPath: false })).status).toBe("ok");
   });
 
+  it("looks node and npx up on the PATH the entry sets", () => {
+    const bin = path.join(projectRoot, "bin");
+    const script = path.join(projectRoot, "cli.js");
+    fs.writeFileSync(script, "");
+    const npx = {
+      command: "npx",
+      args: ["-y", "@swmansion/argent@latest", "mcp"],
+      env: { PATH: bin },
+    };
+    const node = { command: "node", args: [script, "mcp"], env: { PATH: bin } };
+    expect(classifyMcpEntry(npx, ctx())).toMatchObject({
+      status: "error",
+      label: expect.stringContaining("`npx` is not on the PATH this entry sets"),
+    });
+    expect(classifyMcpEntry(node, ctx()).status).toBe("error");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "npx"), "", { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, "node"), "", { mode: 0o755 });
+    expect(classifyMcpEntry(npx, ctx()).status).toBe("ok");
+    expect(classifyMcpEntry(node, ctx()).status).toBe("ok");
+  });
+
   it("does not count the legacy ARGENT_MCP_LOG env as a customization", () => {
     const result = classifyMcpEntry(
       { command: "argent", args: ["mcp"], env: { ARGENT_MCP_LOG: "/tmp/x.log" } },
