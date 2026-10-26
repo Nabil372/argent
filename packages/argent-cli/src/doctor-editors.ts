@@ -68,13 +68,21 @@ function isYarnBerryProject(root: string): boolean {
   }
 }
 
-/** Claude Code has its own idea of the project (claudeProjectKey); other editors use projectRoot. */
+// These load their project config from cwd up to the git root.
+const GIT_ROOT_EDITORS = new Set(["Codex", "opencode"]);
+
+/**
+ * Claude Code has its own idea of the project (claudeProjectKey), Codex and
+ * opencode find theirs at the git root; other editors use projectRoot.
+ */
 export function rootFor(ctx: DoctorContext, adapter: McpConfigAdapter | string | null): string {
   const name = typeof adapter === "string" ? adapter : adapter?.name;
-  return name === "Claude Code" ? (ctx.claudeRoot ?? ctx.projectRoot) : ctx.projectRoot;
+  if (name === "Claude Code") return ctx.claudeRoot ?? ctx.projectRoot;
+  if (name && GIT_ROOT_EDITORS.has(name)) return ctx.gitRoot ?? ctx.projectRoot;
+  return ctx.projectRoot;
 }
 
-// Claude Code's .mcp.json is looked up in its own project and, when doctor's
+// An editor's project config is looked up in its own project and, when doctor's
 // root is a package inside it, in that package too (init may have written it).
 export function configuredScopes(
   ctx: DoctorContext
@@ -350,17 +358,26 @@ export function editorsSection(
  * directory itself outside git.
  */
 export function claudeProjectKey(cwd: string): string {
+  const commonDir = gitRevParse(cwd, "--git-common-dir");
+  const absolute = commonDir && realPath(path.resolve(cwd, commonDir));
+  return absolute && path.basename(absolute) === ".git" ? path.dirname(absolute) : realPath(cwd);
+}
+
+/** The top of cwd's git checkout (a linked worktree's own dir), or cwd outside git. */
+export function gitToplevel(cwd: string): string {
+  return realPath(gitRevParse(cwd, "--show-toplevel") || cwd);
+}
+
+function gitRevParse(cwd: string, flag: string): string | null {
   try {
-    const commonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+    return execFileSync("git", ["rev-parse", flag], {
       cwd,
       encoding: "utf8",
       timeout: 2_000,
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    const absolute = realPath(path.resolve(cwd, commonDir));
-    if (path.basename(absolute) === ".git") return path.dirname(absolute);
   } catch {
     // Not a git repo, or no git.
+    return null;
   }
-  return realPath(cwd);
 }

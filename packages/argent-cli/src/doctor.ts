@@ -32,7 +32,7 @@ import {
   installSection,
   runGlobalShim,
 } from "./doctor-install.js";
-import { claudeProjectKey, editorsSection } from "./doctor-editors.js";
+import { claudeProjectKey, editorsSection, gitToplevel } from "./doctor-editors.js";
 import { skillsSection } from "./doctor-skills.js";
 import { entryRemoteChecks, toolServerSection } from "./doctor-tool-server.js";
 import { platformsSection } from "./doctor-platforms.js";
@@ -144,6 +144,7 @@ export async function collectDoctorReport(options: {
   const ctx: DoctorContext = {
     projectRoot,
     claudeRoot: claudeProjectKey(cwd),
+    gitRoot: gitToplevel(cwd),
     cwd,
     mode,
     global,

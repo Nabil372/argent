@@ -117,6 +117,24 @@ describe("editor and skill sections", () => {
     );
   });
 
+  it("finds Codex and opencode project config at the git root above a package root", () => {
+    const pkg = path.join(projectRoot, "packages", "app");
+    fs.mkdirSync(path.join(pkg, ".vscode"), { recursive: true });
+    fs.mkdirSync(path.join(projectRoot, ".codex"));
+    fs.writeFileSync(
+      path.join(projectRoot, ".codex", "config.toml"),
+      '[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n'
+    );
+    writeJson(path.join(projectRoot, "opencode.json"), {
+      mcp: { argent: { type: "local", command: ["argent", "mcp"] } },
+    });
+    const ctx = { ...doctorCtx(), projectRoot: pkg, cwd: pkg, gitRoot: projectRoot };
+    const labels = editorsSection(ctx).checks.map((c) => `${c.status} ${c.label}`);
+    expect(labels).toEqual(
+      expect.arrayContaining(["ok Codex: argent mcp", "ok opencode: argent mcp"])
+    );
+  });
+
   it("ignores the cwd of a Claude Code entry, which Claude Code never applies", () => {
     const rel = "node_modules/@swmansion/argent/dist/cli.js";
     fs.mkdirSync(path.dirname(path.join(projectRoot, "apps", "mobile", rel)), { recursive: true });

@@ -38,6 +38,8 @@ export interface DoctorContext {
   projectRoot: string;
   /** Claude Code's project (see claudeProjectKey); projectRoot when unset. */
   claudeRoot?: string;
+  /** cwd's git checkout, where Codex and opencode find project config; projectRoot when unset. */
+  gitRoot?: string;
   /** Where doctor runs: global-scope `node <relative>` entries resolve from here. */
   cwd: string;
   mode: "global" | "local";
