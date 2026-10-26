@@ -70,6 +70,15 @@ vi.mock("../src/tools/screen-recording/mjpeg-stream", () => ({
   openMjpegStream: (url: string) => openMjpegStreamMock(url),
 }));
 
+const removeScreenSharingReversesMock = vi.fn(async (_serial: string) => {});
+const readAutoRotateMock = vi.fn(async (_serial: string): Promise<string | null> => "1");
+const restoreAutoRotateMock = vi.fn(async (_serial: string, _value: string) => {});
+vi.mock("../src/utils/android-device-controller-state", () => ({
+  removeScreenSharingReverses: (serial: string) => removeScreenSharingReversesMock(serial),
+  readAutoRotate: (serial: string) => readAutoRotateMock(serial),
+  restoreAutoRotate: (serial: string, value: string) => restoreAutoRotateMock(serial, value),
+}));
+
 function makeFakeProc() {
   const proc = new EventEmitter() as EventEmitter & {
     stdout: Readable;
@@ -252,6 +261,57 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
     expect(spawnMock.mock.calls[1]![1]).toEqual(["android_device", "--id", serial]);
     expect(openMjpegStreamMock).toHaveBeenCalledWith("http://127.0.0.1:55571");
     expect(waitForFirstFrameMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks a fallen-back emulator single-touch and undoes its auto-rotate change on dispose", async () => {
+    const grpcLess = makeFakeProc();
+    const fallback = makeFakeProc();
+    spawnMock.mockReturnValueOnce(grpcLess).mockReturnValueOnce(fallback);
+    removeScreenSharingReversesMock.mockClear();
+    restoreAutoRotateMock.mockClear();
+    readAutoRotateMock.mockClear().mockResolvedValueOnce("1");
+
+    const { simulatorServerBlueprint } = await import("../src/blueprints/simulator-server");
+
+    const serial = "emulator-5574";
+    const device = androidDevice(serial);
+    const factoryPromise = simulatorServerBlueprint.factory({}, device, { device });
+    setImmediate(() => {
+      grpcLess.stderr.push(`Error: emulator "${serial}" not found among running emulators\n`);
+      setTimeout(() => {
+        grpcLess.emit("exit", 1);
+        signalReady(fallback, 55574);
+      }, 20);
+    });
+    const instance = await factoryPromise;
+
+    expect(removeScreenSharingReversesMock).toHaveBeenCalledWith(serial);
+    expect(instance.api.singleTouchOnly).toBe(true);
+
+    await instance.dispose();
+    expect(fallback.kill).toHaveBeenCalled();
+    expect(restoreAutoRotateMock).toHaveBeenCalledWith(serial, "1");
+  });
+
+  it("leaves an emulator found through gRPC discovery multi-touch and untouched", async () => {
+    const proc = makeFakeProc();
+    spawnMock.mockReturnValueOnce(proc);
+    removeScreenSharingReversesMock.mockClear();
+    readAutoRotateMock.mockClear();
+    restoreAutoRotateMock.mockClear();
+
+    const { simulatorServerBlueprint } = await import("../src/blueprints/simulator-server");
+
+    const device = androidDevice("emulator-5576");
+    const factoryPromise = simulatorServerBlueprint.factory({}, device, { device });
+    signalReady(proc, 55576);
+    const instance = await factoryPromise;
+    await instance.dispose();
+
+    expect(instance.api.singleTouchOnly).toBeUndefined();
+    expect(removeScreenSharingReversesMock).not.toHaveBeenCalled();
+    expect(readAutoRotateMock).not.toHaveBeenCalled();
+    expect(restoreAutoRotateMock).not.toHaveBeenCalled();
   });
 
   it("surfaces the emulator controller's error when the `android_device` fallback fails too", async () => {

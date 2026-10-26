@@ -21,6 +21,11 @@ import { UnsupportedOperationError } from "../utils/capability";
 import { openMoqClient } from "../utils/moq-client";
 import { openMjpegStream } from "../tools/screen-recording/mjpeg-stream";
 import {
+  readAutoRotate,
+  removeScreenSharingReverses,
+  restoreAutoRotate,
+} from "../utils/android-device-controller-state";
+import {
   createMoqTransport,
   fetchDisplayState,
   sendCommand,
@@ -129,6 +134,13 @@ export interface SimulatorServerApi {
    * screen 1 as before.
    */
   display?: SimulatorDisplayState;
+  /**
+   * Set for an emulator driven through the phone controller (see
+   * `spawnWithEmulatorFallback`). That controller lifts two fingers with one
+   * ACTION_UP that carries both pointers, which Android rejects: both pointers
+   * stay down and every later touch on the device is refused until it reboots.
+   */
+  singleTouchOnly?: true;
 }
 
 /** Bound on the `GET /api/display` probe a foldable's server gets at attach time. */
@@ -332,12 +344,14 @@ async function waitForFirstFrame(streamUrl: string): Promise<void> {
     .finally(() => stream.close());
 }
 
+type SpawnedServer = Awaited<ReturnType<typeof spawnSimulatorServerProcess>>;
+
 async function spawnWithEmulatorFallback(
   device: DeviceInfo
-): ReturnType<typeof spawnSimulatorServerProcess> {
+): Promise<SpawnedServer & { adbFallback: boolean }> {
   const subcommand = subcommandForDevice(device);
   try {
-    return await spawnSimulatorServerProcess(device.id, subcommand);
+    return { ...(await spawnSimulatorServerProcess(device.id, subcommand)), adbFallback: false };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (subcommand !== "android" || !EMULATOR_NOT_DISCOVERED.test(message)) throw err;
@@ -345,10 +359,11 @@ async function spawnWithEmulatorFallback(
       `[sim ${device.id}] emulator not found through gRPC discovery; ` +
         `falling back to the adb screen-sharing controller\n`
     );
+    await removeScreenSharingReverses(device.id).catch(() => {});
     try {
       const server = await spawnSimulatorServerProcess(device.id, "android_device");
       await waitForFirstFrame(server.streamUrl);
-      return server;
+      return { ...server, adbFallback: true };
     } catch (fallbackErr) {
       // "Failed to find any running emulator" also means no emulator is up at
       // all; then the fallback fails too, and the emulator controller's error
@@ -632,7 +647,8 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
       );
     }
 
-    const { proc, apiUrl, streamUrl } = await spawnWithEmulatorFallback(device);
+    const { proc, apiUrl, streamUrl, adbFallback } = await spawnWithEmulatorFallback(device);
+    const autoRotate = adbFallback ? await readAutoRotate(device.id).catch(() => null) : null;
 
     const events = new TypedEventEmitter<ServiceEvents>();
 
@@ -664,9 +680,11 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
           proc.stdin?.write(`key ${direction} ${keyCode}\n`);
           return Promise.resolve();
         },
+        ...(adbFallback ? { singleTouchOnly: true as const } : {}),
       },
       dispose: async () => {
         proc.kill();
+        if (autoRotate !== null) await restoreAutoRotate(device.id, autoRotate).catch(() => {});
       },
       events,
     };
