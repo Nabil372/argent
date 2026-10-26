@@ -100,6 +100,42 @@ describe("describeAndroid uiautomator fallback", () => {
     await Promise.all([first, second]);
   });
 
+  it("gives every read queued behind a running dump one shared dump", async () => {
+    const reads = [1, 2, 3].map(() =>
+      describeAndroid(undefined, "emulator-5554", undefined, false)
+    );
+    await tick();
+    expect(pending).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pending).toHaveLength(2);
+
+    for (const p of pending) p.finish();
+    await Promise.all(reads);
+    expect(pending).toHaveLength(2);
+  });
+
+  it("queues a new read behind the newest dump after an older one finishes late", async () => {
+    const first = describeAndroid(undefined, "emulator-5554", undefined, false);
+    const second = describeAndroid(undefined, "emulator-5554", undefined, false);
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(pending).toHaveLength(2);
+
+    pending[0]!.finish();
+    await first;
+    const third = describeAndroid(undefined, "emulator-5554", undefined, false);
+    await tick();
+    expect(pending).toHaveLength(2);
+
+    pending[1]!.finish();
+    await second;
+    await tick();
+    expect(pending).toHaveLength(3);
+
+    pending[2]!.finish();
+    await third;
+  });
+
   it("re-reads an unpublished WebView only after another dump on that device finished", async () => {
     const first = describeAndroid(undefined, "emulator-5554", undefined, false);
     await tick();

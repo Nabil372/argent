@@ -100,20 +100,33 @@ async function awaitWebViewPublished(
 }
 
 // A dump started while another runs on the same device is killed (`Killed`,
-// exit 137), so a dump first waits for the previous one on that serial. The
-// wait is bounded: on a screen that never goes idle one dump takes ~11.5 s, and
-// waiting on every earlier dump would queue reads without limit.
+// exit 137). Reads requested while a dump runs share one queued dump that starts
+// when the running one finishes, or after DUMP_WAIT_MS: on a screen that never
+// goes idle one dump takes ~11.5 s.
 const DUMP_WAIT_MS = 3_000;
-const lastDumps = new Map<string, Promise<unknown>>();
+const runningDumps = new Map<string, Promise<string>>();
+const queuedDumps = new Map<string, Promise<string>>();
 
 function uiautomatorDump(serial: string): Promise<string> {
-  const previous = lastDumps.get(serial) ?? Promise.resolve();
-  const dump = waitAtMost(previous, DUMP_WAIT_MS).then(() => runUiautomatorDump(serial));
-  const settled = dump.catch(() => {});
-  lastDumps.set(serial, settled);
-  void settled.then(() => {
-    if (lastDumps.get(serial) === settled) lastDumps.delete(serial);
+  const queued = queuedDumps.get(serial);
+  if (queued) return queued;
+  const running = runningDumps.get(serial);
+  if (!running) return startDump(serial);
+  const next = waitAtMost(running, DUMP_WAIT_MS).then(() => {
+    queuedDumps.delete(serial);
+    return startDump(serial);
   });
+  queuedDumps.set(serial, next);
+  return next;
+}
+
+function startDump(serial: string): Promise<string> {
+  const dump = runUiautomatorDump(serial);
+  runningDumps.set(serial, dump);
+  const forget = () => {
+    if (runningDumps.get(serial) === dump) runningDumps.delete(serial);
+  };
+  dump.then(forget, forget);
   return dump;
 }
 
@@ -122,7 +135,11 @@ function waitAtMost(promise: Promise<unknown>, ms: number): Promise<void> {
   const timeout = new Promise<void>((resolve) => {
     timer = setTimeout(resolve, ms);
   });
-  return Promise.race([promise.then(() => {}), timeout]).finally(() => clearTimeout(timer));
+  const settled = promise.then(
+    () => {},
+    () => {}
+  );
+  return Promise.race([settled, timeout]).finally(() => clearTimeout(timer));
 }
 
 async function runUiautomatorDump(serial: string): Promise<string> {
