@@ -103,33 +103,56 @@ function treeSignature(root: DescribeNode): string {
 }
 
 /**
- * Frame of every node, keyed by an identity that ignores position
- * (role/label/value, numbered for duplicates), plus the structure those
- * identities form.
+ * Frame of every node whose role/label/value is unique on the screen, keyed by
+ * that identity, plus the structure the identities form. Nodes that share an
+ * identity (grid cells, list rows, a node the AX service listed twice) cannot
+ * be followed from read to read, so they are kept as one set of frames per
+ * identity.
  */
 function frameSnapshot(root: DescribeNode): {
   structure: string;
   frames: Map<string, number[]>;
   raw: Map<string, number[]>;
+  shared: Map<string, string>;
 } {
   const round = (n: number) => Math.round(n * 100) / 100;
-  const frames = new Map<string, number[]>();
-  const raw = new Map<string, number[]>();
-  const ids: string[] = [];
-  const seen = new Map<string, number>();
+  const byIdentity = new Map<string, DescribeNode[]>();
   const walk = (node: DescribeNode): void => {
-    const base = `${node.role}|${node.label ?? ""}|${node.value ?? ""}`;
-    const n = (seen.get(base) ?? 0) + 1;
-    seen.set(base, n);
-    const id = `${base}#${n}`;
-    ids.push(id);
-    const f = node.frame;
-    frames.set(id, [round(f.x), round(f.y), round(f.width), round(f.height)]);
-    raw.set(id, [f.x, f.y, f.width, f.height]);
+    const id = `${node.role}|${node.label ?? ""}|${node.value ?? ""}`;
+    byIdentity.set(id, [...(byIdentity.get(id) ?? []), node]);
     for (const child of node.children) walk(child);
   };
   for (const child of root.children) walk(child);
-  return { structure: ids.join("\n"), frames, raw };
+
+  const frames = new Map<string, number[]>();
+  const raw = new Map<string, number[]>();
+  const shared = new Map<string, string>();
+  for (const [id, nodes] of byIdentity) {
+    const boxes = nodes.map(({ frame: f }) => [f.x, f.y, f.width, f.height]);
+    if (boxes.length === 1) {
+      raw.set(id, boxes[0]!);
+      frames.set(id, boxes[0]!.map(round));
+    } else {
+      shared.set(
+        id,
+        boxes
+          .map((b) => b.map(round).join(","))
+          .sort()
+          .join(";")
+      );
+    }
+  }
+  return { structure: [...byIdentity.keys()].sort().join("\n"), frames, raw, shared };
+}
+
+/**
+ * Whether nodes that share an identity moved between two reads. An identity
+ * that only turned shared or unique is skipped: the AX service sometimes lists
+ * a moving node twice for one read.
+ */
+function sharedMoved(prev: Map<string, string>, next: Map<string, string>): boolean {
+  for (const [id, boxes] of next) if (prev.has(id) && prev.get(id) !== boxes) return true;
+  return false;
 }
 
 /**
@@ -138,18 +161,54 @@ function frameSnapshot(root: DescribeNode): {
  */
 const MAX_AMBIENT_MOVERS = 3;
 
-/**
- * Direction reversals a node must show before it counts as a loop. One is not
- * enough: an overshooting ease (easeOutBack, a spring) reverses once at the end
- * of a one-time entrance. A bob or a pulse reverses every half cycle.
- */
-const MIN_LOOP_REVERSALS = 2;
-
-interface NodeMotion {
-  /** Last non-zero sign of x, y, width, height; 0 while that axis never moved. */
-  signs: number[];
-  reversals: number;
+interface AxisMotion {
+  /** Last non-zero direction; 0 while the axis never moved. */
+  sign: number;
+  /** Values where the axis last turned around, oldest first. */
+  turns: number[];
   lastMovedAt: number;
+}
+
+function newAxis(): AxisMotion {
+  return { sign: 0, turns: [], lastMovedAt: -Infinity };
+}
+
+/**
+ * How far a turn may land from the matching earlier turn and still repeat the
+ * swing: a quarter of the swing, absorbing where the polls happen to sample a
+ * cycle, and at least the 0.01 rounding step.
+ */
+function swingTolerance(turns: number[]): number {
+  const [a, b] = turns.slice(-3);
+  return Math.max(0.01, 0.25 * Math.abs(b! - a!));
+}
+
+/**
+ * The axis swung out and back and turned again where it turned two turns ago,
+ * as a bob or a pulse does. One-time motion that reverses (an overshoot, a
+ * decaying spring or bounce, a jump back on reload) does not repeat its swing.
+ */
+function swingRepeats(axis: AxisMotion): boolean {
+  if (axis.turns.length < 3) return false;
+  const [a, , c] = axis.turns.slice(-3);
+  return Math.abs(c! - a!) <= swingTolerance(axis.turns);
+}
+
+function insideSwing(axis: AxisMotion, value: number): boolean {
+  const recent = axis.turns.slice(-3);
+  const tolerance = swingTolerance(axis.turns);
+  return value >= Math.min(...recent) - tolerance && value <= Math.max(...recent) + tolerance;
+}
+
+function trackAxis(axis: AxisMotion, from: number, to: number, nowMs: number): void {
+  const sign = Math.sign(to - from);
+  if (sign === 0) return;
+  // An axis coming to rest (a diagonal ease-out whose smaller axis stops first)
+  // keeps its last direction, so only a real sign flip is a turn.
+  if (axis.sign !== 0 && axis.sign !== sign) axis.turns = [...axis.turns, from].slice(-3);
+  if (swingRepeats(axis) && !insideSwing(axis, to)) axis.turns = [];
+  axis.sign = sign;
+  axis.lastMovedAt = nowMs;
 }
 
 /** Fold one value into a 32-bit hash. */
@@ -167,7 +226,9 @@ class AmbientMotion {
   private structureSince = 0;
   private lastFrames = new Map<string, number[]>();
   private lastRaw = new Map<string, number[]>();
-  private readonly motion = new Map<string, NodeMotion>();
+  private lastShared = new Map<string, string>();
+  private sharedMovedAt = -Infinity;
+  private readonly motion = new Map<string, AxisMotion[]>();
   /**
    * Hash of every unrounded move (poll index and delta) per node. Nodes that
    * move rigidly together, like a coach mark's container, arrow, text and
@@ -182,6 +243,8 @@ class AmbientMotion {
     this.structureSince = 0;
     this.lastFrames = new Map();
     this.lastRaw = new Map();
+    this.lastShared = new Map();
+    this.sharedMovedAt = -Infinity;
     this.motion.clear();
     this.path.clear();
     this.polls = 0;
@@ -196,6 +259,7 @@ class AmbientMotion {
       this.structureSince = nowMs;
       this.lastFrames = snap.frames;
       this.lastRaw = snap.raw;
+      this.lastShared = snap.shared;
       return false;
     }
     this.polls += 1;
@@ -206,30 +270,28 @@ class AmbientMotion {
       for (let i = 0; i < 4; i++) hash = mix(hash, Math.round((frame[i]! - prev[i]!) * 10_000));
       this.path.set(id, hash);
     }
-    this.lastRaw = snap.raw;
+    this.lastRaw = new Map([...this.lastRaw, ...snap.raw]);
     for (const [id, frame] of snap.frames) {
       const prev = this.lastFrames.get(id);
-      if (!prev || prev.every((v, i) => v === frame[i])) continue;
-      let m = this.motion.get(id);
-      if (!m) this.motion.set(id, (m = { signs: [0, 0, 0, 0], reversals: 0, lastMovedAt: 0 }));
-      const signs = frame.map((v, i) => Math.sign(v - prev[i]!));
-      // Only a sign flip on an axis is a reversal. An axis coming to rest
-      // (a diagonal ease-out whose smaller axis stops first) is not.
-      let reversed = false;
-      signs.forEach((sign, i) => {
-        if (sign === 0) return;
-        if (m.signs[i] !== 0 && m.signs[i] !== sign) reversed = true;
-        m.signs[i] = sign;
-      });
-      if (reversed) m.reversals += 1;
-      m.lastMovedAt = nowMs;
+      if (!prev) continue;
+      if (!this.motion.has(id))
+        this.motion.set(
+          id,
+          frame.map(() => newAxis())
+        );
+      this.motion.get(id)!.forEach((axis, i) => trackAxis(axis, prev[i]!, frame[i]!, nowMs));
     }
-    this.lastFrames = snap.frames;
+    this.lastFrames = new Map([...this.lastFrames, ...snap.frames]);
+    if (sharedMoved(this.lastShared, snap.shared)) this.sharedMovedAt = nowMs;
+    this.lastShared = snap.shared;
 
     if (nowMs - this.structureSince < minStableMs) return false;
-    const recent = [...this.motion].filter(([, m]) => nowMs - m.lastMovedAt < windowMs);
+    if (nowMs - this.sharedMovedAt < windowMs) return false;
+    const movedRecently = (axis: AxisMotion) => nowMs - axis.lastMovedAt < windowMs;
+    const recent = [...this.motion].filter(([, axes]) => axes.some(movedRecently));
     if (recent.length === 0) return false;
-    if (!recent.every(([, m]) => m.reversals >= MIN_LOOP_REVERSALS)) return false;
+    const isLoop = (axes: AxisMotion[]) => axes.filter(movedRecently).every(swingRepeats);
+    if (!recent.every(([, axes]) => isLoop(axes))) return false;
     const animations = new Set(recent.map(([id]) => this.path.get(id)));
     return animations.size <= MAX_AMBIENT_MOVERS;
   }

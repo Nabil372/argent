@@ -204,7 +204,7 @@ describe("await-screen-idle tool", () => {
     const slide = Array.from({ length: 200 }, (_, i) =>
       axResponse([
         { label: "Settings", frame: FRAME, traits: ["button"] },
-        { label: "sheet", frame: { x: 0, y: 1 - i * 0.004, width: 1, height: 0.5 }, traits: [] },
+        { label: "sheet", frame: { x: 0, y: 1 - i * 0.012, width: 1, height: 0.5 }, traits: [] },
       ])
     );
     const tool = createAwaitScreenIdleTool(iosRegistry(makeSequencedAXService(slide)));
@@ -252,6 +252,62 @@ describe("await-screen-idle tool", () => {
       const result = await run(ys.map((y) => screen({ label: "snackbar", y })));
 
       expect(result.settled).toBe(false);
+    });
+
+    it("waits out a spring entrance that swings with shrinking amplitude", async () => {
+      const springY = (i: number) => 0.5 + 0.3 * 0.6 ** (i / 3) * Math.cos((Math.PI * i) / 3);
+      const result = await run(
+        [...Array.from({ length: 16 }, (_, i) => springY(i)), 0.5].map((y) =>
+          screen({ label: "card", y })
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBeUndefined();
+    });
+
+    it("keeps waiting when a reload jumps a slide back and replays it", async () => {
+      const ys = [0.9, 0.88, 0.86, ...Array.from({ length: 200 }, (_, i) => 0.9 - i * 0.012)];
+      const result = await run(ys.map((y) => screen({ label: "sheet", y })));
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting when a loop stops looping and slides away", async () => {
+      const result = await run(
+        [
+          ...Array.from({ length: 6 }, (_, i) => screen({ label: "hand", y: bobY(i) })),
+          ...Array.from({ length: 200 }, (_, i) => screen({ label: "hand", y: 0.24 + i * 0.012 })),
+        ],
+        { timeoutMs: 600, minStableMs: 200 }
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting while cells that share a label scroll past", async () => {
+      // On-screen cells only: as a row leaves the top, the next one takes its place.
+      const cells = (i: number) =>
+        [0, 1, 2].map((k) => ({ label: "Photo", y: 0.2 + 0.1 * k - ((i * 0.03) % 0.1) }));
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) => screen(...cells(i), { label: "hand", y: bobY(i) }))
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("settles on a loop that the AX service sometimes lists twice", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) => {
+          const hand = { label: "hand", y: bobY(i) };
+          return i % 4 === 3 ? screen(hand, { ...hand, y: bobY(i + 1) }) : screen(hand);
+        }),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
     });
 
     it("does not count an axis coming to rest as a reversal", async () => {
