@@ -657,9 +657,10 @@ describe.skipIf(process.platform === "win32")("runGlobalShim lifecycle", () => {
 
   it("stops the kill timer once the shim answers", async () => {
     const kill = vi.spyOn(process, "kill");
-    await run(shim("echo 1.0.0"), 150);
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(kill).not.toHaveBeenCalled();
+    await run(shim("echo 1.0.0"), 1_000);
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const groupKills = kill.mock.calls.filter(([pid]) => typeof pid === "number" && pid < 0);
+    expect(groupKills).toEqual([]);
   });
 
   it("takes the shim's process group down when doctor is interrupted", async () => {

@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { MCP_BINARY_NAME, type McpServerEntry } from "@argent/installer";
-import { type DoctorCheck, check, home, samePath } from "./doctor-shared.js";
+import { type DoctorCheck, check, samePath } from "./doctor-shared.js";
 import { GLOBAL_SHIM_FIX, addToPathFix, findGlobalArgent, isOnPath } from "./doctor-install.js";
 
 // `argent doctor`: whether an editor's MCP entry starts argent, judged the way its runner starts it.
