@@ -70,14 +70,11 @@ interface ToolCaller {
     args: unknown
   ): Promise<{ result: unknown; outputHint?: string; note?: string }>;
   /**
-   * One attempt, no reconnect: for a best-effort call the agent did not make,
-   * which must not be resent alongside the agent's own calls or respawn the
-   * tool-server.
+   * Starts an iOS simulator's accessibility reader. One attempt, no reconnect:
+   * the agent did not ask for it, so it must not be resent beside the agent's
+   * own calls or respawn the tool-server.
    */
-  callToolOnce(
-    name: string,
-    args: unknown
-  ): Promise<{ result: unknown; outputHint?: string; note?: string }>;
+  warmScreenReader(udid: string): Promise<void>;
 }
 
 // A tool-server URL without `http://` either fails `new URL`, whose error names
@@ -123,24 +120,32 @@ export function createToolCaller(deps: ToolCallerDeps): ToolCaller {
     return { ...init, headers };
   }
 
-  const makeClient = (once: boolean) =>
-    createToolsClient({
-      baseUrl: async () => ({ ...deps.getHandle(), remote: deps.remote }),
-      fetchImpl: async (url, init, meta) => {
-        // A retry cannot fix a URL that does not parse, so fail at once.
-        parseUrl(url);
-        return fetchWithReconnect(() => rebase(url), deps.reconnect, {
-          init: () => withHeaders(init),
-          // A call that carried an upload is sent once and never aborted: the
-          // tool-server consumes the upload when it reads the call, so a second
-          // attempt could only fail.
-          fetchTimeoutMs: meta.longRunning || meta.carriesUpload ? null : timeout,
-          maxRetries: once || meta.carriesUpload ? 0 : undefined,
-        });
-      },
+  const client = createToolsClient({
+    baseUrl: async () => ({ ...deps.getHandle(), remote: deps.remote }),
+    fetchImpl: async (url, init, meta) => {
+      // A retry cannot fix a URL that does not parse, so fail at once.
+      parseUrl(url);
+      return fetchWithReconnect(() => rebase(url), deps.reconnect, {
+        init: () => withHeaders(init),
+        // A call that carried an upload is sent once and never aborted: the
+        // tool-server consumes the upload when it reads the call, so a second
+        // attempt could only fail.
+        fetchTimeoutMs: meta.longRunning || meta.carriesUpload ? null : timeout,
+        maxRetries: meta.carriesUpload ? 0 : undefined,
+      });
+    },
+  });
+
+  async function warmScreenReader(udid: string): Promise<void> {
+    const url = `${deps.getHandle().url}/ax-service/${encodeURIComponent(udid)}/warm`;
+    parseUrl(url);
+    const res = await fetchWithReconnect(() => url, deps.reconnect, {
+      init: () => withHeaders({ method: "POST" }),
+      fetchTimeoutMs: timeout,
+      maxRetries: 0,
     });
-  const client = makeClient(false);
-  const onceClient = makeClient(true);
+    if (!res.ok) throw new Error(`Warm-up failed with HTTP ${res.status}: ${await res.text()}`);
+  }
 
   return {
     fetchTools: client.fetchTools,
@@ -148,9 +153,6 @@ export function createToolCaller(deps: ToolCallerDeps): ToolCaller {
       const { data, note, outputHint } = await client.callTool(name, args);
       return { result: data, outputHint, note };
     },
-    async callToolOnce(name, args) {
-      const { data, note, outputHint } = await onceClient.callTool(name, args);
-      return { result: data, outputHint, note };
-    },
+    warmScreenReader,
   };
 }

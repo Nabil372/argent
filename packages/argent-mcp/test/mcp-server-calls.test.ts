@@ -50,13 +50,14 @@ interface Recorded {
   doneAt?: number;
 }
 
-/** Knobs for the stub's gesture-tap and describe routes; reset after each case. */
+/** Knobs for the stub's gesture-tap and warm-up routes; reset after each case. */
 const stubBehavior = {
   tapDelayMs: 0,
-  describeDelayMs: 0,
-  describeFails: false,
-  describeNote: undefined as string | undefined,
+  warmDelayMs: 0,
+  warmFails: false,
 };
+
+const WARM_ROUTE = /^\/ax-service\/[^/]+\/warm$/;
 
 interface Stub {
   url: string;
@@ -148,13 +149,11 @@ async function startStub(token?: string): Promise<Stub> {
         return json(200, { data: { settled: true } });
       }
       if (req.method === "POST" && reqUrl === "/tools/describe") {
-        return later(stubBehavior.describeDelayMs, () =>
-          stubBehavior.describeFails
-            ? json(500, { error: "boom" })
-            : json(200, {
-                data: { description: "ROOT AXGroup" },
-                ...(stubBehavior.describeNote ? { note: stubBehavior.describeNote } : {}),
-              })
+        return json(200, { data: { description: "ROOT AXGroup" } });
+      }
+      if (req.method === "POST" && WARM_ROUTE.test(reqUrl)) {
+        return later(stubBehavior.warmDelayMs, () =>
+          stubBehavior.warmFails ? json(502, { error: "boom" }) : json(200, {})
         );
       }
       json(404, { error: "not found" });
@@ -307,8 +306,9 @@ describe("startMcpServer warming the screen reader", () => {
 
   const tap = (udid: string, extra: Record<string, unknown> = {}) =>
     client!.callTool({ name: "gesture-tap", arguments: { udid, x: 0.5, y: 0.5, ...extra } });
-  const describeRequests = () => stub.requests.filter((r) => r.url === "/tools/describe");
-  const describes = () => describeRequests().length;
+  const warmRequests = () => stub.requests.filter((r) => WARM_ROUTE.test(r.url));
+  const warms = () => warmRequests().length;
+  const describes = () => stub.requests.filter((r) => r.url === "/tools/describe").length;
   const settle = () => new Promise((r) => setTimeout(r, 100));
 
   async function start(flags: { autoDescribe: boolean }): Promise<void> {
@@ -331,43 +331,39 @@ describe("startMcpServer warming the screen reader", () => {
   afterEach(async () => {
     await client?.close();
     client = undefined;
-    Object.assign(stubBehavior, {
-      tapDelayMs: 0,
-      describeDelayMs: 0,
-      describeFails: false,
-      describeNote: undefined,
-    });
+    Object.assign(stubBehavior, { tapDelayMs: 0, warmDelayMs: 0, warmFails: false });
     setFlag("disable-auto-screenshot", false, "global", { homeDir: TEST_HOME });
     setFlag("disable-auto-describe", false, "global", { homeDir: TEST_HOME });
     vi.unstubAllEnvs();
     await stub.close();
   });
 
-  it("reads the screen in the background on a simulator's first action only", async () => {
+  it("warms a simulator's screen reader on its first action only", async () => {
     await start({ autoDescribe: true });
 
     const first = await tap(SIM);
     expect(textOf(first)).toContain("ROOT AXGroup");
-    // The background read plus the element tree attached to the result.
-    await vi.waitFor(() => expect(describes()).toBe(2));
+    await vi.waitFor(() => expect(warms()).toBe(1));
+    // Only the element tree attached to the result goes through describe.
+    expect(describes()).toBe(1);
 
     await tap(SIM);
-    expect(describes()).toBe(3);
+    expect(warms()).toBe(1);
 
     await tap(SIM2);
-    await vi.waitFor(() => expect(describes()).toBe(5));
+    await vi.waitFor(() => expect(warms()).toBe(2));
   });
 
-  it("sends the read to the tapped device, alongside the action", async () => {
+  it("warms the tapped device, alongside the action", async () => {
     stubBehavior.tapDelayMs = 300;
-    stubBehavior.describeDelayMs = 300;
+    stubBehavior.warmDelayMs = 300;
     await start({ autoDescribe: true });
 
     await tap(SIM);
 
     const tapReq = stub.requests.find((r) => r.url === "/tools/gesture-tap")!;
-    const warm = describeRequests()[0]!;
-    expect(JSON.parse(warm.body)).toMatchObject({ udid: SIM });
+    const warm = warmRequests()[0]!;
+    expect(warm.url).toBe(`/ax-service/${SIM}/warm`);
     // Overlapping, neither awaited before the other started.
     expect(warm.at).toBeLessThan(tapReq.doneAt!);
     expect(tapReq.at).toBeLessThan(warm.doneAt!);
@@ -385,8 +381,7 @@ describe("startMcpServer warming the screen reader", () => {
     await tap(udid);
     await settle();
 
-    // Only the element tree attached to the result.
-    expect(describes()).toBe(1);
+    expect(warms()).toBe(0);
   });
 
   it("does not warm on a tool that gets no element tree", async () => {
@@ -396,7 +391,7 @@ describe("startMcpServer warming the screen reader", () => {
     await client!.callTool({ name: "stop-simulator-server", arguments: { udid: SIM } });
     await settle();
 
-    expect(describes()).toBe(0);
+    expect(warms()).toBe(0);
   });
 
   it("does not warm a call that types a secret", async () => {
@@ -408,7 +403,7 @@ describe("startMcpServer warming the screen reader", () => {
     });
     await settle();
 
-    expect(describes()).toBe(0);
+    expect(warms()).toBe(0);
   });
 
   it.each(["describe", "await-ui-element", "native-describe-screen"])(
@@ -417,38 +412,26 @@ describe("startMcpServer warming the screen reader", () => {
       await start({ autoDescribe: true });
 
       await client!.callTool({ name, arguments: { udid: SIM } });
-      const before = describes();
       await tap(SIM);
       await settle();
 
-      expect(describes()).toBe(before + 1);
+      expect(warms()).toBe(0);
     }
   );
 
-  it("survives a failed read and warms again on the next action", async () => {
-    stubBehavior.describeFails = true;
+  it("survives a failed warm-up and warms again on the next action", async () => {
+    stubBehavior.warmFails = true;
     await start({ autoDescribe: true });
 
     const first = await tap(SIM);
     expect(first.isError).toBeFalsy();
-    // One attempt only: no resend of the background read.
-    await vi.waitFor(() => expect(describes()).toBe(2));
+    await vi.waitFor(() => expect(warms()).toBe(1));
     await settle();
-    expect(describes()).toBe(2);
+    // One attempt only: no resend of the warm-up.
+    expect(warms()).toBe(1);
 
     await tap(SIM);
-    await vi.waitFor(() => expect(describes()).toBe(4));
-  });
-
-  it("passes a note from the background read on to the agent", async () => {
-    stubBehavior.describeNote = "update available";
-    stubBehavior.tapDelayMs = 200;
-    await start({ autoDescribe: true });
-
-    const first = await tap(SIM);
-
-    const text = textOf(first);
-    expect(text.match(/update available/g)).toHaveLength(1);
+    await vi.waitFor(() => expect(warms()).toBe(2));
   });
 
   it("does not warm when the element tree is turned off", async () => {
@@ -457,7 +440,7 @@ describe("startMcpServer warming the screen reader", () => {
     await tap(SIM);
     await settle();
 
-    expect(describes()).toBe(0);
+    expect(warms()).toBe(0);
   });
 });
 

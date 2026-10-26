@@ -140,7 +140,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
     }
   }
 
-  const { fetchTools, callTool, callToolOnce } = createToolCaller({
+  const { fetchTools, callTool, warmScreenReader } = createToolCaller({
     getHandle: () => ({ url: TOOLS_URL, token: AUTH_TOKEN }),
     remote,
     reconnect,
@@ -178,19 +178,14 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
   });
 
   const warmedDevices = new Set<string>();
-  // A note the tool-server hands out once (e.g. the update notice) that landed
-  // on the discarded warm-up read; the next result the agent sees carries it.
-  const pendingNotes: string[] = [];
 
-  async function warmScreenReader(udid: string): Promise<void> {
+  async function warmDevice(udid: string): Promise<void> {
     const t1 = Date.now();
     try {
-      // One attempt: a resend would run beside the agent's own describe.
-      const { note } = await callToolOnce("describe", { udid });
-      if (note) pendingNotes.push(note);
+      await warmScreenReader(udid);
       await spyLog({
         ts: new Date().toISOString(),
-        event: "warm_describe",
+        event: "warm_screen_reader",
         udid,
         durationMs: Date.now() - t1,
       });
@@ -199,7 +194,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
       warmedDevices.delete(udid);
       await spyLog({
         ts: new Date().toISOString(),
-        event: "warm_describe",
+        event: "warm_screen_reader",
         udid,
         durationMs: Date.now() - t1,
         error: String(e instanceof Error ? e.message : e),
@@ -216,7 +211,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
       args: params.arguments,
     });
     // First touch of an iOS simulator: start its accessibility reader in the
-    // background (a read-only describe), so the first action's element tree
+    // background (one discarded read), so the first action's element tree
     // does not pay the reader's cold start after the action itself. Other
     // platforms have no persistent reader to warm, and there a concurrent read
     // collides with the action's own (uiautomator dump, Vega page source).
@@ -236,7 +231,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
         !containsSecretPlaceholder(params.arguments)
       ) {
         warmedDevices.add(warmUdid);
-        void warmScreenReader(warmUdid);
+        void warmDevice(warmUdid);
       }
     }
     try {
@@ -370,10 +365,8 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
         }
       }
 
-      const held = pendingNotes.splice(0);
-      const notes = note && !held.includes(note) ? [...held, note] : held;
-      if (notes.length > 0) {
-        content = [...notes.map((text) => ({ type: "text" as const, text })), ...content];
+      if (note) {
+        content = [{ type: "text" as const, text: note }, ...content];
       }
 
       return { content };
