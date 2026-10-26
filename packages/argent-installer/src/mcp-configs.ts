@@ -750,7 +750,11 @@ function claudeProjectKeysForRoot(
   root: string,
   { exactProjectKey = false }: ProjectKeyOptions = {}
 ): string[] {
-  if (exactProjectKey) return root in projects ? [root] : [];
+  if (exactProjectKey) {
+    // Claude Code keys Windows projects with forward slashes (C:/Users/me/proj).
+    const key = process.platform === "win32" ? root.replaceAll("\\", "/") : root;
+    return key in projects ? [key] : [];
+  }
   const canonical = (value: string): string => {
     try {
       return fs.realpathSync.native(value);

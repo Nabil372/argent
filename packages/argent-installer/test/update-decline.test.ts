@@ -396,6 +396,30 @@ describe("update — customized MCP entries survive the refresh and the sweep", 
       }
     ).mcpServers.argent;
     expect(entry.disabled).toBe(true);
+    const notes = promptsMock.note.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(notes).toContain("Kiro left a switched-off entry untouched");
+  });
+
+  it("rewrites an entry whose switch-off key the editor ignores", async () => {
+    const mcpJson = path.join(projDir, ".mcp.json");
+    fs.writeFileSync(
+      mcpJson,
+      JSON.stringify({
+        mcpServers: { argent: { command: "argent", args: ["mcp"], disabled: true } },
+      })
+    );
+    childProcessMock.execFileSync.mockImplementation(((_bin: string, args: string[]) => {
+      if (Array.isArray(args) && args.some((a) => a.includes("@swmansion/argent"))) {
+        topologyState.globalVersion = "99.0.0";
+      }
+      return undefined;
+    }) as never);
+
+    await update(["--yes"]);
+
+    expect(fs.readFileSync(mcpJson, "utf8")).not.toContain("disabled");
+    const notes = promptsMock.note.mock.calls.map((call) => String(call[0])).join("\n");
+    expect(notes).not.toContain("Claude Code left a switched-off entry untouched");
   });
 
   it("repairs a corrupted (unparseable) argent entry instead of skipping it as customized", async () => {

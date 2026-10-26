@@ -111,6 +111,24 @@ describe("isArgentManagedEntry with a cwd", () => {
   });
 });
 
+describe("getArgentEntry with a cwd", () => {
+  it("keeps the entry's cwd, which marks it customized", () => {
+    const vscode = ALL_ADAPTERS.find((a) => a.name === "VS Code")!;
+    const configPath = path.join(tmpDir, "mcp.json");
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({
+        servers: {
+          argent: { command: "argent", args: ["mcp"], cwd: "${workspaceFolder}/apps/mobile" },
+        },
+      })
+    );
+    const entry = vscode.getArgentEntry(configPath);
+    expect(entry?.cwd).toBe("${workspaceFolder}/apps/mobile");
+    expect(isArgentManagedEntry(entry)).toBe(false);
+  });
+});
+
 describe("isArgentManagedEntry", () => {
   it("accepts every shape argent itself writes", () => {
     expect(isArgentManagedEntry({ command: "argent", args: ["mcp"] })).toBe(true);
@@ -350,6 +368,73 @@ describe("disabled entries", () => {
     );
     expect(isArgentDisabledInClaudeProject(projA)).toBe(true);
     expect(isArgentDisabledInClaudeProject(projB)).toBe(false);
+  });
+
+  it("counts `disabled` as no switch-off for an editor that honours `enabled`", () => {
+    const codex = ALL_ADAPTERS.find((a) => a.name === "Codex")!;
+    const file = path.join(tmpDir, "config.toml");
+    const read = (extra: string) => {
+      fs.writeFileSync(file, `[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n${extra}`);
+      return codex.getArgentEntry(file);
+    };
+    expect(isSwitchedOffInEditor(codex, read("disabled = true\n"))).toBe(false);
+    expect(isSwitchedOffInEditor(codex, read("enabled = false\ndisabled = true\n"))).toBe(true);
+  });
+
+  it("gives each editor the switch-off key it honours", () => {
+    expect(Object.fromEntries(ALL_ADAPTERS.map((a) => [a.name, a.switchOffKey ?? null]))).toEqual({
+      "Cursor": "disabled",
+      "Claude Code": null,
+      "VS Code": null,
+      "Windsurf": "disabled",
+      "Zed": "enabled",
+      "Gemini": null,
+      "Codex": "enabled",
+      "Hermes": "enabled",
+      "opencode": "enabled",
+      "Kiro": "disabled",
+    });
+  });
+
+  it("matches only the exact project key when asked to", () => {
+    homedirOverride = tmpDir;
+    const root = path.join(tmpDir, "proj");
+    const moved = path.join(tmpDir, "moved");
+    fs.mkdirSync(moved);
+    fs.symlinkSync(moved, root);
+    const writeProjects = (projects: Record<string, unknown>) =>
+      fs.writeFileSync(path.join(tmpDir, ".claude.json"), JSON.stringify({ projects }));
+    const exact = { exactProjectKey: true };
+
+    writeProjects({ [moved]: { disabledMcpServers: ["argent"] } });
+    expect(isArgentDisabledInClaudeProject(root)).toBe(true);
+    expect(isArgentDisabledInClaudeProject(root, exact)).toBe(false);
+
+    writeProjects({ [path.join(tmpDir, "PROJ")]: { disabledMcpServers: ["argent"] } });
+    expect(isArgentDisabledInClaudeProject(root, exact)).toBe(false);
+
+    writeProjects({ [moved]: { mcpServers: { argent: { command: "argent", args: ["mcp"] } } } });
+    const claude = ALL_ADAPTERS.find((a) => a.name === "Claude Code")!;
+    expect(claude.findShadowingConfigs!(root, "global", exact)).toEqual([]);
+
+    writeProjects({ [root]: null });
+    expect(isArgentDisabledInClaudeProject(root, exact)).toBe(false);
+  });
+
+  it("matches Claude Code's forward-slash project keys on Windows", () => {
+    homedirOverride = tmpDir;
+    const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    try {
+      fs.writeFileSync(
+        path.join(tmpDir, ".claude.json"),
+        JSON.stringify({ projects: { "C:/Users/me/proj": { disabledMcpServers: ["argent"] } } })
+      );
+      expect(
+        isArgentDisabledInClaudeProject("C:\\Users\\me\\proj", { exactProjectKey: true })
+      ).toBe(true);
+    } finally {
+      platform.mockRestore();
+    }
   });
 
   it("survives a ~/.claude.json that holds null", () => {
@@ -1965,6 +2050,14 @@ describe("injectCodexRules / removeCodexRules", () => {
   it("tells whether a config carries argent's rules", () => {
     const configPath = path.join(tmpDir, "config.toml");
     fs.writeFileSync(configPath, 'model = "o3"\n');
+    expect(hasCodexRules(configPath)).toBe(false);
+    injectCodexRules(configPath, rulesDir);
+    expect(hasCodexRules(configPath)).toBe(true);
+  });
+
+  it("does not count the user's own developer_instructions as argent's rules", () => {
+    const configPath = path.join(tmpDir, "config.toml");
+    fs.writeFileSync(configPath, 'developer_instructions = "Always answer in English."\n');
     expect(hasCodexRules(configPath)).toBe(false);
     injectCodexRules(configPath, rulesDir);
     expect(hasCodexRules(configPath)).toBe(true);
