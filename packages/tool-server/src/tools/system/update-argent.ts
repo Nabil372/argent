@@ -113,6 +113,17 @@ function pathGlobalInstallRoot(): string | null {
   return null;
 }
 
+const ARGENT_BIN_NAMES =
+  process.platform === "win32" ? ["argent.cmd", "argent.exe", "argent"] : ["argent"];
+
+function isArgentOnPath(): boolean {
+  return (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .some(
+      (dir) => dir !== "" && ARGENT_BIN_NAMES.some((name) => fs.existsSync(path.join(dir, name)))
+    );
+}
+
 // npx / dlx / bunx caches, which serve a session without being the global
 // install an update targets.
 const TEMP_RUNNER_MARKERS = ["_npx", `${path.sep}dlx-`, path.join("bun", "install", "cache")];
@@ -241,6 +252,18 @@ export const updateArgentTool: ToolDefinition<{
             "updated install.",
         };
       }
+    }
+
+    // The spawned `argent update --global` finds its target through PATH; a
+    // pinned MCP entry lets an editor started without the shell PATH serve
+    // this session, and the updater would then report nothing to update.
+    if (running.kind === "global" && effectiveTarget === "global" && !isArgentOnPath()) {
+      return {
+        message:
+          "`argent` is not on this tool server's PATH (the editor was likely started outside a " +
+          "terminal), so the updater could not find the global install to update. Ask the user " +
+          "to run `argent update` in a terminal and then restart the editor.",
+      };
     }
 
     if (updateScheduled) {

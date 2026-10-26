@@ -96,7 +96,9 @@ describe("update-argent tool", () => {
     // A cwd with no ancestor declaring argent, so findDeclaringProjectRoot is
     // deterministic (os.tmpdir() ancestors never declare the package).
     process.chdir(tmpDir);
-    // No `argent` on PATH unless a test stages one.
+    // An `argent` on PATH that belongs to no argent package, unless a test
+    // stages one.
+    fs.writeFileSync(path.join(tmpDir, "argent"), "");
     vi.stubEnv("PATH", tmpDir);
     const mod = await import("../src/tools/system/update-argent");
     updateArgentTool = mod.updateArgentTool;
@@ -144,6 +146,19 @@ describe("update-argent tool", () => {
       expect(mockSpawn).not.toHaveBeenCalled();
     }
   );
+
+  it("refuses a global update when no `argent` is on PATH for the updater to find", async () => {
+    const emptyDir = path.join(tmpDir, "empty");
+    fs.mkdirSync(emptyDir);
+    vi.stubEnv("PATH", emptyDir);
+
+    const result = await updateArgentTool.execute({}, {}, undefined);
+    vi.advanceTimersByTime(5000);
+
+    const message = (result as { message: string }).message;
+    expect(message).toContain("not on this tool server's PATH");
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 
   it("spawns `argent update` with a pinned target flag (not npx) after 2 seconds", async () => {
     await updateArgentTool.execute({}, { target: "global" }, undefined);
