@@ -61,6 +61,15 @@ vi.mock("../src/utils/ios-device-sets", () => ({
   deviceSetForUdid: (udid: string) => deviceSetForUdidMock(udid),
 }));
 
+const waitForFirstFrameMock = vi.fn(async (_timeoutMs: number) => Buffer.alloc(0));
+const openMjpegStreamMock = vi.fn(async (_url: string) => ({
+  waitForFirstFrame: waitForFirstFrameMock,
+  close: vi.fn(),
+}));
+vi.mock("../src/tools/screen-recording/mjpeg-stream", () => ({
+  openMjpegStream: (url: string) => openMjpegStreamMock(url),
+}));
+
 function makeFakeProc() {
   const proc = new EventEmitter() as EventEmitter & {
     stdout: Readable;
@@ -241,6 +250,8 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
     expect(spawnMock).toHaveBeenCalledTimes(2);
     expect(spawnMock.mock.calls[0]![1]).toEqual(["android", "--id", serial]);
     expect(spawnMock.mock.calls[1]![1]).toEqual(["android_device", "--id", serial]);
+    expect(openMjpegStreamMock).toHaveBeenCalledWith("http://127.0.0.1:55571");
+    expect(waitForFirstFrameMock).toHaveBeenCalledTimes(1);
   });
 
   it("surfaces the emulator controller's error when the `android_device` fallback fails too", async () => {

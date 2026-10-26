@@ -19,6 +19,7 @@ import { isFoldableSimulator, isTvOsSimulator } from "../utils/ios-devices";
 import { deviceSetForUdid } from "../utils/ios-device-sets";
 import { UnsupportedOperationError } from "../utils/capability";
 import { openMoqClient } from "../utils/moq-client";
+import { openMjpegStream } from "../tools/screen-recording/mjpeg-stream";
 import {
   createMoqTransport,
   fetchDisplayState,
@@ -315,6 +316,22 @@ function subcommandForDevice(device: DeviceInfo): "ios" | "android" | "android_d
 const EMULATOR_NOT_DISCOVERED =
   /not found among running emulators|Failed to find any running emulator/;
 
+const FIRST_FRAME_TIMEOUT_MS = 5_000;
+
+/**
+ * The phone controller prints its readiness lines before the agent injects
+ * input: a touch sent before the first frame is acked but never lands.
+ */
+async function waitForFirstFrame(streamUrl: string): Promise<void> {
+  if (!streamUrl) return;
+  const stream = await openMjpegStream(streamUrl).catch(() => null);
+  if (!stream) return;
+  await stream
+    .waitForFirstFrame(FIRST_FRAME_TIMEOUT_MS)
+    .catch(() => {})
+    .finally(() => stream.close());
+}
+
 async function spawnWithEmulatorFallback(
   device: DeviceInfo
 ): ReturnType<typeof spawnSimulatorServerProcess> {
@@ -329,7 +346,9 @@ async function spawnWithEmulatorFallback(
         `falling back to the adb screen-sharing controller\n`
     );
     try {
-      return await spawnSimulatorServerProcess(device.id, "android_device");
+      const server = await spawnSimulatorServerProcess(device.id, "android_device");
+      await waitForFirstFrame(server.streamUrl);
+      return server;
     } catch (fallbackErr) {
       // "Failed to find any running emulator" also means no emulator is up at
       // all; then the fallback fails too, and the emulator controller's error
