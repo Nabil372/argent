@@ -100,13 +100,41 @@ async function remoteStatus(url: string, token?: string): Promise<number | null>
   }
 }
 
+/** Why the tools client can't fetch from this ARGENT_TOOLS_URL value, if it can't. */
+function toolsUrlProblem(url: string): string | null {
+  if (url.startsWith(LINK_URL_SCHEME)) return "holds an argent:// pairing string, not a server URL";
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return "is not an http:// or https:// URL";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return "is not an http:// or https:// URL";
+  }
+  if (parsed.username || parsed.password) {
+    return "carries credentials, which fetch rejects (the token goes in ARGENT_AUTH_TOKEN)";
+  }
+  return null;
+}
+
 /**
  * The MCP server reads ARGENT_TOOLS_URL from its entry's env, so an entry with
  * one talks to that tool-server, not the local one this section describes.
  */
-export async function entryRemoteChecks(urls: EntryToolsUrl[]): Promise<DoctorCheck[]> {
+export async function entryRemoteChecks(
+  urls: EntryToolsUrl[],
+  argentCmd: string
+): Promise<DoctorCheck[]> {
   return Promise.all(
     urls.map(async ({ editor, url, token }) => {
+      const problem = toolsUrlProblem(url);
+      if (problem) {
+        return check("error", `${editor} entry: its env ARGENT_TOOLS_URL ${problem}`, {
+          detail: redactUrl(url),
+          fix: `Set it to the server's http://<host>:<port>, or remove it from the entry and run ${argentCmd} link <the argent:// string>`,
+        });
+      }
       const result = remoteCheck(await remoteStatus(url, token), url, "env");
       return {
         ...result,
@@ -147,10 +175,11 @@ export async function toolServerSection(
 ): Promise<DoctorSection> {
   const checks: DoctorCheck[] = [];
 
-  if (linked.url?.startsWith(LINK_URL_SCHEME)) {
+  const problem = linked.url && toolsUrlProblem(linked.url);
+  if (problem) {
     checks.push(
-      check("error", "ARGENT_TOOLS_URL holds an argent:// pairing string, not a server URL", {
-        detail: redactUrl(linked.url),
+      check("error", `ARGENT_TOOLS_URL ${problem}`, {
+        detail: redactUrl(linked.url!),
         fix: `Unset ARGENT_TOOLS_URL and run ${ctx.argentCmd} link <the argent:// string>`,
       })
     );

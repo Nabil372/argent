@@ -200,7 +200,7 @@ export async function collectDoctorReport(options: {
   // Sections that touch the network or spawn a process run concurrently.
   const [toolServer, entryRemotes, platforms, other] = await Promise.all([
     toolServerSection(ctx, running, options.paths, linked),
-    entryRemoteChecks(entryToolsUrls),
+    entryRemoteChecks(entryToolsUrls, ctx.argentCmd),
     platformsSection(ctx, options.paths, linked, reinstall, entriesAllRemote),
     otherSection(ctx, running, options.offline, updateCmd, runningLocal ? projectPm : globalPm),
   ]);

@@ -245,7 +245,32 @@ describe("collectDoctorReport", () => {
 
   it("rejects an argent:// pairing string in ARGENT_TOOLS_URL", async () => {
     vi.stubEnv("ARGENT_TOOLS_URL", "argent://pair?token=x");
-    expect((await toolServer())[0]?.label).toMatch(/pairing string/);
+    expect((await toolServer())[0]).toMatchObject({
+      status: "error",
+      label: expect.stringMatching(/pairing string/),
+      fix: "Unset ARGENT_TOOLS_URL and run npx @swmansion/argent link <the argent:// string>",
+    });
+  });
+
+  it("rejects an entry's ARGENT_TOOLS_URL the tools client can't fetch from", async () => {
+    const entryUrls = [
+      ["argent://tok@127.0.0.1:47999", /pairing string/],
+      ["127.0.0.1:47999", /not an http/],
+      ["http://user:secret@127.0.0.1:47999", /carries credentials/],
+    ] as const;
+    for (const [url, reason] of entryUrls) {
+      fs.writeFileSync(
+        path.join(projectRoot, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: {
+            argent: { command: "argent", args: ["mcp"], env: { ARGENT_TOOLS_URL: url } },
+          },
+        })
+      );
+      const entry = (await toolServer()).find((c) => c.label.startsWith("Claude Code entry"));
+      expect(entry).toMatchObject({ status: "error", label: expect.stringMatching(reason) });
+      expect(entry?.detail).not.toMatch(/tok|secret/);
+    }
   });
 
   it("probes a linked URL as given, trailing slash included, like the tools client", async () => {
