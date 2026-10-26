@@ -753,6 +753,27 @@ describe("cleanupStaleMcpConfigs", () => {
     expect(readJsonFile(cursorProject).mcpServers).toBeDefined();
   });
 
+  it("warns on a local-scope run of a global install when the bare project entry outranks a pinned one", async () => {
+    const { node, cli } = pinnedEntry();
+    writeJsonFile(path.join(home, ".cursor", "mcp.json"), {
+      mcpServers: { argent: { command: node, args: [cli, "mcp"] } },
+    });
+    const cursorProject = path.join(root, ".cursor", "mcp.json");
+    writeJsonFile(cursorProject, { mcpServers: { argent: { command: "argent", args: ["mcp"] } } });
+
+    const result = await cleanupStaleMcpConfigs({
+      writtenAdapters: [cursor],
+      detectedAdapters: [cursor],
+      installMode: "global",
+      scope: "local",
+      effectiveRoot: root,
+    });
+
+    expect(result.removedCount).toBe(0);
+    expect(result.warnedCount).toBe(1);
+    expect(result.lines[0]).toContain("without your shell PATH");
+  });
+
   it("does not read the global entry back as a project rival when the files coincide", async () => {
     // Cursor at $HOME: projectPath(home) is globalPath().
     const { node, cli } = pinnedEntry();

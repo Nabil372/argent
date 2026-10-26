@@ -197,9 +197,9 @@ export async function cleanupStaleMcpConfigs(args: {
       // Bare `argent` that IS on PATH: a working global install the user
       // kept — legitimate coexistence, stay quiet.
     }
-  } else if (scope === "global") {
-    // A project-scope entry at this root can outrank the global entry just
-    // written, but it may be a committed team file — never auto-remove.
+  } else if (scope === "global" || installMode === "global") {
+    // A project-scope entry at this root can outrank the global entry, but it
+    // may be a committed team file — never auto-remove.
     for (const adapter of writtenAdapters) {
       const projectPath = adapter.projectPath(effectiveRoot);
       const globalPath = adapter.globalPath();
@@ -214,6 +214,7 @@ export async function cleanupStaleMcpConfigs(args: {
       }
       if (entry === null) continue;
       if (entry.command !== MCP_BINARY_NAME) {
+        if (scope !== "global") continue;
         // A local-mode `node …` command runs a different copy.
         warned(
           adapter.name,
@@ -236,9 +237,9 @@ export async function cleanupStaleMcpConfigs(args: {
         warned(
           adapter.name,
           projectPath,
-          "a project-scope `argent` entry takes precedence over the global entry in this " +
-            "project, and an editor started without your shell PATH can't run it — if your " +
-            "team doesn't rely on it, remove it"
+          "a project-scope `argent` entry takes precedence over the pinned global entry in " +
+            "this project, and an editor started without your shell PATH can't run it. Open " +
+            "that editor from a terminal, or remove the project entry if your team doesn't rely on it"
         );
       }
     }
