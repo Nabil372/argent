@@ -571,7 +571,7 @@ describe("globalBinDirOf layouts", () => {
     const prefix = path.join(projectRoot, "AppData", "Roaming", "npm");
     const pkg = path.join(prefix, "node_modules", "@swmansion", "argent");
     fs.mkdirSync(pkg, { recursive: true });
-    writeArgent(prefix, "argent.cmd");
+    writeArgent(prefix, "argent.CMD");
     vi.stubEnv("PATHEXT", ".CMD");
     try {
       withPlatform("win32", () => expect(globalBinDirOf(pkg)).toBe(prefix));
