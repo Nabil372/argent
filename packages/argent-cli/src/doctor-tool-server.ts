@@ -62,17 +62,46 @@ export function remoteCheck(
   );
 }
 
+const SHELL_ENV_NOTE =
+  "read from this shell; Codex starts MCP servers without ARGENT_* variables and Gemini drops ARGENT_AUTH_TOKEN, so for those set them in the entry's env";
+
 /** The URL without its credentials, which users paste into bug reports. */
 export function redactUrl(url: string): string {
   try {
     const parsed = new URL(url);
-    if (!parsed.username && !parsed.password) return url;
-    parsed.username = "***";
-    parsed.password = "";
+    if (!parsed.username && !parsed.password && !parsed.searchParams.has("token")) return url;
+    if (parsed.username || parsed.password) {
+      parsed.username = "***";
+      parsed.password = "";
+    }
+    if (parsed.searchParams.has("token")) parsed.searchParams.set("token", "***");
     return parsed.toString();
   } catch {
-    return url;
+    return redactUnparsedUrl(url);
   }
+}
+
+/** Anything before an `@` may be a token, e.g. a pairing string missing its scheme. */
+function redactUnparsedUrl(url: string): string {
+  return url
+    .replace(/^((?:[a-z][a-z0-9+.-]*:)?\/\/)?[^/@]+@/i, "$1***@")
+    .replace(/([?&]token=)[^&#]*/i, "$1***");
+}
+
+/** Wildcard binds are dialed on loopback, as the launcher does. */
+function dialHost(host: string): string {
+  if (host === "0.0.0.0" || host === "") return "127.0.0.1";
+  if (host === "::" || host === "::0") return "::1";
+  return host;
+}
+
+function isUsableState(state: object): boolean {
+  const { pid, port, host } = state as Record<string, unknown>;
+  return (
+    typeof pid === "number" &&
+    typeof port === "number" &&
+    (host === undefined || typeof host === "string")
+  );
 }
 
 /** Missing counts as writable: the launcher creates it. */
@@ -186,20 +215,21 @@ export async function toolServerSection(
     return { title: "Tool-server", checks };
   }
   if (linked.url) {
-    checks.push(
-      remoteCheck(
-        await remoteStatus(linked.url, linked.token),
-        linked.url,
-        linked.source,
-        ctx.argentCmd
-      )
+    const result = remoteCheck(
+      await remoteStatus(linked.url, linked.token),
+      linked.url,
+      linked.source,
+      ctx.argentCmd
     );
+    const fromShell = linked.source === "env" && result.status === "ok";
+    checks.push(fromShell ? { ...result, detail: SHELL_ENV_NOTE } : result);
     return { title: "Tool-server", checks };
   }
 
   const state = await readToolsServerState(paths.bundlePath);
   const argentDir = path.join(homedir(), ".argent");
-  if (!isWritableDir(argentDir)) {
+  const writable = isWritableDir(argentDir);
+  if (!writable) {
     checks.push(
       check("error", "~/.argent is not writable, so no tool-server can start", {
         detail: "a sudo run can leave it owned by root",
@@ -207,8 +237,17 @@ export async function toolServerSection(
       })
     );
   }
+  const respawnNote = writable ? "the next tool call respawns it" : "fix ~/.argent above first";
   if (!state) {
-    checks.push(check("info", "Not running (starts on the first tool call)"));
+    checks.push(
+      check("info", writable ? "Not running (starts on the first tool call)" : "Not running")
+    );
+  } else if (!isUsableState(state)) {
+    checks.push(
+      check("info", "Unreadable state file (pid, port or host has the wrong type)", {
+        detail: writable ? "the next tool call rewrites it" : "fix ~/.argent above first",
+      })
+    );
   } else {
     const host = state.host ?? "127.0.0.1";
     const url = formatToolsServerUrl(host, state.port);
@@ -225,7 +264,7 @@ export async function toolServerSection(
             })
           : check("ok", `Running ${url} (pid ${state.pid})`)
       );
-    } else if (argentHost && argentHost !== host) {
+    } else if (argentHost && dialHost(argentHost) !== dialHost(host)) {
       // #852: the spawned server binds to ARGENT_HOST, clients dial the recorded host.
       checks.push(
         check(
@@ -240,7 +279,7 @@ export async function toolServerSection(
     } else {
       checks.push(
         check("info", `Stale state file (pid ${state.pid} ${alive ? "unhealthy" : "gone"})`, {
-          detail: "the next tool call respawns it",
+          detail: respawnNote,
         })
       );
     }

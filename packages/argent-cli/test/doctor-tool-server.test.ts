@@ -1,7 +1,39 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import * as http from "node:http";
+import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
-import { redactUrl, remoteCheck, stopCommand } from "../src/doctor-tool-server.js";
-import { type DoctorContext } from "../src/doctor-shared.js";
+import type { ToolsServerPaths } from "@argent/tools-client";
+import type { DoctorContext } from "../src/doctor-shared.js";
+
+const fake = vi.hoisted(() => ({
+  home: "",
+  state: null as Record<string, unknown> | null,
+  alive: false,
+  healthy: vi.fn(async (..._args: unknown[]) => false),
+}));
+
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
+  return { ...actual, homedir: () => fake.home || actual.homedir() };
+});
+
+vi.mock("@argent/tools-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/tools-client")>()),
+  readToolsServerState: async () => fake.state,
+  readAllToolsServerStates: async () => [],
+  isToolsServerProcessAlive: () => fake.alive,
+  isToolsServerHealthy: (...args: unknown[]) => fake.healthy(...args),
+}));
+
+import {
+  entryRemoteChecks,
+  redactUrl,
+  remoteCheck,
+  stopCommand,
+  toolServerSection,
+} from "../src/doctor-tool-server.js";
 
 describe("remoteCheck", () => {
   it("tells a rejected token apart from a dead server", () => {
@@ -77,4 +109,143 @@ describe("stopCommand", () => {
     expect(stopCommand(ctx(other), paths("global"))).toBe(`node ${cli}`);
     expect(stopCommand(ctx(null), paths())).toBe(`node ${cli}`);
   });
+});
+
+describe("redactUrl on strings that don't parse", () => {
+  it("hides what comes before an @", () => {
+    expect(redactUrl("deadbeefcafe0123@127.0.0.1:47611")).toBe("***@127.0.0.1:47611");
+    expect(redactUrl("http://user:SECRETPW@127.0.0.1:99999")).toBe("http://***@127.0.0.1:99999");
+  });
+
+  it("hides a token query parameter", () => {
+    expect(redactUrl("http://h:1/?token=SECRET")).not.toContain("SECRET");
+    expect(redactUrl("http://h:99999/?token=SECRET")).not.toContain("SECRET");
+  });
+});
+
+describe("remote status probe", () => {
+  const servers: Array<http.Server | net.Server> = [];
+  afterEach(() => {
+    for (const server of servers.splice(0)) server.close();
+  });
+
+  async function listen<T extends http.Server | net.Server>(server: T): Promise<string> {
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+  }
+
+  it("reports the status the server answers", async () => {
+    const url = await listen(http.createServer((_req, res) => res.writeHead(401).end()));
+    const [result] = await entryRemoteChecks([{ editor: "Cursor", url }], "argent");
+    expect(result?.label).toMatch(/rejects the token \(HTTP 401\)/);
+  });
+
+  it("gives up on a server that accepts and never answers", async () => {
+    const url = await listen(net.createServer(() => {}));
+    const started = Date.now();
+    const [result] = await entryRemoteChecks([{ editor: "Cursor", url }], "argent");
+    expect(result?.label).toMatch(/unreachable/);
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("drops the connection instead of leaving an unread body open", async () => {
+    let socketClosed!: Promise<void>;
+    const url = await listen(
+      http.createServer((req, res) => {
+        socketClosed = new Promise((resolve) => req.socket.on("close", () => resolve()));
+        res.writeHead(200);
+        res.write("partial body that never ends");
+      })
+    );
+    await entryRemoteChecks([{ editor: "Cursor", url }], "argent");
+    await expect(
+      Promise.race([
+        socketClosed.then(() => "closed"),
+        new Promise((resolve) => setTimeout(() => resolve("open"), 1_000)),
+      ])
+    ).resolves.toBe("closed");
+  });
+});
+
+describe("toolServerSection", () => {
+  const paths = { bundlePath: "/pkg/dist/tool-server.cjs", installKind: "global" } as ToolsServerPaths;
+  const ctx = { projectRoot: "/proj", argentCmd: "argent" } as DoctorContext;
+  const notLinked = { url: null, token: null, source: null } as unknown as Parameters<
+    typeof toolServerSection
+  >[3];
+
+  beforeEach(() => {
+    fake.home = fs.mkdtempSync(path.join(os.tmpdir(), "argent-doctor-home-"));
+    fake.state = null;
+    fake.alive = false;
+    fake.healthy.mockReset();
+    fake.healthy.mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    fs.chmodSync(fake.home, 0o755);
+    fs.rmSync(fake.home, { recursive: true, force: true });
+    fake.home = "";
+    vi.unstubAllEnvs();
+  });
+
+  const labels = async () =>
+    (await toolServerSection(ctx, "0.30.0", paths, notLinked)).checks.map((c) => c.label);
+
+  it("passes the state file's token to the health check", async () => {
+    fake.state = { pid: 4242, port: 47391, host: "127.0.0.1", token: "tok", version: "0.30.0" };
+    fake.alive = true;
+    fake.healthy.mockResolvedValue(true);
+    expect(await labels()).toEqual(["Running http://127.0.0.1:47391 (pid 4242)"]);
+    expect(fake.healthy).toHaveBeenCalledWith(47391, "127.0.0.1", 2_000, "tok");
+  });
+
+  it("reports a state file with fields of the wrong type instead of crashing", async () => {
+    fake.state = { pid: 99999, port: 1, host: 5 };
+    expect(await labels()).toEqual([
+      "Unreadable state file (pid, port or host has the wrong type)",
+    ]);
+  });
+
+  it("does not warn about a wildcard ARGENT_HOST, which is dialed on loopback", async () => {
+    fake.state = { pid: 999999, port: 47391, host: "127.0.0.1" };
+    vi.stubEnv("ARGENT_HOST", "0.0.0.0");
+    expect(await labels()).toEqual(["Stale state file (pid 999999 gone)"]);
+    vi.stubEnv("ARGENT_HOST", "192.168.1.5");
+    expect((await labels())[0]).toMatch(/while ARGENT_HOST=192.168.1.5 is set/);
+  });
+
+  it("notes that a link from this shell's env may not reach every editor", async () => {
+    const server = http.createServer((_req, res) => res.writeHead(200).end());
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const url = `http://127.0.0.1:${(server.address() as net.AddressInfo).port}`;
+      const linked = { url, token: "t", source: "env" } as Parameters<typeof toolServerSection>[3];
+      const [result] = (await toolServerSection(ctx, "0.30.0", paths, linked)).checks;
+      expect(result).toMatchObject({ status: "ok", detail: expect.stringMatching(/Codex/) });
+    } finally {
+      server.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "does not promise an automatic start when ~/.argent is not writable",
+    async () => {
+      const argentDir = path.join(fake.home, ".argent");
+      fs.mkdirSync(argentDir, { mode: 0o555 });
+      try {
+        const section = await toolServerSection(ctx, "0.30.0", paths, notLinked);
+        expect(section.checks.map((c) => c.label)).toEqual([
+          "~/.argent is not writable, so no tool-server can start",
+          "Not running",
+        ]);
+        fake.state = { pid: 999999, port: 47391 };
+        const stale = await toolServerSection(ctx, "0.30.0", paths, notLinked);
+        expect(stale.checks[1]?.detail).toBe("fix ~/.argent above first");
+      } finally {
+        fs.chmodSync(argentDir, 0o755);
+      }
+    }
+  );
 });
