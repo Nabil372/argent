@@ -196,6 +196,7 @@ describe("collectDoctorReport", () => {
   it("exits 1 on a failed check and on an unknown option", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as typeof process.exit);
     const pkg = path.join(home, "pkg");
     const paths = {
       bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
@@ -213,10 +214,12 @@ describe("collectDoctorReport", () => {
       const report = JSON.parse(String(log.mock.calls.at(-1)?.[0])) as DoctorReport;
       expect(report.errors).toBeGreaterThan(0);
       expect(process.exitCode).toBe(1);
+      expect(exit).toHaveBeenCalledWith(1);
     } finally {
       process.exitCode = undefined;
       log.mockRestore();
       error.mockRestore();
+      exit.mockRestore();
     }
   });
 

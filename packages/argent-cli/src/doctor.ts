@@ -37,6 +37,7 @@ import { skillsSection } from "./doctor-skills.js";
 import { entryRemoteChecks, toolServerSection } from "./doctor-tool-server.js";
 import { platformsSection } from "./doctor-platforms.js";
 import { otherSection } from "./doctor-other.js";
+import { exitAfterFlush } from "./e2e.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -266,5 +267,8 @@ export async function doctor(argv: string[], options: { paths: ToolsServerPaths 
   console.log(
     argv.includes("--json") ? JSON.stringify(report, null, 2) : renderDoctorReport(report)
   );
-  if (report.errors > 0) process.exitCode = 1;
+  process.exitCode = report.errors > 0 ? 1 : 0;
+  // A probe of a host that drops packets leaves a pending connect that would
+  // keep the process alive for undici's 10s connect timeout.
+  await exitAfterFlush(process.exitCode);
 }
