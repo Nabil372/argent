@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { WebSocketServer, WebSocket } from "ws";
 import * as http from "node:http";
-import { Registry } from "@argent/registry";
+import { FAILURE_CODES, Registry, getFailureSignal } from "@argent/registry";
 import { jsRuntimeDebuggerBlueprint } from "../../src/blueprints/js-runtime-debugger";
 import { debuggerConnectTool } from "../../src/tools/debugger/debugger-connect";
 import { scopeTempHome } from "../helpers/temp-home";
@@ -9,6 +9,7 @@ import { scopeTempHome } from "../helpers/temp-home";
 const SIM_B = "BBBBBBBB-0000-0000-0000-000000000000";
 const SIM_C = "CCCCCCCC-0000-0000-0000-000000000000";
 const SIM_C_NAMESAKE = "DDDDDDDD-0000-0000-0000-000000000000";
+const SIM_E = "EEEEEEEE-0000-0000-0000-000000000000";
 const namesFor = vi.hoisted(() =>
   vi.fn(async (deviceId: string) => {
     const name = (
@@ -16,12 +17,16 @@ const namesFor = vi.hoisted(() =>
         "CCCCCCCC-0000-0000-0000-000000000000": "iPhone 15",
         "DDDDDDDD-0000-0000-0000-000000000000": "iPhone 15",
         "BBBBBBBB-0000-0000-0000-000000000000": "Pixel 9",
+        "EEEEEEEE-0000-0000-0000-000000000000": "iPad Air",
       } as Record<string, string>
     )[deviceId.toUpperCase()];
     return name ? { name, forms: [name], booted: true, bootedTwins: 0 } : undefined;
   })
 );
-vi.mock("../../src/utils/debugger/metro-device-name", () => ({ metroDeviceNamesFor: namesFor }));
+vi.mock("../../src/utils/debugger/metro-device-name", () => ({
+  metroDeviceNamesFor: namesFor,
+  noteHostedSimulatorOnMetro: () => {},
+}));
 
 // The JS-runtime-debugger / network blueprints build a real LogFileWriter,
 // whose constructor mkdir -p's os.homedir()/.argent/tmp. Keep that out of the
@@ -46,6 +51,7 @@ const DEVICES = [
   { logicalDeviceId: "logical-aaa", deviceName: "iPhone 16 Pro Max" },
   { logicalDeviceId: "logical-bbb", deviceName: "Pixel 9" },
   { logicalDeviceId: "logical-ccc", deviceName: "iPhone 15" },
+  { logicalDeviceId: "logical-eee", deviceName: "iPad Air" },
 ];
 
 function handleCDPMessage(ws: WebSocket, raw: string) {
@@ -136,6 +142,7 @@ describe("multi-device debugger routing (mock Metro, two devices)", () => {
     expect(b.deviceName).toBe("Pixel 9");
     // The two connections must NOT collapse onto the same device.
     expect(a.logicalDeviceId).not.toBe(b.logicalDeviceId);
+    expect(namesFor).not.toHaveBeenCalled();
   });
 
   it("rejects an unmatched device_id instead of silently picking the first device", async () => {
@@ -150,14 +157,27 @@ describe("multi-device debugger routing (mock Metro, two devices)", () => {
       device_id: SIM_C,
     })) as Record<string, unknown>;
     expect(c.logicalDeviceId).toBe("logical-ccc");
-    expect(namesFor).not.toHaveBeenCalledWith("logical-aaa");
   });
 
   it("refuses a UDID whose app is already debugged under its logicalDeviceId", async () => {
     await registry.invokeTool("debugger-connect", { port: mockPort, device_id: "logical-bbb" });
-    await expect(
-      registry.invokeTool("debugger-connect", { port: mockPort, device_id: SIM_B })
-    ).rejects.toThrow(/already connected as "logical-bbb"/);
+    const error = await registry
+      .invokeTool("debugger-connect", { port: mockPort, device_id: SIM_B })
+      .catch((e: unknown) => e);
+    expect(getFailureSignal(error)?.error_code).toBe(FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH);
+    expect((error as Error).message).toContain(
+      `already connected as "logical-bbb" on Metro port ${mockPort}. Pass device_id "logical-bbb"`
+    );
+  });
+
+  it("lets only one of two overlapping connects to the same app through", async () => {
+    const results = await Promise.allSettled([
+      registry.invokeTool("debugger-connect", { port: mockPort, device_id: "logical-eee" }),
+      registry.invokeTool("debugger-connect", { port: mockPort, device_id: SIM_E }),
+    ]);
+    const refused = results.filter((r) => r.status === "rejected");
+    expect(refused).toHaveLength(1);
+    expect(String((refused[0] as PromiseRejectedResult).reason)).toMatch(/already connected as/);
   });
 
   it("refuses another spelling of a UDID whose app already has a session", async () => {

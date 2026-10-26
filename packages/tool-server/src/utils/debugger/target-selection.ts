@@ -171,7 +171,7 @@ function matchByDeviceName(
       `device_id "${deviceId}" is the simulator "${hint.name}", but no app on that simulator ` +
         `is connected to Metro on port ${port}. Connected: ${describeDevices(pool).listed}. ` +
         `Launch or reload the app on "${hint.name}", then retry.`,
-      FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS
+      FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH
     );
   }
   if (hint.bootedTwins > 0) {

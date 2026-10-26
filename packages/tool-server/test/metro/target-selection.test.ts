@@ -247,11 +247,11 @@ describe("selectTarget by simulator UDID (device name hint)", () => {
     expect(result.target.id).toBe("b");
   });
 
-  it("refuses the only connected app when it is on another simulator, as no app connected", () => {
+  it("refuses the only connected app when it is on another simulator, as a device mismatch", () => {
     const f = failureOf(() =>
       selectTarget([a], 8082, { deviceId: "UDID-B", deviceNames: hint("bench-ARG-B") })
     );
-    expect(f.code).toBe(FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS);
+    expect(f.code).toBe(FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH);
     expect(f.message).toContain("bench-ARG-A");
   });
 

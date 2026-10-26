@@ -9,6 +9,11 @@ let setDevices: Record<string, Devices> = {};
 let ownSet: string | null = null;
 let additionalSets: string[] = [];
 let simctlFails = false;
+/** Sets that fail to list, as a timed-out or broken simctl would. */
+let failingSets: string[] = [];
+let hostedDevices: Devices = {};
+let hostedFails = false;
+let providerDevices: Array<{ platform: "ios" | "android"; deviceSet?: string }> = [];
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -23,12 +28,19 @@ vi.mock("node:child_process", async () => {
       const callback = typeof opts === "function" ? opts : cb!;
       const options = (typeof opts === "function" ? undefined : opts) as ExecOptions;
       calls.push({ cmd, args, options });
-      if (simctlFails) {
-        callback(new Error("xcrun: error: unable to find utility"), { stdout: "", stderr: "" });
+      if (cmd === "sim-remote") {
+        if (hostedFails)
+          callback(new Error("sim-remote: not signed in"), { stdout: "", stderr: "" });
+        else callback(null, { stdout: JSON.stringify({ devices: hostedDevices }), stderr: "" });
         return;
       }
       const setIndex = args.indexOf("--set");
-      const devices = setIndex >= 0 ? (setDevices[args[setIndex + 1]!] ?? {}) : simctlDevices;
+      const set = setIndex >= 0 ? args[setIndex + 1]! : null;
+      if (simctlFails || (set && failingSets.includes(set))) {
+        callback(new Error("xcrun: error: unable to find utility"), { stdout: "", stderr: "" });
+        return;
+      }
+      const devices = set ? (setDevices[set] ?? {}) : simctlDevices;
       callback(null, { stdout: JSON.stringify({ devices }), stderr: "" });
     },
   };
@@ -45,14 +57,28 @@ vi.mock("../../src/utils/ios-device-sets", async () => {
   };
 });
 
+vi.mock("../../src/utils/external-devices", async () => {
+  const actual = await vi.importActual<typeof import("../../src/utils/external-devices")>(
+    "../../src/utils/external-devices"
+  );
+  return { ...actual, listExternalDevices: async () => providerDevices };
+});
+
 vi.mock("node:fs", async () => {
   const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
   return { ...actual, existsSync: (p: string) => p.startsWith("/sets/") || actual.existsSync(p) };
 });
 
-import { metroDeviceNamesFor } from "../../src/utils/debugger/metro-device-name";
+import {
+  metroDeviceNamesFor as namesOnPort,
+  noteHostedSimulatorOnMetro,
+} from "../../src/utils/debugger/metro-device-name";
 
-const UDID_A = "11111111-1111-1111-1111-111111111111";
+const PORT = 8081;
+const HOSTED_PORT = 8090;
+const metroDeviceNamesFor = (deviceId: string) => namesOnPort(deviceId, PORT);
+
+const UDID_A = "AAAAAAAA-1111-1111-1111-111111111111";
 const UDID_B = "22222222-2222-2222-2222-222222222222";
 const UDID_C = "33333333-3333-3333-3333-333333333333";
 
@@ -62,6 +88,10 @@ beforeEach(() => {
   ownSet = null;
   additionalSets = [];
   simctlFails = false;
+  failingSets = [];
+  hostedDevices = {};
+  hostedFails = false;
+  providerDevices = [];
   simctlDevices = {
     "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [
       { udid: UDID_A, name: "iPhone 16 Pro", state: "Booted" },
@@ -150,6 +180,35 @@ describe("metroDeviceNamesFor", () => {
       state: "Booted",
     });
     expect((await metroDeviceNamesFor(UDID_C))?.bootedTwins).toBe(1);
+  });
+
+  it("gives no hint when another device set fails to list, since it may hold a twin", async () => {
+    additionalSets = ["/sets/radon", "/sets/broken"];
+    failingSets = ["/sets/broken"];
+    await expect(metroDeviceNamesFor(UDID_A)).resolves.toBeUndefined();
+  });
+
+  it("counts a twin in a device set a provider declares", async () => {
+    providerDevices = [{ platform: "ios", deviceSet: "/sets/provider" }];
+    setDevices["/sets/provider"] = {
+      "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [
+        { udid: "77777777-7777-7777-7777-777777777777", name: "iPhone 16 Pro", state: "Booted" },
+      ],
+    };
+    expect((await metroDeviceNamesFor(UDID_A))?.bootedTwins).toBe(1);
+  });
+
+  it("counts a hosted simulator as a twin only on a Metro a hosted app is tunneled into", async () => {
+    hostedDevices = {
+      "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [
+        { udid: "88888888-8888-8888-8888-888888888888", name: "iPhone 16 Pro", state: "Booted" },
+      ],
+    };
+    noteHostedSimulatorOnMetro(HOSTED_PORT);
+    expect((await namesOnPort(UDID_A, HOSTED_PORT))?.bootedTwins).toBe(1);
+    expect((await metroDeviceNamesFor(UDID_A))?.bootedTwins).toBe(0);
+    hostedFails = true;
+    await expect(namesOnPort(UDID_A, HOSTED_PORT)).resolves.toBeUndefined();
   });
 
   it("gives no hint when simctl fails, so connect falls back to the id-only rules", async () => {

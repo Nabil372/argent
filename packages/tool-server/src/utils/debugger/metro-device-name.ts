@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { classifyDevice } from "../device-info";
-import { externalNativeId } from "../external-devices";
+import { externalNativeId, listExternalDevices } from "../external-devices";
 import {
   configuredAdditionalDeviceSets,
   deviceSetForUdid,
@@ -10,6 +10,7 @@ import {
   type DeviceSetPath,
 } from "../ios-device-sets";
 import { SIMCTL_KILL_SIGNAL } from "../simctl-config";
+import { simctlListDevices } from "../sim-remote";
 
 const execFileAsync = promisify(execFile);
 
@@ -47,11 +48,24 @@ function asParsedByMetro(name: string): string {
   return name.split("&")[0]!.replace(/\+/g, " ");
 }
 
-/** The simulator's names, or undefined when `deviceId` is not a local simulator or the lookup fails. */
-export async function metroDeviceNamesFor(deviceId: string): Promise<MetroDeviceNames | undefined> {
+const metroPortsWithHostedSimulators = new Set<number>();
+
+/** Record that a hosted `remote:` simulator's app is tunneled into the Metro on `port`. */
+export function noteHostedSimulatorOnMetro(port: number): void {
+  metroPortsWithHostedSimulators.add(port);
+}
+
+/**
+ * The simulator's names, or undefined when `deviceId` is not a local simulator
+ * or any lookup fails, including a listing that could hide a same-named twin.
+ */
+export async function metroDeviceNamesFor(
+  deviceId: string,
+  port: number
+): Promise<MetroDeviceNames | undefined> {
   if (classifyDevice(deviceId) !== "ios") return undefined;
   try {
-    return await iosSimulatorNames(deviceId);
+    return await iosSimulatorNames(deviceId, port);
   } catch {
     return undefined;
   }
@@ -69,29 +83,49 @@ async function listDevices(deviceSet: DeviceSetPath): Promise<SimctlDevice[]> {
   return Object.values(parsed.devices ?? {}).flat();
 }
 
+async function providerDeviceSets(): Promise<DeviceSetPath[]> {
+  const devices = await listExternalDevices({ probe: false });
+  return devices.filter((d) => d.platform === "ios").map((d) => d.deviceSet ?? null);
+}
+
 /**
- * The booted simulators of every other device set. One Metro serves simulators
- * from all of them, so a same-named simulator in another set is a twin too.
- * A set that is missing or fails to list counts as empty: it is only used to
- * refuse, never to resolve.
+ * The simulators of every other device set: the default one, the configured
+ * ones and those providers declare. One Metro serves simulators from all of
+ * them, so a same-named simulator in another set is a twin too. A set that
+ * fails to list rejects, since it may hold a twin.
  */
 async function otherSetDevices(own: DeviceSetPath): Promise<SimctlDevice[]> {
-  const sets = [null, ...configuredAdditionalDeviceSets()].filter(
+  const candidates = [null, ...configuredAdditionalDeviceSets(), ...(await providerDeviceSets())];
+  const sets = [...new Set(candidates)].filter(
     (set) => set !== own && (set === null || fs.existsSync(set))
   );
-  const lists = await Promise.all(sets.map((set) => listDevices(set).catch(() => [])));
+  const lists = await Promise.all(sets.map(listDevices));
   return lists.flat();
 }
 
-async function iosSimulatorNames(deviceId: string): Promise<MetroDeviceNames | undefined> {
+/** The hosted `remote:` simulators, when any of them is tunneled into this Metro. */
+async function hostedDevices(port: number): Promise<SimctlDevice[]> {
+  if (!metroPortsWithHostedSimulators.has(port)) return [];
+  const { devices } = await simctlListDevices({ timeoutMs: LOOKUP_TIMEOUT_MS });
+  return Object.values(devices).flat();
+}
+
+async function iosSimulatorNames(
+  deviceId: string,
+  port: number
+): Promise<MetroDeviceNames | undefined> {
   const udid = externalNativeId(deviceId).toUpperCase();
   const ownSet = await deviceSetForUdid(deviceId);
-  const [own, others] = await Promise.all([listDevices(ownSet), otherSetDevices(ownSet)]);
+  const [own, others, hosted] = await Promise.all([
+    listDevices(ownSet),
+    otherSetDevices(ownSet),
+    hostedDevices(port),
+  ]);
   const hit = own.find((d) => d.udid.toUpperCase() === udid);
   if (!hit) return undefined;
   // Compare as Metro lists them: `QA&1` and `QA&2` both reach it as `QA`.
   const parsedName = asParsedByMetro(hit.name);
-  const bootedTwins = [...own, ...others].filter(
+  const bootedTwins = [...own, ...others, ...hosted].filter(
     (d) =>
       d.state === "Booted" &&
       d.udid.toUpperCase() !== udid &&

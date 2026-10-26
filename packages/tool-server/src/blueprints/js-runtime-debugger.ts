@@ -12,7 +12,10 @@ import { classifyDevice } from "../utils/device-info";
 import { assertExternalCapability, externalNativeId } from "../utils/external-devices";
 import { proxyStart } from "../utils/sim-remote";
 import { selectTarget } from "../utils/debugger/target-selection";
-import { metroDeviceNamesFor } from "../utils/debugger/metro-device-name";
+import {
+  metroDeviceNamesFor,
+  noteHostedSimulatorOnMetro,
+} from "../utils/debugger/metro-device-name";
 import {
   rememberDeviceAlias,
   forgetDeviceAlias,
@@ -141,13 +144,23 @@ export interface JsRuntimeDebuggerApi {
 }
 
 /**
- * The device_id of the live debugger session on the target Metro lists as
- * `logicalDeviceId`: the logicalDeviceId itself, or the id it was connected
- * with (another spelling of the same UDID, its case or `ext:` form, keys a
- * separate service). Undefined when nothing is connected to it.
+ * The device_id of each connect still setting up its session, by the
+ * logicalDeviceId of the target it selected. The alias maps only learn the
+ * target once setup finishes, so without this two overlapping connects would
+ * both pass the live-session check.
+ */
+const connectingTargets = new Map<string, string>();
+
+/**
+ * The device_id of the live or connecting debugger session on the target Metro
+ * lists as `logicalDeviceId`: the logicalDeviceId itself, or the id it was
+ * connected with (another spelling of the same UDID, its case or `ext:` form,
+ * keys a separate service). Undefined when nothing is connected to it.
  */
 function liveSessionOn(logicalDeviceId: string | undefined): string | undefined {
   if (!logicalDeviceId) return undefined;
+  const connecting = connectingTargets.get(logicalDeviceId);
+  if (connecting) return connecting;
   if (isLogicalKeyedDevice(logicalDeviceId)) return logicalDeviceId;
   const connectId = canonicalDeviceId(logicalDeviceId);
   return connectId !== logicalDeviceId ? connectId : undefined;
@@ -166,10 +179,11 @@ function liveSessionConflict(
   deviceId: string,
   liveSessionId: string,
   port: number,
-  matchedDeviceId: boolean
+  selected: { logicalDeviceId: string; matchedDeviceId: boolean }
 ): FailureError {
   const isSameApp =
-    sameDevice(liveSessionId, deviceId) || (matchedDeviceId && isLogicalKeyedDevice(liveSessionId));
+    sameDevice(liveSessionId, deviceId) ||
+    (selected.matchedDeviceId && liveSessionId === selected.logicalDeviceId);
   const message = isSameApp
     ? `device_id "${deviceId}" is the app already connected as "${liveSessionId}" on ` +
       `Metro port ${port}. Pass device_id "${liveSessionId}" to keep using that session.`
@@ -239,6 +253,7 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     // every connect is cheap.
     if (classifyDevice(deviceId) === "ios-remote") {
       await proxyStart(deviceId, port);
+      noteHostedSimulatorOnMetro(port);
     }
 
     /**
@@ -266,203 +281,211 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
       throw error;
     });
     const isLogicalId = metro.targets.some((t) => t.reactNative?.logicalDeviceId === deviceId);
-    const deviceNames = isLogicalId ? undefined : await metroDeviceNamesFor(deviceId);
+    const deviceNames = isLogicalId ? undefined : await metroDeviceNamesFor(deviceId, port);
     const selected = selectTarget(metro.targets, port, {
       ...options,
       deviceId,
       deviceNames,
     });
-    const liveSessionId = liveSessionOn(selected.target.reactNative?.logicalDeviceId);
+    const targetId = selected.target.reactNative?.logicalDeviceId;
+    const liveSessionId = liveSessionOn(targetId);
     // inspector-proxy keeps one debugger per device, so a second session on
     // this target would evict the live one, whichever id keys it.
-    if (liveSessionId && liveSessionId !== deviceId) {
-      throw liveSessionConflict(deviceId, liveSessionId, port, selected.matchedDeviceId);
-    }
-
-    /**
-     * React Native's inspector-proxy keeps one debugger per device and
-     * terminates the incumbent to admit a new one. Connecting to Metro's
-     * target would therefore evict a provider already debugging this runtime,
-     * and the two would reconnect in a loop. A provider avoids that by
-     * re-serving its own connection and publishing the socket.
-     *
-     * Only the socket comes from the provider. `selected` still supplies the
-     * session's identity below, so names, alias and source-map roots are the
-     * same either way.
-     *
-     * Taken only while this session is on the bundler the provider published.
-     * `publishedMetroPort` answers with that port exactly when it is not the
-     * one in use, which is the caller having named another bundler. Its runtime
-     * is not the one the provider re-serves, so the socket belongs to a
-     * different app than the target metadata above. Sending CDP down it would
-     * drive one runtime while reporting another, silently, across the debugger,
-     * the network inspector and the profiler alike.
-     *
-     * A provider that published a socket but no `metroPort` names no bundler to
-     * disagree with, so its socket still stands.
-     */
-    const onPublishedBundler = publishedMetroPort(deviceId, port) === undefined;
-    const proxied = onPublishedBundler ? externalJsDebuggerUrl(deviceId) : undefined;
-
-    const cdp = new CDPClient(proxied ?? selected.webSocketUrl);
-    await cdp.connect();
-
-    const sourceMaps = new SourceMapsRegistry();
-
-    cdp.events.on("scriptParsed", (script) => {
-      sourceMaps.registerFromScriptParsed(script.url, script.scriptId, script.sourceMapURL);
-    });
-
-    const ignore = () => {};
-    const warnOnError = (label: string) => (err: unknown) => {
-      const msg = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[JsRuntimeDebugger:${port}] ${label} failed (non-fatal): ${msg}\n`);
-    };
-
-    /**
-     * Through a provider's socket Argent is one of several clients on a single
-     * connection, so this setup splits by what it touches.
-     *
-     * These four are per-runtime, not per-client. On a shared session they reach
-     * into someone else's debugger: `setPauseOnExceptions: "none"` would disarm
-     * exception breakpoints a user set, from a tool they did not run. The client
-     * that owns the session owns its global state.
-     *
-     * The remaining setup only affects Argent's client. Enables are idempotent,
-     * and a binding only adds one. Other clients can ignore it by name.
-     */
-    if (!proxied) {
-      await cdp.send("FuseboxClient.setClientMetadata", {}).catch(ignore);
-    }
-
-    await cdp.send("ReactNativeApplication.enable", {}).catch(ignore);
-    await cdp.send("Runtime.enable");
-    // Metro can inline a full source map on Debugger.enable. Only skip it for
-    // targets advertising the modern inspector: legacy Hermes (RN <= 0.72,
-    // including Vega) requires it for evaluation. A reactNative block alone
-    // does not prove the runtime uses the modern inspector.
-    const enableDebugger =
-      !!proxied || selected.target.reactNative?.capabilities?.prefersFuseboxFrontend !== true;
-    if (enableDebugger) {
-      await cdp.send("Debugger.enable", { maxScriptsCacheSize: 100_000_000 });
-    }
-
-    if (!proxied) {
-      if (enableDebugger) {
-        await cdp.send("Debugger.setPauseOnExceptions", { state: "none" });
-        await cdp.send("Debugger.setAsyncCallStackDepth", { maxDepth: 32 }).catch(ignore);
-      }
-      await cdp.send("Runtime.runIfWaitingForDebugger").catch(ignore);
-    }
-
-    await cdp.addBinding("__argent_callback");
-
-    await cdp.evaluate(DISABLE_LOGBOX_SCRIPT).catch(warnOnError("DISABLE_LOGBOX_SCRIPT"));
-
-    await sourceMaps.waitForPending();
-
-    const sourceResolver = createSourceResolver(port, metro.projectRoot);
-
-    const logWriter = new LogFileWriter(port);
-    const consoleEvents = new TypedEventEmitter<ConsoleLogEvents>();
-    let nextLogId = 0;
-
-    cdp.events.on("consoleAPICalled", (params) => {
-      const entry: ConsoleLogEntry = {
-        id: nextLogId++,
-        level: params.type,
-        args: params.args.map((a) => ({
-          type: a.type,
-          value: a.value,
-          description: a.description,
-        })),
-        message: formatConsoleArgs(params),
-        timestamp: params.timestamp,
-        stackTrace: params.stackTrace as ConsoleLogEntry["stackTrace"],
-      };
-      logWriter.write({
-        id: entry.id,
-        timestamp: consoleTimestampToIso(entry.timestamp),
-        level: entry.level,
-        message: entry.message,
-        stackTrace: entry.stackTrace,
+    if (targetId && liveSessionId && liveSessionId !== deviceId) {
+      throw liveSessionConflict(deviceId, liveSessionId, port, {
+        logicalDeviceId: targetId,
+        matchedDeviceId: selected.matchedDeviceId,
       });
-      consoleEvents.emit("log", entry);
-    });
+    }
+    if (targetId) connectingTargets.set(targetId, deviceId);
+    try {
+      /**
+       * React Native's inspector-proxy keeps one debugger per device and
+       * terminates the incumbent to admit a new one. Connecting to Metro's
+       * target would therefore evict a provider already debugging this runtime,
+       * and the two would reconnect in a loop. A provider avoids that by
+       * re-serving its own connection and publishing the socket.
+       *
+       * Only the socket comes from the provider. `selected` still supplies the
+       * session's identity below, so names, alias and source-map roots are the
+       * same either way.
+       *
+       * Taken only while this session is on the bundler the provider published.
+       * `publishedMetroPort` answers with that port exactly when it is not the
+       * one in use, which is the caller having named another bundler. Its runtime
+       * is not the one the provider re-serves, so the socket belongs to a
+       * different app than the target metadata above. Sending CDP down it would
+       * drive one runtime while reporting another, silently, across the debugger,
+       * the network inspector and the profiler alike.
+       *
+       * A provider that published a socket but no `metroPort` names no bundler to
+       * disagree with, so its socket still stands.
+       */
+      const onPublishedBundler = publishedMetroPort(deviceId, port) === undefined;
+      const proxied = onPublishedBundler ? externalJsDebuggerUrl(deviceId) : undefined;
 
-    const consoleServer = await createConsoleLogServer(consoleEvents, logWriter);
+      const cdp = new CDPClient(proxied ?? selected.webSocketUrl);
+      await cdp.connect();
 
-    const api: JsRuntimeDebuggerApi = {
-      port,
-      projectRoot: metro.projectRoot,
-      deviceName: selected.deviceName,
-      appName: selected.target.title,
-      logicalDeviceId: selected.target.reactNative?.logicalDeviceId,
-      isNewDebugger: selected.isNewDebugger,
-      cdp,
-      sourceResolver,
-      sourceMaps,
-      logWriter,
-      consoleEvents,
-      consoleSocketUrl: consoleServer.url,
-    };
+      const sourceMaps = new SourceMapsRegistry();
 
-    // Connect is the only place both ids are known at once; the alias keeps a
-    // later tool that forwards the logicalDeviceId on this instance instead of
-    // opening a second one. See utils/debugger/device-alias.ts.
-    rememberDeviceAlias(api.logicalDeviceId, deviceId);
-    // Equal ids mean the caller connected with the logicalDeviceId itself, as
-    // `selectTarget` demands once a second device shares this Metro. Nothing
-    // then joins the session to a udid or serial, so a `list-devices`-scoped
-    // `stop-all-simulator-servers` can only report it, never reach it.
-    rememberLogicalKeyedDevice(api.logicalDeviceId, deviceId);
+      cdp.events.on("scriptParsed", (script) => {
+        sourceMaps.registerFromScriptParsed(script.url, script.scriptId, script.sourceMapURL);
+      });
 
-    const events = new TypedEventEmitter<ServiceEvents>();
+      const ignore = () => {};
+      const warnOnError = (label: string) => (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[JsRuntimeDebugger:${port}] ${label} failed (non-fatal): ${msg}\n`);
+      };
 
-    cdp.events.on("disconnected", (error) => {
-      events.emit(
-        "terminated",
-        error ??
-          new FailureError("CDP disconnected", {
-            error_code: FAILURE_CODES.JS_RUNTIME_CDP_DISCONNECTED,
-            failure_stage: "js_runtime_debugger_cdp_lifecycle",
-            failure_area: "tool_server",
-            error_kind: "network",
-          })
-      );
-    });
+      /**
+       * Through a provider's socket Argent is one of several clients on a single
+       * connection, so this setup splits by what it touches.
+       *
+       * These four are per-runtime, not per-client. On a shared session they reach
+       * into someone else's debugger: `setPauseOnExceptions: "none"` would disarm
+       * exception breakpoints a user set, from a tool they did not run. The client
+       * that owns the session owns its global state.
+       *
+       * The remaining setup only affects Argent's client. Enables are idempotent,
+       * and a binding only adds one. Other clients can ignore it by name.
+       */
+      if (!proxied) {
+        await cdp.send("FuseboxClient.setClientMetadata", {}).catch(ignore);
+      }
 
-    return {
-      api,
-      dispose: async () => {
-        // `logWriter.close()` below unlinks the log file unless the socket
-        // dropped (likely an app crash, so the log is evidence), and this
-        // dispose is routinely another agent's `stop-all-simulator-servers`.
-        // Breadcrumb so `debugger-log-registry` can say where the history went
-        // — only when there was history, and under both ids, since
-        // `forgetDeviceAlias` below drops the only join between them.
-        const captured = logWriter.getStats().totalEntries;
-        const keepFile = captured > 0 && !cdp.isConnected();
-        if (captured > 0) {
-          const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
-          const salvage = keepFile
-            ? `The log file with its ${entries} is kept at ${logWriter.getFilePath()}.`
-            : `The ${entries} went with it — the log file is deleted on teardown, so this ` +
-              `registry starts empty rather than the app having logged nothing.`;
-          recordReapedSession(
-            "js-runtime-debugger",
-            [deviceId, api.logicalDeviceId],
-            salvage,
-            keepFile
-          );
+      await cdp.send("ReactNativeApplication.enable", {}).catch(ignore);
+      await cdp.send("Runtime.enable");
+      // Metro can inline a full source map on Debugger.enable. Only skip it for
+      // targets advertising the modern inspector: legacy Hermes (RN <= 0.72,
+      // including Vega) requires it for evaluation. A reactNative block alone
+      // does not prove the runtime uses the modern inspector.
+      const enableDebugger =
+        !!proxied || selected.target.reactNative?.capabilities?.prefersFuseboxFrontend !== true;
+      if (enableDebugger) {
+        await cdp.send("Debugger.enable", { maxScriptsCacheSize: 100_000_000 });
+      }
+
+      if (!proxied) {
+        if (enableDebugger) {
+          await cdp.send("Debugger.setPauseOnExceptions", { state: "none" });
+          await cdp.send("Debugger.setAsyncCallStackDepth", { maxDepth: 32 }).catch(ignore);
         }
-        forgetDeviceAlias(api.logicalDeviceId);
-        forgetLogicalKeyedDevice(deviceId);
-        await consoleServer.close();
-        logWriter.close({ keepFile });
-        await cdp.disconnect();
-      },
-      events,
-    };
+        await cdp.send("Runtime.runIfWaitingForDebugger").catch(ignore);
+      }
+
+      await cdp.addBinding("__argent_callback");
+
+      await cdp.evaluate(DISABLE_LOGBOX_SCRIPT).catch(warnOnError("DISABLE_LOGBOX_SCRIPT"));
+
+      await sourceMaps.waitForPending();
+
+      const sourceResolver = createSourceResolver(port, metro.projectRoot);
+
+      const logWriter = new LogFileWriter(port);
+      const consoleEvents = new TypedEventEmitter<ConsoleLogEvents>();
+      let nextLogId = 0;
+
+      cdp.events.on("consoleAPICalled", (params) => {
+        const entry: ConsoleLogEntry = {
+          id: nextLogId++,
+          level: params.type,
+          args: params.args.map((a) => ({
+            type: a.type,
+            value: a.value,
+            description: a.description,
+          })),
+          message: formatConsoleArgs(params),
+          timestamp: params.timestamp,
+          stackTrace: params.stackTrace as ConsoleLogEntry["stackTrace"],
+        };
+        logWriter.write({
+          id: entry.id,
+          timestamp: consoleTimestampToIso(entry.timestamp),
+          level: entry.level,
+          message: entry.message,
+          stackTrace: entry.stackTrace,
+        });
+        consoleEvents.emit("log", entry);
+      });
+
+      const consoleServer = await createConsoleLogServer(consoleEvents, logWriter);
+
+      const api: JsRuntimeDebuggerApi = {
+        port,
+        projectRoot: metro.projectRoot,
+        deviceName: selected.deviceName,
+        appName: selected.target.title,
+        logicalDeviceId: selected.target.reactNative?.logicalDeviceId,
+        isNewDebugger: selected.isNewDebugger,
+        cdp,
+        sourceResolver,
+        sourceMaps,
+        logWriter,
+        consoleEvents,
+        consoleSocketUrl: consoleServer.url,
+      };
+
+      // Connect is the only place both ids are known at once; the alias keeps a
+      // later tool that forwards the logicalDeviceId on this instance instead of
+      // opening a second one. See utils/debugger/device-alias.ts.
+      rememberDeviceAlias(api.logicalDeviceId, deviceId);
+      // Equal ids mean the caller connected with the logicalDeviceId itself, as
+      // `selectTarget` demands once a second device shares this Metro. Nothing
+      // then joins the session to a udid or serial, so a `list-devices`-scoped
+      // `stop-all-simulator-servers` can only report it, never reach it.
+      rememberLogicalKeyedDevice(api.logicalDeviceId, deviceId);
+
+      const events = new TypedEventEmitter<ServiceEvents>();
+
+      cdp.events.on("disconnected", (error) => {
+        events.emit(
+          "terminated",
+          error ??
+            new FailureError("CDP disconnected", {
+              error_code: FAILURE_CODES.JS_RUNTIME_CDP_DISCONNECTED,
+              failure_stage: "js_runtime_debugger_cdp_lifecycle",
+              failure_area: "tool_server",
+              error_kind: "network",
+            })
+        );
+      });
+
+      return {
+        api,
+        dispose: async () => {
+          // `logWriter.close()` below unlinks the log file unless the socket
+          // dropped (likely an app crash, so the log is evidence), and this
+          // dispose is routinely another agent's `stop-all-simulator-servers`.
+          // Breadcrumb so `debugger-log-registry` can say where the history went
+          // — only when there was history, and under both ids, since
+          // `forgetDeviceAlias` below drops the only join between them.
+          const captured = logWriter.getStats().totalEntries;
+          const keepFile = captured > 0 && !cdp.isConnected();
+          if (captured > 0) {
+            const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
+            const salvage = keepFile
+              ? `The log file with its ${entries} is kept at ${logWriter.getFilePath()}.`
+              : `The ${entries} went with it — the log file is deleted on teardown, so this ` +
+                `registry starts empty rather than the app having logged nothing.`;
+            recordReapedSession(
+              "js-runtime-debugger",
+              [deviceId, api.logicalDeviceId],
+              salvage,
+              keepFile
+            );
+          }
+          forgetDeviceAlias(api.logicalDeviceId);
+          forgetLogicalKeyedDevice(deviceId);
+          await consoleServer.close();
+          logWriter.close({ keepFile });
+          await cdp.disconnect();
+        },
+        events,
+      };
+    } finally {
+      if (targetId) connectingTargets.delete(targetId);
+    }
   },
 };
