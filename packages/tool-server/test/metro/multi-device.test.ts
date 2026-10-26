@@ -8,15 +8,17 @@ import { scopeTempHome } from "../helpers/temp-home";
 
 const SIM_B = "BBBBBBBB-0000-0000-0000-000000000000";
 const SIM_C = "CCCCCCCC-0000-0000-0000-000000000000";
+const SIM_C_NAMESAKE = "DDDDDDDD-0000-0000-0000-000000000000";
 const namesFor = vi.hoisted(() =>
   vi.fn(async (deviceId: string) => {
     const name = (
       {
         "CCCCCCCC-0000-0000-0000-000000000000": "iPhone 15",
+        "DDDDDDDD-0000-0000-0000-000000000000": "iPhone 15",
         "BBBBBBBB-0000-0000-0000-000000000000": "Pixel 9",
       } as Record<string, string>
     )[deviceId.toUpperCase()];
-    return name ? { name, forms: [name], bootedTwins: 0 } : undefined;
+    return name ? { name, forms: [name], booted: true, bootedTwins: 0 } : undefined;
   })
 );
 vi.mock("../../src/utils/debugger/metro-device-name", () => ({ metroDeviceNamesFor: namesFor }));
@@ -163,5 +165,14 @@ describe("multi-device debugger routing (mock Metro, two devices)", () => {
     await expect(
       registry.invokeTool("debugger-connect", { port: mockPort, device_id: SIM_C.toLowerCase() })
     ).rejects.toThrow(`already connected as "${SIM_C}"`);
+  });
+
+  it("does not offer another device's live session to a same-named simulator", async () => {
+    await registry.invokeTool("debugger-connect", { port: mockPort, device_id: SIM_C });
+    const error = await registry
+      .invokeTool("debugger-connect", { port: mockPort, device_id: SIM_C_NAMESAKE })
+      .catch((e: Error) => e);
+    expect((error as Error).message).toMatch(/would evict that session/);
+    expect((error as Error).message).not.toMatch(/Pass device_id/);
   });
 });

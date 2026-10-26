@@ -46,7 +46,8 @@ const GUIDANCE: Record<DebuggerNotConnectedReason, string> = {
   device_mismatch:
     "The device_id could not be matched to one debugger target on this Metro. Do what the " +
     "detail message says: re-target with the logicalDeviceId it names, or, when it says " +
-    "simulators share a name, rename them and relaunch the app. A legacy-inspector device " +
+    "simulators share a name, rename them, shut down and boot each renamed simulator, then " +
+    "relaunch the app. A legacy-inspector device " +
     "(no logicalDeviceId) needs its own Metro port.",
   cdp_unreachable:
     "The runtime's CDP endpoint could not be reached. Verify the app is running " +

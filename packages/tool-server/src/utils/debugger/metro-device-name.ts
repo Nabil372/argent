@@ -32,6 +32,8 @@ export interface MetroDeviceNames {
   name: string;
   /** Every form Metro may list `name` under. */
   forms: string[];
+  /** Whether the simulator itself is booted. */
+  booted: boolean;
   /** How many other booted simulators carry the same name. */
   bootedTwins: number;
 }
@@ -98,6 +100,7 @@ async function iosSimulatorNames(deviceId: string): Promise<MetroDeviceNames | u
   return {
     name: hit.name,
     forms: [...new Set([hit.name, parsedName])],
+    booted: hit.state === "Booted",
     bootedTwins,
   };
 }

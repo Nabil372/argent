@@ -9,7 +9,7 @@ import {
 import { discoverMetro } from "../utils/debugger/discovery";
 import { externalJsDebuggerUrl, publishedMetroPort } from "../utils/debugger/metro-port";
 import { classifyDevice } from "../utils/device-info";
-import { assertExternalCapability } from "../utils/external-devices";
+import { assertExternalCapability, externalNativeId } from "../utils/external-devices";
 import { proxyStart } from "../utils/sim-remote";
 import { selectTarget } from "../utils/debugger/target-selection";
 import { metroDeviceNamesFor } from "../utils/debugger/metro-device-name";
@@ -153,6 +153,37 @@ function liveSessionOn(logicalDeviceId: string | undefined): string | undefined 
   return connectId !== logicalDeviceId ? connectId : undefined;
 }
 
+function sameDevice(a: string, b: string): boolean {
+  return externalNativeId(a).toUpperCase() === externalNativeId(b).toUpperCase();
+}
+
+/**
+ * Refuse a connect that would evict the live session on the selected target.
+ * Only point the caller at that session when `deviceId` is known to be its
+ * device; otherwise the target may be another device's app.
+ */
+function liveSessionConflict(
+  deviceId: string,
+  liveSessionId: string,
+  port: number,
+  matchedDeviceId: boolean
+): FailureError {
+  const isSameApp =
+    sameDevice(liveSessionId, deviceId) || (matchedDeviceId && isLogicalKeyedDevice(liveSessionId));
+  const message = isSameApp
+    ? `device_id "${deviceId}" is the app already connected as "${liveSessionId}" on ` +
+      `Metro port ${port}. Pass device_id "${liveSessionId}" to keep using that session.`
+    : `No app on Metro port ${port} is known to belong to device_id "${deviceId}", and the ` +
+      `app it would attach to is already debugged as "${liveSessionId}", so connecting would ` +
+      `evict that session. Connect the app on "${deviceId}" to this Metro, then retry.`;
+  return new FailureError(message, {
+    error_code: FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH,
+    failure_stage: "debugger_select_target",
+    failure_area: "tool_server",
+    error_kind: "validation",
+  });
+}
+
 export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, string> = {
   namespace: JS_RUNTIME_DEBUGGER_NAMESPACE,
 
@@ -245,16 +276,7 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
     // inspector-proxy keeps one debugger per device, so a second session on
     // this target would evict the live one, whichever id keys it.
     if (liveSessionId && liveSessionId !== deviceId) {
-      throw new FailureError(
-        `device_id "${deviceId}" is the app already connected as "${liveSessionId}" on ` +
-          `Metro port ${port}. Pass device_id "${liveSessionId}" to keep using that session.`,
-        {
-          error_code: FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH,
-          failure_stage: "debugger_select_target",
-          failure_area: "tool_server",
-          error_kind: "validation",
-        }
-      );
+      throw liveSessionConflict(deviceId, liveSessionId, port, selected.matchedDeviceId);
     }
 
     /**

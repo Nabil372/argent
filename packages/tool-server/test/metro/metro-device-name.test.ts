@@ -76,7 +76,18 @@ beforeEach(() => {
 describe("metroDeviceNamesFor", () => {
   it("returns the simulator's simctl name, case-insensitively by UDID", async () => {
     const hint = await metroDeviceNamesFor(UDID_A.toLowerCase());
-    expect(hint).toEqual({ name: "iPhone 16 Pro", forms: ["iPhone 16 Pro"], bootedTwins: 0 });
+    expect(hint).toEqual({
+      name: "iPhone 16 Pro",
+      forms: ["iPhone 16 Pro"],
+      booted: true,
+      bootedTwins: 0,
+    });
+  });
+
+  it("reports a shut-down simulator as not booted, next to its booted twin", async () => {
+    const hint = await metroDeviceNamesFor(UDID_B);
+    expect(hint?.booted).toBe(false);
+    expect(hint?.bootedTwins).toBe(1);
   });
 
   it("counts booted simulators with the same name", async () => {

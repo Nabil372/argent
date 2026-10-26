@@ -7,6 +7,8 @@ interface SelectedTarget {
   webSocketUrl: string;
   isNewDebugger: boolean;
   deviceName: string;
+  /** Whether `deviceId` itself picked the target, rather than the single-device fallback. */
+  matchedDeviceId: boolean;
 }
 
 /**
@@ -38,6 +40,7 @@ export function selectTarget(
   // so every target here is a real runtime.
   const pool = targets;
   let candidates = pool;
+  let matchedDeviceId = false;
 
   if (typeof options?.deviceId === "string" && options.deviceId) {
     const deviceId = options.deviceId;
@@ -52,8 +55,10 @@ export function selectTarget(
         );
     if (filtered.length) {
       candidates = filtered;
+      matchedDeviceId = true;
     } else if (byName.length) {
       candidates = byName;
+      matchedDeviceId = true;
     } else {
       // Falling back to the priority target would route every unmatched
       // device_id to whichever device Metro lists first, so only fall back when
@@ -89,15 +94,15 @@ export function selectTarget(
   const fusebox = candidates.find(
     (t) => t.reactNative?.capabilities?.prefersFuseboxFrontend === true
   );
-  if (fusebox) return makeResult(fusebox, port, true);
+  if (fusebox) return makeResult(fusebox, port, true, matchedDeviceId);
 
   const cppConn = candidates.find((t) => t.description?.endsWith("[C++ connection]"));
-  if (cppConn) return makeResult(cppConn, port, true);
+  if (cppConn) return makeResult(cppConn, port, true, matchedDeviceId);
 
   const bridge = candidates.find((t) => t.title?.startsWith("React Native Bridge"));
-  if (bridge) return makeResult(bridge, port, false);
+  if (bridge) return makeResult(bridge, port, false, matchedDeviceId);
 
-  return makeResult(candidates[0]!, port, false);
+  return makeResult(candidates[0]!, port, false, matchedDeviceId);
 }
 
 /**
@@ -113,12 +118,20 @@ function describeDevices(pool: CDPTarget[], perApp = false): { count: number; li
   }
   const listed = [...distinct.values()]
     .map((t) => {
-      const label = perApp && t.appId ? t.appId : (t.deviceName ?? "unknown");
+      const label = perApp ? appLabel(t) : (t.deviceName ?? "unknown");
       const id = t.reactNative?.logicalDeviceId;
       return id ? `${label} (${id})` : `${label} (legacy inspector — no logicalDeviceId)`;
     })
     .join(", ");
   return { count: distinct.size, listed };
+}
+
+/**
+ * The app's bundle id. Inspector-proxies before RN 0.77 list no `appId` and
+ * carry the bundle id in `description` instead.
+ */
+function appLabel(target: CDPTarget): string {
+  return target.appId || target.description || target.deviceName || "unknown";
 }
 
 /**
@@ -146,6 +159,13 @@ function matchByDeviceName(
       error_kind: "not_found",
     });
 
+  if (!hint.booted) {
+    throw failure(
+      `device_id "${deviceId}" is the simulator "${hint.name}", which is not booted, so no app ` +
+        `on it can be connected to Metro on port ${port}. Boot it and launch the app, then retry.`,
+      FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS
+    );
+  }
   if (!matched.length) {
     throw failure(
       `device_id "${deviceId}" is the simulator "${hint.name}", but no app on that simulator ` +
@@ -158,8 +178,9 @@ function matchByDeviceName(
     throw failure(
       `device_id "${deviceId}" is the simulator "${hint.name}", and ${hint.bootedTwins} other ` +
         `booted simulator(s) have the same name, so Metro on port ${port} cannot tell them apart. ` +
-        `Rename the simulators so each name is unique ` +
-        `(xcrun simctl rename <udid> <name>), relaunch the app, then retry.`,
+        `Rename the simulators so each name is unique (xcrun simctl rename <udid> <name>), ` +
+        `then shut down and boot each renamed simulator, since an app keeps reporting the name ` +
+        `its simulator booted with. Relaunch the app, then retry.`,
       FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH
     );
   }
@@ -175,12 +196,18 @@ function matchByDeviceName(
   return matched;
 }
 
-function makeResult(target: CDPTarget, port: number, isNewDebugger: boolean): SelectedTarget {
+function makeResult(
+  target: CDPTarget,
+  port: number,
+  isNewDebugger: boolean,
+  matchedDeviceId: boolean
+): SelectedTarget {
   return {
     target,
     webSocketUrl: normalizeWsUrl(target.webSocketDebuggerUrl, port),
     isNewDebugger,
     deviceName: target.deviceName ?? target.title ?? "unknown",
+    matchedDeviceId,
   };
 }
 

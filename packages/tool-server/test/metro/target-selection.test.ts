@@ -226,6 +226,7 @@ describe("selectTarget by simulator UDID (device name hint)", () => {
   const hint = (name: string, extra: Partial<MetroDeviceNames> = {}): MetroDeviceNames => ({
     name,
     forms: [name],
+    booted: true,
     bootedTwins: 0,
     ...extra,
   });
@@ -302,6 +303,40 @@ describe("selectTarget by simulator UDID (device name hint)", () => {
     expect(f.code).toBe(FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH);
     expect(f.message).toContain("com.example.app (bbb)");
     expect(f.message).toContain("com.example.app.staging (ccc)");
+  });
+
+  it("names the bundle id from description on inspector-proxies that list no appId", () => {
+    const dev = makeTarget({ ...b, id: "dev", appId: undefined, description: "com.example.dev" });
+    const staging = makeTarget({
+      ...b,
+      id: "staging",
+      appId: undefined,
+      description: "com.example.staging",
+      reactNative: { logicalDeviceId: "ccc" },
+    });
+    const f = failureOf(() =>
+      selectTarget([dev, staging], 8081, { deviceId: "UDID-B", deviceNames: hint("bench-ARG-B") })
+    );
+    expect(f.message).toContain("com.example.dev (bbb)");
+    expect(f.message).toContain("com.example.staging (ccc)");
+  });
+
+  it("refuses a simulator that is not booted, even when a same-named one is on Metro", () => {
+    const f = failureOf(() =>
+      selectTarget([a, b], 8082, {
+        deviceId: "UDID-B-SHUTDOWN",
+        deviceNames: hint("bench-ARG-B", { booted: false, bootedTwins: 1 }),
+      })
+    );
+    expect(f.code).toBe(FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS);
+    expect(f.message).toMatch(/not booted/);
+  });
+
+  it("reports whether device_id picked the target or the single-device fallback did", () => {
+    const named = selectTarget([b], 8082, { deviceId: "UDID-B", deviceNames: hint("bench-ARG-B") });
+    expect(named.matchedDeviceId).toBe(true);
+    const fallback = selectTarget([b], 8082, { deviceId: "emulator-5556" });
+    expect(fallback.matchedDeviceId).toBe(false);
   });
 
   it("flags legacy devices in the same-name listing", () => {
