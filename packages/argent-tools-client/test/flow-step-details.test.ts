@@ -138,6 +138,20 @@ describe("renderFlowStepDetails", () => {
     ).toEqual(["expected: /^a\\u200bb$/"]);
   });
 
+  it("escapes an invisible character outside the BMP as its surrogate pair", () => {
+    // The Scotland flag is a black flag followed by tag characters, format
+    // characters from U+E0067 on. A JSON escape has four hex digits, so each
+    // tag character prints as two of them: a five-digit escape reads as a
+    // different character followed by a digit.
+    const flag = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}";
+    const lines = renderFlowStepDetails({ kind: "assert", actual: `${flag} Scotland` });
+    expect(lines).toEqual([
+      'actual:   "\u{1F3F4}\\udb40\\udc67\\udb40\\udc62\\udb40\\udc73\\udb40\\udc63\\udb40\\udc74\\udb40\\udc7f Scotland"',
+    ]);
+    // The quoted value reads back as the device text.
+    expect(JSON.parse(lines[0]!.replace("actual:   ", ""))).toBe(`${flag} Scotland`);
+  });
+
   it("marks a step whose check did not run, above its hint", () => {
     const step: Step = { kind: "await", indeterminate: true, hint: "check the app first" };
     expect(renderFlowStepDetails(step)).toEqual([
