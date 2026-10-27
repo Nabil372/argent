@@ -7,14 +7,13 @@ let currentTree: () => DescribeNode;
 let currentFlags: Pick<DescribeTreeData, "hint" | "should_restart"> = {};
 /** The tree source. A blind-read test sets the one that really sends its flags. */
 let currentSource: DescribeTreeData["source"] = "native-devtools";
-vi.mock("../../src/tools/flows/flow-tree", () => ({
-  fetchFlowTree: vi.fn(
-    async (): Promise<DescribeTreeData> => ({
-      tree: currentTree(),
-      source: currentSource,
-      ...currentFlags,
-    })
-  ),
+vi.mock("../../src/tools/flows/flow-tree", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/tools/flows/flow-tree")>()),
+  fetchFlowTree: vi.fn(async (): Promise<DescribeTreeData> => ({
+    tree: currentTree(),
+    source: currentSource,
+    ...currentFlags,
+  })),
 }));
 
 import { createFlowTestHarness, label, screen } from "./harness";
@@ -37,7 +36,7 @@ const VEGA = { registry: {}, device: { id: "vega-vvd", platform: "vega" } } as A
 const INDETERMINATE_HINT =
   "check the app first — a crash, or a screen the app emptied itself, reads the same here as a " +
   "tree source that stopped answering — then check the device and the tree source; re-run " +
-  "before you edit the flow";
+  "before you edit the e2e test";
 
 function disconnected(): never {
   throw new Error("native devtools disconnected");

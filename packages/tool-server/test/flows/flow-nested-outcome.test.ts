@@ -117,7 +117,7 @@ describe("a nested flow-execute reports its own verdict", () => {
     const { result, registry } = await run("flow-execute", FAILED_SUBFLOW);
 
     expect(result.steps[0].status).toBe("fail");
-    expect(result.steps[0].reason).toMatch(/flow "sub" failed/);
+    expect(result.steps[0].reason).toMatch(/e2e test "sub" failed/);
     expect(result.steps[0].reason).toMatch(/1 failed/);
     // The sub-flow's own reason is surfaced, so the CLI — which renders only
     // `reason` — says what actually went wrong rather than just "it failed".
@@ -170,7 +170,7 @@ describe("a nested flow-execute reports its own verdict", () => {
 
   it("carries the indeterminate flag and hint of an inner step that could not read the tree", async () => {
     const hint =
-      "check the app first, then the device and the tree source; re-run before you edit the flow";
+      "check the app first, then the device and the tree source; re-run before you edit the e2e test";
     const { result } = await run("flow-execute", {
       ...FAILED_SUBFLOW,
       steps: [
@@ -207,7 +207,7 @@ describe("a nested flow-execute reports its own verdict", () => {
     const { result } = await run("flow-execute", middle);
 
     expect(result.steps[0].status).toBe("fail");
-    expect(result.steps[0].reason).toContain('(flow-execute: flow "sub" failed');
+    expect(result.steps[0].reason).toContain('(flow-execute: e2e test "sub" failed');
     expect(result.steps[0].reason).toContain("did not equal");
     expect(result.steps[0].expected).toBe("$42.00");
     expect(result.steps[0].actual).toBe("Total $41.50");

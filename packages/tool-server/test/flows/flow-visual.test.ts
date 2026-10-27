@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { PNG } from "pngjs";
 import { runSnapshot } from "../../src/tools/flows/flow-visual";
+import { HostProjectAccess } from "../../src/tools/flows/project-access";
 import { ArtifactStore } from "../../src/artifacts";
 import {
   diffPngFiles,
@@ -159,6 +160,7 @@ function opts(overrides: Partial<Parameters<typeof runSnapshot>[1]> = {}) {
     updateBaselines: false,
     appIdentity: "/apps/app-a",
     seenKeys: new Map<string, string>(),
+    project: new HostProjectAccess(),
     ...overrides,
   };
 }
@@ -358,18 +360,29 @@ describe("runSnapshot baselines", () => {
     expect(r).toMatchObject({ expected: "≤ 0.5%", actual: "0.5004%" });
   });
 
-  it("prints a diff that differs from the tolerance only by float error in full", async () => {
+  it("prints a diff that passes on float error at two decimals", async () => {
     await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
     await writeFakePng(baselinePath());
-    // 7 of 1000 pixels. Every rounding prints the tolerance itself, 0.7, next
-    // to a failed verdict.
+    // 7 of 1000 pixels computes 0.7000000000000001%, above the tolerance by
+    // float error alone.
     h.mismatchPercentage = (7 / 1000) * 100;
 
     const r = await runSnapshot(env, opts({ maxMismatch: 0.7 }));
 
+    expect(r.status).toBe("pass");
+    expect(r.reason).toContain("diff 0.70% ≤ 0.7%");
+  });
+
+  it("prints a failing diff in full when 8 decimals still round onto the tolerance", async () => {
+    await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
+    await writeFakePng(baselinePath());
+    h.mismatchPercentage = 0.700000001;
+
+    const r = await runSnapshot(env, opts({ maxMismatch: 0.7 }));
+
     expect(r.status).toBe("fail");
-    expect(r.reason).toContain("diff 0.7000000000000001% > 0.7%");
-    expect(r).toMatchObject({ expected: "≤ 0.7%", actual: "0.7000000000000001%" });
+    expect(r.reason).toContain("diff 0.700000001% > 0.7%");
+    expect(r).toMatchObject({ expected: "≤ 0.7%", actual: "0.700000001%" });
   });
 
   it("keeps two decimals on a pass the rounding cannot contradict", async () => {
@@ -381,6 +394,22 @@ describe("runSnapshot baselines", () => {
 
     expect(r.status).toBe("pass");
     expect(r.reason).toContain("diff 0.50% ≤ 0.5%");
+  });
+
+  it("passes a diff exactly at maxMismatch despite float error, and fails one pixel over", async () => {
+    await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
+    await writeFakePng(baselinePath());
+
+    // 3000x4800: 100800 px is exactly 0.7% but computes 0.7000000000000001.
+    h.mismatchPercentage = (100800 / 14_400_000) * 100;
+    expect((await runSnapshot(env, opts({ maxMismatch: 0.7 }))).status).toBe("pass");
+
+    h.mismatchPercentage = (100801 / 14_400_000) * 100;
+    expect((await runSnapshot(env, opts({ maxMismatch: 0.7 }))).status).toBe("fail");
+
+    // 1206x2622: 59505 px is one over 1.8818%, yet within 1e-9 points of it.
+    h.mismatchPercentage = (59505 / 3_162_132) * 100;
+    expect((await runSnapshot(env, opts({ maxMismatch: 1.8818 }))).status).toBe("fail");
   });
 
   it("fails without a diff artifact when the differ produced no context image", async () => {
@@ -470,6 +499,40 @@ describe("runSnapshot settle", () => {
     expect(r.status).toBe("skip");
     expect(r.reason).toContain("aborted");
     expect(vi.mocked(invokeOnDevice)).not.toHaveBeenCalled();
+  });
+
+  it("settles a tree-sourced platform before capturing", async () => {
+    vi.mocked(settleTree).mockClear();
+    vi.mocked(invokeOnDevice).mockClear();
+    await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
+    await writeFakePng(baselinePath());
+
+    await runSnapshot(env, opts());
+
+    expect(vi.mocked(settleTree)).toHaveBeenCalledOnce();
+    expect(vi.mocked(invokeOnDevice)).toHaveBeenCalledWith(env, "screenshot", expect.anything());
+  });
+
+  it("skips the settle on a platform with no flow tree source, and still captures", async () => {
+    // Flows have no harmony tree source, so a settle read would always fail.
+    vi.mocked(settleTree).mockClear();
+    vi.mocked(invokeOnDevice).mockClear();
+    await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
+    await writeFakePng(path.join(tmpDir, "__baselines__", "checkout", "home__harmony-390x844.png"));
+    const harmonyEnv = {
+      ...env,
+      device: { platform: "harmony", kind: "device", id: "harmony-127.0.0.1:5555" },
+    } as unknown as ActionEnv;
+
+    const r = await runSnapshot(harmonyEnv, opts());
+
+    expect(r.status).toBe("pass");
+    expect(vi.mocked(settleTree)).not.toHaveBeenCalled();
+    expect(vi.mocked(invokeOnDevice)).toHaveBeenCalledWith(
+      harmonyEnv,
+      "screenshot",
+      expect.anything()
+    );
   });
 });
 
@@ -747,6 +810,43 @@ describe("runSnapshot cropOn", () => {
     // Two baseline files on disk — the second write did not clobber the first.
     const files = await fs.readdir(path.join(tmpDir, "__baselines__", "checkout"));
     expect(files.sort()).toEqual([`${r1.snapshotKey}.png`, `${r2.snapshotKey}.png`].sort());
+  });
+
+  it("keys same-name crops that differ only by scope to distinct baselines", async () => {
+    const r1 = await runSnapshot(
+      env,
+      opts({ updateBaselines: true, cropOn: { text: "Toggle", within: { identifier: "row-1" } } })
+    );
+    const r2 = await runSnapshot(
+      env,
+      opts({ updateBaselines: true, cropOn: { text: "Toggle", within: { identifier: "row-2" } } })
+    );
+
+    expect(r1.snapshotKey).not.toBe(r2.snapshotKey);
+    // Two baseline files on disk — row-2 did not overwrite row-1's baseline.
+    const files = await fs.readdir(path.join(tmpDir, "__baselines__", "checkout"));
+    expect(files.sort()).toEqual([`${r1.snapshotKey}.png`, `${r2.snapshotKey}.png`].sort());
+  });
+
+  it("keys the same scope reached through different relations apart", async () => {
+    const r1 = await runSnapshot(
+      env,
+      opts({ updateBaselines: true, cropOn: { text: "Toggle", after: { identifier: "row" } } })
+    );
+    const r2 = await runSnapshot(
+      env,
+      opts({ updateBaselines: true, cropOn: { text: "Toggle", next: { identifier: "row" } } })
+    );
+
+    expect(r1.snapshotKey).not.toBe(r2.snapshotKey);
+  });
+
+  it("keys an unscoped selector by its own fields alone", async () => {
+    // Committed baselines predate scope-aware keys; adding a scope must not
+    // rename the file an unscoped crop already writes.
+    const r = await runSnapshot(env, opts({ updateBaselines: true, cropOn }));
+
+    expect(r.snapshotKey).toBe(cropKey);
   });
 
   it("keys a selector canonically regardless of property insertion order", async () => {
