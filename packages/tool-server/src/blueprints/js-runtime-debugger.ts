@@ -296,8 +296,9 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         const entries = `${captured} captured console ${captured === 1 ? "entry" : "entries"}`;
         const salvage = keepFile
           ? `The log file with its ${entries} is kept at ${logWriter.getFilePath()}.`
-          : `The ${entries} went with it — the log file is deleted on teardown, so this ` +
-            `registry starts empty rather than the app having logged nothing.`;
+          : `The ${entries} went with it: the log file is deleted on teardown. This ` +
+            `registry holds only what the runtime replayed or logged since, so earlier entries ` +
+            `may be missing.`;
         recordReapedSession("js-runtime-debugger", [deviceId, logicalDeviceId], salvage, keepFile);
       }
       logWriter.close({ keepFile });

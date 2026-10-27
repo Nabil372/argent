@@ -76,19 +76,15 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           logicalDeviceId: api.logicalDeviceId,
         };
 
-        // Resolving above silently reconnects after a teardown, and the runtime
-        // replays its history to the new session, so only an EMPTY registry
-        // needs the teardown note. A crash note is different: the pre-crash
-        // logs exist only in the kept file, so it is attached regardless.
         // Every id this device answers to: the disposer files the breadcrumb
         // under the connect id and the `logicalDeviceId` Metro echoed, and
         // `forgetDeviceAlias` ran in that same dispose, so only the freshly
         // resolved api still knows the logical id.
-        const reaped = takeReapedSessionAnyId(
-          "js-runtime-debugger",
-          [canonicalDeviceId(params.device_id), params.device_id, api.logicalDeviceId],
-          (entry) => stats.totalEntries === 0 || entry.connectionLost === true
-        );
+        const reaped = takeReapedSessionAnyId("js-runtime-debugger", [
+          canonicalDeviceId(params.device_id),
+          params.device_id,
+          api.logicalDeviceId,
+        ]);
         if (reaped) response.note = describeReapedSession(reaped, "JS-runtime debugger session");
         return response;
       } catch (err) {

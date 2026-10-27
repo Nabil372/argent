@@ -162,11 +162,15 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     expect(result.note).toBeUndefined();
   });
 
-  it("does not attach the explanation to a registry that has its own entries", async () => {
+  it("reports the loss even when the reconnected runtime replayed logs of its own", async () => {
     const urn = await connectAndCapture(LOGICAL_ID, 5);
     await registry.disposeService(urn);
-    // Reconnect and capture fresh history before reading.
-    await connectAndCapture(LOGICAL_ID, 3);
+    // The read reconnects without debugger-connect, and the runtime replays
+    // its buffer (or a relaunched app's startup logs) to the new session.
+    const api = await registry.resolveService<JsRuntimeDebuggerApi>(urn);
+    for (const message of ["Running app", "launch warning", "replayed"]) {
+      api.logWriter.write({ id: 0, timestamp: new Date().toISOString(), level: "log", message });
+    }
 
     const result = (await registry.invokeTool("debugger-log-registry", {
       port: mockPort,
@@ -174,7 +178,8 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
     })) as { totalEntries: number; note?: string };
 
     expect(result.totalEntries).toBe(3);
-    expect(result.note).toBeUndefined();
+    expect(result.note).toContain("5 captured console entries");
+    expect(result.note).toContain("torn down");
   });
 
   it("reports the loss once, not on every later empty read", async () => {
@@ -195,12 +200,9 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
   });
 
   it("is dropped by an explicit debugger-connect, which starts a capture of its own", async () => {
-    // The consumer is gated on an empty or not-connected read, so a breadcrumb
-    // survives every read that finds entries — and would then attach "a teardown
-    // ate your logs" to some later, unrelated empty read. An explicit connect
-    // makes it wrong anyway: from there the capture is this session's own, so
-    // empty honestly means nothing has been logged since. Same discipline as
-    // the screen-recording and native-profiler starts.
+    // From an explicit connect on, the capture is this session's own, so empty
+    // honestly means nothing has been logged since. Same discipline as the
+    // screen-recording and native-profiler starts.
     const urn = await connectAndCapture(LOGICAL_ID, 40);
     await registry.disposeService(urn);
 
