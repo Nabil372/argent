@@ -38,6 +38,9 @@ source that defines it:
 A secrets file applies to the next tool call — no restart. An environment
 variable only reaches a tool-server started after it was exported.
 
+Over a link, \`argent enable forward-secrets\` makes each call send the value
+this machine has for each placeholder in the call, ahead of the tool-server's.
+
 Examples:
   echo 'APP_PASSWORD=…' >> ~/.argent/secrets.env   # available in every project
   argent secrets                                   # check it is picked up`);
