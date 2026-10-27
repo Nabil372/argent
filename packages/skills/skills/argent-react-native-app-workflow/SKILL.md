@@ -242,6 +242,7 @@ If the user's intent is ambiguous (run existing tests, write new tests, or find 
 | `argent-ios-simulator-setup`    | Initial iOS simulator boot and connection setup                                                                                                          |
 | `argent-android-emulator-setup` | Initial Android emulator boot and connection setup                                                                                                       |
 | `argent-device-interact`        | Tapping, swiping, typing, hardware buttons, gestures on the simulator/emulator                                                                           |
+| `argent-macos-app-interact`     | Starting and driving a react-native-macos app (`boot-device` with `macosAppPath`, mouse and keyboard input)                                              |
 | `argent-metro-debugger`         | JS-runtime CDP debugging (Metro on iOS / Android; the four ported tools also drive Chromium/CDP apps): component inspection, console logs, JS evaluation |
 | `argent-react-native-profiler`  | Profiling performance, finding re-render issues, CPU hotspots                                                                                            |
 | `argent-test-ui-flow`           | Interactive UI testing with automatic screenshot verification after each action                                                                          |
