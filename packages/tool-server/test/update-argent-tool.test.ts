@@ -160,7 +160,7 @@ describe("update-argent tool", () => {
   }
 
   function serveFrom(root: string): void {
-    serving.from = path.resolve(import.meta.dirname, "../src/tools");
+    serving.from = path.resolve(__dirname, "../src/tools");
     serving.to = root;
   }
 
