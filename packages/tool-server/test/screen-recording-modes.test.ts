@@ -1,9 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import type { Registry } from "@argent/registry";
 import { createScreenRecordingStartTool } from "../src/tools/screen-recording/screen-recording-start";
-import { startCapture } from "../src/tools/screen-recording/capture";
+import { screenRecordingStopTool } from "../src/tools/screen-recording/screen-recording-stop";
+import { startCapture, stopCapture } from "../src/tools/screen-recording/capture";
 
-vi.mock("../src/tools/screen-recording/capture", () => ({ startCapture: vi.fn() }));
+vi.mock("../src/tools/screen-recording/capture", () => ({
+  startCapture: vi.fn(),
+  stopCapture: vi.fn(),
+}));
 vi.mock("@argent/configuration-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@argent/configuration-core")>()),
   isFeatureEnabled: () => true,
@@ -105,3 +109,33 @@ describe("recording mode defaults", () => {
     expect(start).not.toHaveBeenCalled();
   });
 });
+
+it.each([true, false])(
+  "returns the debug encoding result through the stop tool (%s)",
+  async (complete) => {
+    const video = { filename: "video.mp4", hostPath: "/tmp/video.mp4" };
+    const register = vi.fn().mockResolvedValue(video);
+    vi.mocked(stopCapture).mockResolvedValue({
+      outputFile: "/tmp/video.mp4",
+      sizeBytes: 10,
+      durationMs: complete ? 1_000 : null,
+      encodingComplete: complete,
+      ...(complete ? {} : { warning: "encoder failed" }),
+    });
+    expect(screenRecordingStopTool.longRunning).toBe(true);
+    const result = await screenRecordingStopTool.execute(
+      { session: {} },
+      { udid: "emulator-5554" },
+      { artifacts: { register } } as never
+    );
+    expect(result).toMatchObject({
+      video,
+      encodingComplete: complete,
+      durationMs: complete ? 1_000 : null,
+    });
+    expect(register).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "screen-recording", hostPath: "/tmp/video.mp4" })
+    );
+    if (!complete) expect(result.warning).toBe("encoder failed");
+  }
+);

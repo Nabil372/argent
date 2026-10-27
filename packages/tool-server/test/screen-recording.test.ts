@@ -1598,6 +1598,49 @@ describe("debug recording lifecycle", () => {
 });
 
 describe("debug finalization safeguards", () => {
+  it("removes the JPEG directory when encoder readiness fails", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    const starting = startCapture(api, {
+      streamUrl: STREAM_URL,
+      timeLimitSeconds: 30,
+      watermark: false,
+      trimStatic: false,
+      mode: "debug",
+    });
+    starting.catch(() => {});
+    await vi.waitFor(() => expect(api.pendingChild).toBe(child));
+    expect(
+      (await fs.readdir(scratch)).some((name) => name.startsWith("argent-recording-frames-"))
+    ).toBe(true);
+    child.exit(1);
+    await expect(starting).rejects.toThrow("before the recording started");
+    expect(
+      (await fs.readdir(scratch)).some((name) => name.startsWith("argent-recording-frames-"))
+    ).toBe(false);
+  });
+
+  it("does not enable markers after debug capture already ended during attachment", async () => {
+    const api = await makeSession(iosDevice);
+    const large = Buffer.alloc(129 * 1024 * 1024);
+    fakeJpeg().copy(large);
+    fakeStream({
+      latest: large,
+      waitForFirstFrame: vi.fn(async () => large),
+      subscribe: vi.fn((listener) => {
+        listener(large, performance.now());
+        return vi.fn();
+      }),
+    });
+    const child = fakeChild();
+    child.exitOnStdinEnd();
+    const pointer = fakePointer();
+    await startAndSettle(api, { mode: "debug", pointer });
+    expect(pointer.enable).not.toHaveBeenCalled();
+    await expect(stopCapture(api)).rejects.toThrow("could not keep up");
+  });
+
   it.each(["missing encoder", "killed encoder", "disk full"])(
     "keeps diagnostics when debug produces no video: %s",
     async (failure) => {

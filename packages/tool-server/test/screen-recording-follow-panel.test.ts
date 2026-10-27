@@ -470,3 +470,23 @@ it("closes a panel stream whose first frame arrives after a debug cap", async ()
   child.exit(0);
   await stop(api);
 });
+
+it("continues saving debug frames after moving to the other panel", async () => {
+  serveStreams((url) => (url.includes("screen=3") ? INNER : COVER));
+  fakeChild();
+  const api = await makeSession();
+  await startFollowing(api, async () => live(3), live(1), "debug");
+  await vi.advanceTimersByTimeAsync(PANEL_POLL_MS);
+  await vi.waitFor(() => expect(api.panelSwitches).toBe(1));
+  const next = opened[1];
+  const emit = next.subscribe.mock.calls[0][0] as (frame: Buffer, at: number) => void;
+  emit(INNER, performance.now() + 10);
+  expect(api.debugCapture!.frameTimesUs).toHaveLength(3);
+  const directory = (await fs.readdir(os.tmpdir())).find((name) =>
+    name.startsWith("argent-recording-frames-")
+  )!;
+  await vi.waitFor(async () =>
+    expect(await fs.readFile(path.join(os.tmpdir(), directory, "2.jpg"))).toEqual(INNER)
+  );
+  expect((await stop(api)).panelSwitches).toBe(1);
+});

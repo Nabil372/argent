@@ -207,7 +207,13 @@ it.skipIf(!hasEncoder)(
       expect(probe.status, probe.stderr).toBe(0);
       const result = JSON.parse(probe.stdout) as {
         frames: { pts_time: string }[];
-        streams: { width: number; height: number; time_base: string; pix_fmt: string; level: number }[];
+        streams: {
+          width: number;
+          height: number;
+          time_base: string;
+          pix_fmt: string;
+          level: number;
+        }[];
       };
       expect(result.frames.map((frame) => Math.round(Number(frame.pts_time) * 1_000_000))).toEqual([
         ...Array.from({ length: 120 }, (_, i) => Math.round((i * 1_000_000) / 120)),
@@ -251,9 +257,9 @@ it.skipIf(!hasEncoder)(
   20_000
 );
 
-it.skipIf(!hasEncoder)(
-  "reports corrupt JPEG decoding as an incomplete recording",
-  async () => {
+it.skipIf(!hasEncoder).each([false, true])(
+  "reports debug duration and encoder status (corrupt: %s)",
+  async (corrupt) => {
     const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
     const input = source(jpeg([255, 0, 0]));
     vi.spyOn(mjpegStreams, "openMjpegStream").mockResolvedValue(input.stream);
@@ -274,13 +280,25 @@ it.skipIf(!hasEncoder)(
       });
       output = instance.api.outputFile;
       input.emit(jpeg([255, 255, 255]), 1_016.667);
-      input.emit(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), 1_025);
+      if (corrupt) input.emit(Buffer.from([0xff, 0xd8, 0xff, 0xd9]), 1_025);
       input.emit(jpeg([0, 0, 255]), 1_050);
       now.mockReturnValue(2_000);
       const result = await stopCapture(instance.api);
-      expect(result.encodingComplete).toBe(false);
-      expect(result.durationMs).toBeNull();
-      expect(result.warning).toContain("Encoder stderr:");
+      expect(result.encodingComplete).toBe(!corrupt);
+      if (corrupt) {
+        expect(result.durationMs).toBeNull();
+        expect(result.warning).toContain("Encoder stderr:");
+      } else {
+        const probe = spawnSync(
+          "ffprobe",
+          ["-v", "error", "-show_entries", "format=duration", "-of", "json", result.outputFile],
+          { encoding: "utf8" }
+        );
+        expect(probe.status, probe.stderr).toBe(0);
+        const duration = Number(JSON.parse(probe.stdout).format.duration) * 1_000;
+        expect(result.durationMs).toBe(1_000);
+        expect(result.durationMs).toBe(Math.round(duration));
+      }
     } finally {
       await instance.dispose();
       if (output) await rm(output, { force: true });

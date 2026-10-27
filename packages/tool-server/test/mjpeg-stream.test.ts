@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import http from "http";
 import { getFailureSignal, FAILURE_CODES } from "@argent/registry";
 import { openMjpegStream, type MjpegStream } from "../src/tools/screen-recording/mjpeg-stream";
@@ -23,6 +23,7 @@ let server: http.Server | null = null;
 let stream: MjpegStream | null = null;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   stream?.close();
   stream = null;
   if (server) {
@@ -57,6 +58,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
 
 describe("openMjpegStream", () => {
   it("notifies subscribers of every frame even when several arrive in one chunk", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(1_000);
     let response: http.ServerResponse;
     const first = jpeg(0x11);
     const gap = jpeg(0x22);
@@ -73,11 +75,11 @@ describe("openMjpegStream", () => {
       frames.push(frame);
       times.push(receivedAtMs);
     });
+    clock.mockReturnValue(1_016.667);
     response!.write(Buffer.concat([gap, Buffer.from(BOUNDARY), target, Buffer.from(BOUNDARY)]));
     await waitFor(() => frames.length === 3);
     expect(frames).toEqual([first, gap, target]);
-    expect(times[1]).toBeGreaterThanOrEqual(times[0]);
-    expect(times[2]).toBeGreaterThanOrEqual(times[1]);
+    expect(times).toEqual([1_000, 1_016.667, 1_016.667]);
     unsubscribe();
     response!.write(Buffer.concat([jpeg(0x44), Buffer.from(BOUNDARY)]));
     await waitFor(() => stream!.frameCount === 4);
