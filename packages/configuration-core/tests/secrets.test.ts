@@ -254,9 +254,16 @@ describe("placeholders", () => {
   it("resolves a redundant prefix only when the exact name misses", () => {
     const sources = secretSources({
       ...options,
-      env: { ARGENT_SECRET_X: "bare", ARGENT_SECRET_ARGENT_SECRET_Y: "literal", ARGENT_SECRET_Y: "y" },
+      env: {
+        ARGENT_SECRET_X: "bare",
+        ARGENT_SECRET_ARGENT_SECRET_Y: "literal",
+        ARGENT_SECRET_Y: "y",
+      },
     });
-    expect(lookupPlaceholderSecret("argent_secret_X", sources)).toEqual({ name: "X", value: "bare" });
+    expect(lookupPlaceholderSecret("argent_secret_X", sources)).toEqual({
+      name: "X",
+      value: "bare",
+    });
     expect(lookupPlaceholderSecret("ARGENT_SECRET_Y", sources)).toEqual({
       name: "ARGENT_SECRET_Y",
       value: "literal",

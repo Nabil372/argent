@@ -212,7 +212,9 @@ describe("secrets the argent client sent", () => {
     expect(caught!.message).toContain(
       "neither the argent client nor any source on the machine running the tool-server defines NOPE"
     );
-    expect(caught!.message).toContain("1. secrets the argent client sent with this call — 1 secret");
+    expect(caught!.message).toContain(
+      "1. secrets the argent client sent with this call — 1 secret"
+    );
     expect(caught!.message).toContain("Available secrets: APP_PASSWORD.");
     expect(caught!.message).not.toContain("from-client");
   });

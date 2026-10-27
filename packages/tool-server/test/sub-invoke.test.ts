@@ -89,7 +89,12 @@ describe("invokeSubTool", () => {
     const registry = mockRegistry();
     const recordChildInvocation = vi.fn((_id: string) => vi.fn());
 
-    await invokeSubTool(registry, { artifacts: {}, clientSecrets } as unknown as ToolContext, "keyboard", {});
+    await invokeSubTool(
+      registry,
+      { artifacts: {}, clientSecrets } as unknown as ToolContext,
+      "keyboard",
+      {}
+    );
     await invokeSubTool(
       registry,
       { artifacts: {}, clientSecrets, recordChildInvocation } as unknown as ToolContext,
