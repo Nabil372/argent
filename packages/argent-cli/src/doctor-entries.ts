@@ -170,10 +170,14 @@ export function classifyMcpEntry(entry: McpServerEntry, ctx: EntryContext): Doct
       fix: "Turn the argent server back on in the editor's MCP settings",
     });
   }
+  // init leaves a switched-off entry untouched, so it can only repair one that is on.
+  const fix = result.fix?.includes(`${ctx.argentCmd} init`)
+    ? `Turn the argent server back on in the editor's MCP settings, then: ${result.fix}`
+    : result.fix;
   // The editor never starts it, so its broken command is no error yet.
   return check("warn", `${result.label} (switched off in the editor)`, {
     detail: [key, result.detail].filter(Boolean).join(" · "),
-    fix: result.fix,
+    fix,
   });
 }
 

@@ -448,6 +448,16 @@ describe("classifyMcpEntry argument rules", () => {
     expect(result.fix).toContain("npm i -g @swmansion/argent");
   });
 
+  it("asks to turn a switched-off entry back on before init, which skips it", () => {
+    const entry = { command: "argent", args: ["serve"], switchedOffBy: ["disabled" as const] };
+    const result = classifyMcpEntry(entry, ctx());
+    expect(result.status).toBe("warn");
+    expect(result.fix).toMatch(
+      /^Turn the argent server back on in the editor's MCP settings, then: /
+    );
+    expect(result.fix).toMatch(/init$/);
+  });
+
   it("names the off-PATH bin dir of a global install", () => {
     const result = classifyMcpEntry(
       { command: "argent", args: ["mcp"] },
