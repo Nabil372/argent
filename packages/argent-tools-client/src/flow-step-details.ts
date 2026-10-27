@@ -59,8 +59,8 @@ function escapeInvisible(v: string): string {
  * An invisible character is ESCAPED, never replaced: these lines are the only
  * place the found text is printed, and a value that differs from the expected
  * one only by a line break, a tab or a no-break space has to look different
- * here — replacing it with a space printed the two as twins. The escape keeps
- * each value on one line and keeps a raw escape sequence out of the terminal.
+ * from it here. The escape also keeps each value on one line and keeps a raw
+ * escape sequence out of the terminal.
  */
 export function renderFlowStepDetails(step: FlowStepDetails & { kind: string }): string[] {
   // A `hint:` and a snapshot value print unquoted, so only their invisible
