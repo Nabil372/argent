@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   cleanupAbandonedFrames,
   createFrameDirectory,
+  setFrameDirectoryOwner,
 } from "../src/tools/screen-recording/frame-directory";
 import { redirectTmpdir } from "./helpers/tmpdir-env";
 
@@ -74,4 +75,22 @@ it("reports an undeletable spool and still cleans the next one and creates a new
   await expect(fs.access(blocked)).resolves.toBeUndefined();
   await expect(fs.access(removable)).rejects.toThrow();
   expect(stderr).toHaveBeenCalledWith(expect.stringContaining("permission denied"));
+});
+
+it("keeps an orphan encoder's spool until its own process exits", async () => {
+  const encoderPid = 12345;
+  const directory = setFrameDirectoryOwner(await createFrameDirectory(), encoderPid);
+  await fs.writeFile(path.join(directory, "0.jpg"), "frame");
+  const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+    expect(pid).toBe(encoderPid);
+    expect(signal).toBe(0);
+    return true;
+  });
+  await cleanupAbandonedFrames();
+  expect(await fs.readFile(path.join(directory, "0.jpg"), "utf8")).toBe("frame");
+  kill.mockImplementation(() => {
+    throw Object.assign(new Error("gone"), { code: "ESRCH" });
+  });
+  await cleanupAbandonedFrames();
+  await expect(fs.access(directory)).rejects.toThrow();
 });

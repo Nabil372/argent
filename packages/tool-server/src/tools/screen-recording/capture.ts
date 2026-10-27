@@ -14,7 +14,7 @@ import {
 import { takeReapedSession } from "../../utils/reaped-sessions";
 import { openMjpegStream, readJpegDimensions, type MjpegStream } from "./mjpeg-stream";
 import { startDebugCapture } from "./debug-capture";
-import { createFrameDirectory } from "./frame-directory";
+import { createFrameDirectory, setFrameDirectoryOwner } from "./frame-directory";
 import {
   assertNoActiveRecording,
   assertNotDisposed,
@@ -510,11 +510,15 @@ async function startCaptureLocked(
     assertNotDisposed(api, "screen_recording_start");
     child = spawn(ffmpeg, ffmpegArgs({ outputFile, logoFile, graph, canvas, mode: params.mode }), {
       stdio: ["pipe", "ignore", "pipe"],
+      ...(params.mode === "debug" ? { detached: true } : {}),
     });
     // Visible to dispose() while the fail-fast grace is pending (captureProcess
     // is stamped success-only).
     api.pendingChild = child;
+    if (frameDirectory && child.pid)
+      frameDirectory = setFrameDirectoryOwner(frameDirectory, child.pid);
   } catch (err) {
+    api.pendingChild?.kill("SIGKILL");
     stream.close();
     if (frameDirectory)
       await fs.rm(frameDirectory, { recursive: true, force: true }).catch(() => {});

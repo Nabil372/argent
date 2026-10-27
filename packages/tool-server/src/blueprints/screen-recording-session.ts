@@ -299,12 +299,18 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
           // resolve builds a session that has never heard of this capture, and
           // nothing else would say the salvaged file exists.
           if (hadUnretrievedCapture) {
+            const outputExists = abandonedOutput
+              ? await fs.stat(abandonedOutput).then(
+                  (stat) => stat.size > 0,
+                  () => false
+                )
+              : false;
             recordReapedSession(
               "screen-recording",
               state.deviceId,
-              abandonedOutput
+              outputExists
                 ? `The recording output is at ${abandonedOutput}. Check that it plays before re-recording.`
-                : undefined
+                : "No recording output was saved."
             );
           }
         }

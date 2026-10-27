@@ -1,4 +1,4 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, renameSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -27,4 +27,14 @@ export async function cleanupAbandonedFrames(): Promise<void> {
 export async function createFrameDirectory(): Promise<string> {
   await cleanupAbandonedFrames();
   return fs.mkdtemp(path.join(os.tmpdir(), `${PREFIX}${process.pid}-`));
+}
+
+// The encoder can outlive the tool-server's shutdown grace.
+export function setFrameDirectoryOwner(directory: string, pid: number): string {
+  const owned = path.join(
+    path.dirname(directory),
+    path.basename(directory).replace(`${PREFIX}${process.pid}-`, `${PREFIX}${pid}-`)
+  );
+  renameSync(directory, owned);
+  return owned;
 }

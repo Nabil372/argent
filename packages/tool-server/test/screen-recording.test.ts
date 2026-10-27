@@ -99,6 +99,7 @@ class FakeStdin extends EventEmitter {
 }
 
 class FakeChild extends EventEmitter {
+  pid = process.pid;
   stdout = new EventEmitter();
   stderr = Object.assign(new EventEmitter(), { readableEnded: false });
   stdin = new FakeStdin();
@@ -371,7 +372,7 @@ describe("screen-recording session blueprint", () => {
     // service), then call `screen-recording-stop`. `Registry._teardown` nulls
     // the node's instance, so that stop resolves a BRAND NEW session — modelled
     // here by building a second one for the same device.
-    async function reapDuringCapture(): Promise<{
+    async function reapDuringCapture(hasOutput = true): Promise<{
       output: string;
       fresh: ScreenRecordingSessionApi;
     }> {
@@ -382,6 +383,7 @@ describe("screen-recording session blueprint", () => {
       fakeChild().exitOnStdinEnd();
       await startAndSettle(instance.api);
       const output = instance.api.outputFile!;
+      if (hasOutput) await fs.writeFile(output, Buffer.alloc(64, 1));
 
       await instance.dispose();
 
@@ -406,6 +408,13 @@ describe("screen-recording session blueprint", () => {
       );
     });
 
+    it("does not advertise an output path when disposal saved no video", async () => {
+      const { output, fresh } = await reapDuringCapture(false);
+      const err = await stopCapture(fresh).catch((e: unknown) => e);
+      expect((err as Error).message).toContain("No recording output was saved");
+      expect((err as Error).message).not.toContain(output);
+    });
+
     it("tells the owner when the teardown hit a CAPPED capture awaiting retrieval", async () => {
       // `hadUnretrievedCapture` has three arms and only `recordingActive` was
       // covered. This is the likeliest real sequence of the three: the time
@@ -422,6 +431,7 @@ describe("screen-recording session blueprint", () => {
       expect(instance.api.recordingActive).toBe(false);
       expect(instance.api.pendingRetrieval).toBe(true);
       const output = instance.api.outputFile!;
+      await fs.writeFile(output, Buffer.alloc(64, 1));
 
       await instance.dispose();
       const err = await stopCapture(await makeSession(iosDevice)).catch((e: unknown) => e);
@@ -1782,8 +1792,9 @@ describe("debug finalization safeguards", () => {
     fakeStream();
     const child = fakeChild();
     await startAndSettle(instance.api, { mode: "debug" });
+    expect(mockSpawn.mock.calls.at(-1)![2]).toMatchObject({ detached: true });
     const directory = (await fs.readdir(scratch)).find((name) =>
-      name.startsWith("argent-recording-frames-")
+      name.startsWith(`argent-recording-frames-${child.pid}-`)
     )!;
     const disposing = instance.dispose();
     expect(getActiveScreenRecordings()).toHaveLength(0);
