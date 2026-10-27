@@ -468,7 +468,7 @@ describe.skipIf(process.platform === "win32")("update — pinned MCP entries (#1
     expect(readArgentEntry(cursorGlobal)).toEqual({ command: node, args: [cli, "mcp"] });
   });
 
-  it("keeps a pinned global-scope entry when no global install is on PATH to re-pin it", async () => {
+  it("keeps a live pinned global-scope entry that the install on PATH can't re-pin", async () => {
     const { node, cli } = stageGlobalPrefix({ onPath: false });
     const cursorGlobal = path.join(tmpDir, ".cursor", "mcp.json");
     writeArgentEntry(cursorGlobal, { command: node, args: [cli, "mcp"] });
@@ -478,7 +478,23 @@ describe.skipIf(process.platform === "win32")("update — pinned MCP entries (#1
     await update(["--yes"]);
 
     expect(fs.readFileSync(cursorGlobal, "utf8")).toBe(before);
-    expect(notedLines()).toContain("kept the pinned global entry");
+    expect(notedLines()).toContain(
+      "kept the pinned global entry (this run can't re-pin it: argent couldn't resolve " +
+        "absolute node and cli.js paths for the global install on PATH)"
+    );
+  });
+
+  it("replaces a pinned global-scope entry whose node is gone with bare argent", async () => {
+    const { node, cli } = stageGlobalPrefix({ onPath: false });
+    const cursorGlobal = path.join(tmpDir, ".cursor", "mcp.json");
+    writeArgentEntry(cursorGlobal, { command: node, args: [cli, "mcp"] });
+    fs.rmSync(node);
+    landGlobalUpdate();
+
+    await update(["--yes"]);
+
+    expect(readArgentEntry(cursorGlobal)).toEqual({ command: "argent", args: ["mcp"] });
+    expect(notedLines()).toContain(`replaced a pinned entry whose ${node} no longer exists`);
   });
 
   it("leaves a pinned entry in a local-mode project's file untouched", async () => {

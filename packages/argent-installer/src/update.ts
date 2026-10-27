@@ -11,6 +11,7 @@ import {
   getMcpEntryForScope,
   isArgentManagedEntry,
   isGlobalNodeEntry,
+  missingGlobalNodeFile,
   resolveLocalCommandMode,
   resolveGlobalCommandMode,
   copyRulesAndAgents,
@@ -142,7 +143,7 @@ export function resolveUpdatePackageAction(
 function whyNotRepinnable(installMode: InstallMode): string {
   if (installMode === "local") return "this is a local-mode project";
   return isGloballyInstalled()
-    ? "argent can't pin the layout of the global install on PATH (npm link, an alias install, or a Volta / pnpm shim)"
+    ? "argent couldn't resolve absolute node and cli.js paths for the global install on PATH"
     : "no global install on PATH";
 }
 
@@ -751,7 +752,12 @@ export async function update(args: string[]): Promise<void> {
         // Never downgrade a pinned entry to bare `argent` (a local-mode project,
         // or no global install on this PATH): that is the #1287 ENOENT again
         // for an editor started without the shell PATH.
-        if (isGlobalNodeEntry(existing) && next.command === MCP_BINARY_NAME) {
+        const deadPinnedFile = missingGlobalNodeFile(existing);
+        if (
+          isGlobalNodeEntry(existing) &&
+          deadPinnedFile === null &&
+          next.command === MCP_BINARY_NAME
+        ) {
           results.push(
             `${pc.yellow("!")} ${adapter.name} kept the pinned global entry (this run can't ` +
               `re-pin it: ${whyNotRepinnable(installMode)}) ${pc.dim(configPath)}`
@@ -760,7 +766,13 @@ export async function update(args: string[]): Promise<void> {
         }
         try {
           adapter.write(configPath, next);
-          results.push(`${pc.green("+")} ${adapter.name} ${pc.dim(configPath)}`);
+          results.push(
+            deadPinnedFile !== null && next.command === MCP_BINARY_NAME
+              ? `${pc.yellow("!")} ${adapter.name} replaced a pinned entry whose ` +
+                  `${deadPinnedFile} no longer exists with ${pc.cyan("argent mcp")} ` +
+                  `(this run can't re-pin it: ${whyNotRepinnable(installMode)}) ${pc.dim(configPath)}`
+              : `${pc.green("+")} ${adapter.name} ${pc.dim(configPath)}`
+          );
         } catch {
           // Skip paths that can't be written.
         }

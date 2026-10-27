@@ -1,10 +1,10 @@
-import * as fs from "node:fs";
 import pc from "picocolors";
 import { MCP_BINARY_NAME } from "./constants.js";
 import { isGloballyInstalled, isSamePath } from "./utils.js";
 import {
   hasCustomizingEnv,
   isGlobalNodeEntry,
+  missingGlobalNodeFile,
   type McpConfigAdapter,
   type McpServerEntry,
 } from "./mcp-configs.js";
@@ -70,13 +70,6 @@ export async function cleanupStaleMcpConfigs(args: {
   // exactly what an nvm user adds) — so it is dead in every environment that
   // resolves PATH like this shell. Legacy argent-authored env doesn't count
   // (see hasCustomizingEnv).
-  // A global-node entry names its files outright: dead once either is gone
-  // (an nvm prune, an uninstalled global), no PATH probe involved.
-  const missingGlobalNodeFile = (entry: McpServerEntry): string | null => {
-    if (!isGlobalNodeEntry(entry)) return null;
-    if (!fs.existsSync(entry.command)) return entry.command;
-    return fs.existsSync(entry.args[0]!) ? null : entry.args[0]!;
-  };
   const isProvablyDead = (entry: McpServerEntry | null): boolean =>
     entry !== null &&
     !hasCustomizingEnv(entry) &&
@@ -198,6 +191,27 @@ export async function cleanupStaleMcpConfigs(args: {
       // kept — legitimate coexistence, stay quiet.
     }
   } else if (scope === "global" || installMode === "global") {
+    // A Local-scope run leaves the global files as they are, so a pinned entry
+    // there can name a Node version that is gone since.
+    if (scope === "local") {
+      for (const adapter of writtenAdapters) {
+        const globalPath = adapter.globalPath();
+        let missing: string | null = null;
+        try {
+          missing = globalPath ? missingGlobalNodeFile(adapter.getArgentEntry(globalPath)) : null;
+        } catch {
+          // unreadable: nothing to judge
+        }
+        if (globalPath && missing !== null) {
+          warned(
+            adapter.name,
+            globalPath,
+            `the pinned global entry runs \`${missing}\`, which no longer exists. Re-run ` +
+              "`argent init` and select Global to pin the current install"
+          );
+        }
+      }
+    }
     // A project-scope entry at this root can outrank the global entry, but it
     // may be a committed team file — never auto-remove.
     for (const adapter of writtenAdapters) {
@@ -233,7 +247,11 @@ export async function cleanupStaleMcpConfigs(args: {
       } catch {
         // unreadable: nothing to compare against
       }
-      if (installMode === "global" && isGlobalNodeEntry(globalEntry)) {
+      if (
+        installMode === "global" &&
+        isGlobalNodeEntry(globalEntry) &&
+        missingGlobalNodeFile(globalEntry) === null
+      ) {
         warned(
           adapter.name,
           projectPath,

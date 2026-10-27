@@ -186,6 +186,14 @@ export function isGlobalNodeEntry(entry: McpServerEntry | null): boolean {
   return args[0].split("\\").join("/").includes(`node_modules/${PACKAGE_NAME}/`);
 }
 
+// A global-node entry names its files outright: dead once either is gone (an
+// nvm prune, an uninstalled global). Returns the missing path, or null.
+export function missingGlobalNodeFile(entry: McpServerEntry | null): string | null {
+  if (entry === null || !isGlobalNodeEntry(entry)) return null;
+  if (!fs.existsSync(entry.command)) return entry.command;
+  return fs.existsSync(entry.args[0]!) ? null : entry.args[0]!;
+}
+
 function hasEnv(entry: McpServerEntry): entry is McpServerEntry & { env: Record<string, string> } {
   return entry.env != null && Object.keys(entry.env).length > 0;
 }

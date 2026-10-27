@@ -774,6 +774,52 @@ describe("cleanupStaleMcpConfigs", () => {
     expect(result.lines[0]).toContain("without your shell PATH");
   });
 
+  it("calls a pinned global entry dead on a local-scope run instead of a fallback", async () => {
+    const { node, cli } = pinnedEntry();
+    fs.rmSync(node);
+    const cursorGlobal = path.join(home, ".cursor", "mcp.json");
+    writeJsonFile(cursorGlobal, { mcpServers: { argent: { command: node, args: [cli, "mcp"] } } });
+    writeJsonFile(path.join(root, ".cursor", "mcp.json"), {
+      mcpServers: { argent: { command: "argent", args: ["mcp"] } },
+    });
+
+    const result = await cleanupStaleMcpConfigs({
+      writtenAdapters: [cursor],
+      detectedAdapters: [cursor],
+      installMode: "global",
+      scope: "local",
+      effectiveRoot: root,
+    });
+
+    expect(result.warnedCount).toBe(1);
+    expect(result.lines[0]).toContain(`\`${node}\`, which no longer exists`);
+    expect(result.lines[0]).toContain(cursorGlobal);
+    expect(result.lines[0]).not.toContain("takes precedence");
+  });
+
+  it("stays quiet on a local-scope run about a project still in local mode", async () => {
+    // Its committed `node node_modules/…` entry is kept on purpose.
+    const { node, cli } = pinnedEntry();
+    writeJsonFile(path.join(home, ".cursor", "mcp.json"), {
+      mcpServers: { argent: { command: node, args: [cli, "mcp"] } },
+    });
+    writeJsonFile(path.join(root, ".cursor", "mcp.json"), {
+      mcpServers: {
+        argent: { command: "node", args: ["node_modules/@swmansion/argent/dist/cli.js", "mcp"] },
+      },
+    });
+
+    const result = await cleanupStaleMcpConfigs({
+      writtenAdapters: [cursor],
+      detectedAdapters: [cursor],
+      installMode: "global",
+      scope: "local",
+      effectiveRoot: root,
+    });
+
+    expect(result).toEqual({ lines: [], removedCount: 0, warnedCount: 0 });
+  });
+
   it("does not read the global entry back as a project rival when the files coincide", async () => {
     // Cursor at $HOME: projectPath(home) is globalPath().
     const { node, cli } = pinnedEntry();
