@@ -3,7 +3,13 @@ import { EventEmitter } from "events";
 import { promises as fs } from "fs";
 import os from "os";
 import path from "path";
-import { getFailureSignal, FAILURE_CODES, type DeviceInfo } from "@argent/registry";
+import {
+  getFailureSignal,
+  FAILURE_CODES,
+  ServiceState,
+  type Registry,
+  type DeviceInfo,
+} from "@argent/registry";
 import type { ChildProcess } from "child_process";
 
 vi.mock("child_process", async (importOriginal) => {
@@ -38,6 +44,7 @@ import {
   type PointerControl,
 } from "../src/tools/screen-recording/capture";
 import { setPointerTrail, setPointerVisible } from "../src/utils/simulator-client";
+import { createStopAllSimulatorServersTool } from "../src/tools/simulator/stop-all-simulator-servers";
 import { makePointerControl } from "../src/tools/screen-recording/screen-recording-start";
 import type { SimulatorServerApi } from "../src/blueprints/simulator-server";
 import { openMjpegStream, readJpegDimensions } from "../src/tools/screen-recording/mjpeg-stream";
@@ -1692,7 +1699,7 @@ describe("debug finalization safeguards", () => {
     expect((await stopping).encodingComplete).toBe(true);
   });
 
-  it("allows debug dispose to encode beyond the light grace and removes its JPEGs", async () => {
+  it.each([0, 1])("removes disposed debug JPEGs after encoder exit %s", async (exitCode) => {
     const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
       device: iosDevice,
     } as never);
@@ -1705,9 +1712,40 @@ describe("debug finalization safeguards", () => {
     const disposing = instance.dispose();
     await vi.advanceTimersByTimeAsync(5_000);
     expect(child.kill).not.toHaveBeenCalled();
-    child.exit(0);
+    child.exit(exitCode);
     await disposing;
     await expect(fs.access(path.join(scratch, directory))).rejects.toThrow();
+  });
+
+  it("keeps the teardown tool pending through more than 30 seconds of debug encoding", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    fakeStream();
+    const child = fakeChild();
+    await startAndSettle(instance.api, { mode: "debug" });
+    const urn = screenRecordingSessionBlueprint.getURN(iosDevice);
+    const registry = {
+      getSnapshot: () => ({ services: new Map([[urn, { state: ServiceState.RUNNING }]]) }),
+      disposeService: vi.fn(() => instance.dispose()),
+    } as unknown as Registry;
+    const tool = createStopAllSimulatorServersTool(registry);
+    expect(tool.longRunning).toBe(true);
+    let completed = false;
+    const ending = tool.execute({}, { devices: [IOS_UDID] }, {} as never).then((result) => {
+      completed = true;
+      return result;
+    });
+    await instance.api.debugCapture!.finish();
+    for (let frame = 1; frame <= 4; frame++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      child.stderr.emit("data", Buffer.from(`frame=${frame}\n`));
+    }
+    expect(completed).toBe(false);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.exit(0);
+    expect((await ending).stopped).toEqual([urn]);
+    expect(instance.api.debugCapture).toBeNull();
   });
 
   it("kills an encoder that emits progress reports without advancing, then waits for its exit", async () => {
