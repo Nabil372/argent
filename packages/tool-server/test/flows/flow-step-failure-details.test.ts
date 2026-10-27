@@ -602,6 +602,79 @@ describe("a wait that could not judge its condition", () => {
     expect(step).toMatchObject({ status: "fail", indeterminate: true, hint: INDETERMINATE_HINT });
     expect(step.reason).toContain("native devtools disconnected");
   });
+
+  // The screen answers for the first two reads (one poll interval), then the
+  // reads go dark. A `visible` wait then ends on its dark tail: the window is
+  // long enough for the dark reads to outlast the tolerance. A `hidden` wait
+  // saw the element, so it ends on its evidence gap.
+  const spinner = screen([label("Loading", { identifier: "spinner" })]);
+  const awaitHome = {
+    kind: "await",
+    condition: "visible",
+    selector: { text: "Home" },
+    timeout: 2000,
+  } as const;
+  const awaitSpinnerGone = {
+    kind: "await",
+    condition: "hidden",
+    selector: { identifier: "spinner" },
+    timeout: 1000,
+  } as const;
+
+  function answerThen(dark: () => DescribeNode): void {
+    let reads = 0;
+    currentTree = () => {
+      if (reads++ >= 2) return dark();
+      currentFlags = {};
+      return spinner;
+    };
+  }
+
+  function blind(): DescribeNode {
+    currentFlags = { hint: VEGA_HINT };
+    return screen([]);
+  }
+
+  it("gives the reader's repair to a wait whose reads went blind after the screen answered", async () => {
+    currentSource = "vega-automation";
+    await writeFlow("blind-tail", { executionPrerequisite: "", steps: [awaitHome] });
+    await writeFlow("blind-gap", { executionPrerequisite: "", steps: [awaitSpinnerGone] });
+
+    answerThen(blind);
+    const [visible] = (await run("blind-tail")).steps;
+    answerThen(blind);
+    const [hidden] = (await run("blind-gap")).steps;
+
+    expect(visible.reason).toMatch(
+      /reads were empty or degraded for the final \d+ms of the window/
+    );
+    expect(hidden.reason).toMatch(/it was visible earlier, but the last UI reads were empty/);
+    for (const step of [visible, hidden]) {
+      expect(step).toMatchObject({ status: "fail", indeterminate: true, hint: VEGA_HINT });
+    }
+  }, 15_000);
+
+  it("does not flag a wait whose reads were refused after the screen answered", async () => {
+    await writeFlow("refused-tail", { executionPrerequisite: "", steps: [awaitHome] });
+    await writeFlow("refused-gap", { executionPrerequisite: "", steps: [awaitSpinnerGone] });
+
+    answerThen(systemApp);
+    const [visible] = (await run("refused-tail")).steps;
+    answerThen(systemApp);
+    const [hidden] = (await run("refused-gap")).steps;
+
+    expect(visible.reason).toMatch(
+      /unreadable for the final \d+ms of the window: .+Apple system app/
+    );
+    expect(hidden.reason).toMatch(
+      /visible earlier, but the last UI read failed: .+Apple system app/
+    );
+    for (const step of [visible, hidden]) {
+      expect(step.status).toBe("fail");
+      expect(step).not.toHaveProperty("indeterminate");
+      expect(step).not.toHaveProperty("hint");
+    }
+  }, 15_000);
 });
 
 describe("passing steps", () => {
