@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import type { LivePanel } from "../../utils/foldable";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import type { ScreenRecordingSessionApi } from "../../blueprints/screen-recording-session";
-import { waitForChildExit } from "../../utils/profiler-shared/lifecycle";
+import { finalizeEncoder } from "./encoder";
 import {
   clearActiveScreenRecording,
   markScreenRecordingFinalized,
@@ -32,7 +32,7 @@ import {
 } from "./watermark";
 
 /**
- * Light screen capture off simulator-server's MJPEG stream, paced onto a fixed 30fps
+ * Screen capture off simulator-server's MJPEG stream. Light mode is paced onto a fixed 30fps
  * timeline and piped into one ffmpeg process that encodes (and optionally
  * watermarks) straight to the final mp4.
  *
@@ -107,10 +107,6 @@ export interface PanelFollow {
 }
 /** Hold briefly after spawn so bad args fail the start instead of the stop. */
 const START_FAILFAST_GRACE_MS = 800;
-/** ffmpeg finalizes on stdin EOF; bound the wait anyway. */
-const FINALIZE_WAIT_MS = 20_000;
-const DEBUG_ENCODING_MS_PER_FRAME = 1_000;
-const SIGINT_WAIT_MS = 5_000;
 
 export function ffmpegArgs(opts: {
   outputFile: string;
@@ -130,6 +126,8 @@ export function ffmpegArgs(opts: {
       "-xerror",
       "-loglevel",
       "warning",
+      "-progress",
+      "pipe:2",
       "-f",
       "concat",
       "-safe",
@@ -405,8 +403,7 @@ function stopPump(api: ScreenRecordingSessionApi): void {
 }
 
 /**
- * End the capture: stop producing frames and close ffmpeg's stdin, which is
- * what makes it write the mp4 trailer.
+ * End frame capture. EOF finalizes light mode and starts debug encoding.
  */
 function finalizeCapture(api: ScreenRecordingSessionApi): void {
   stopPump(api);
@@ -714,6 +711,7 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
   // Set synchronously so a concurrent stop or start is rejected while this one
   // finalizes (see assertStoppableSession / assertNoActiveRecording).
   api.stopPending = true;
+  clearActiveScreenRecording(api.deviceId);
 
   if (api.recordingTimeout) {
     clearTimeout(api.recordingTimeout);
@@ -747,28 +745,9 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
     // Idempotent: the cap may already have finalized this capture.
     finalizeCapture(api);
 
-    const finalizeWaitMs = debugCapture
-      ? FINALIZE_WAIT_MS + debugCapture.frameTimesUs.length * DEBUG_ENCODING_MS_PER_FRAME
-      : FINALIZE_WAIT_MS;
-    if (child && !(await waitForChildExit(child, finalizeWaitMs))) {
-      // ffmpeg normally exits within milliseconds of stdin EOF; escalate only
-      // if it is wedged, accepting that the container may be truncated.
-      try {
-        child.kill("SIGINT");
-      } catch {
-        // already dead
-      }
-      if (!(await waitForChildExit(child, SIGINT_WAIT_MS))) {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // already dead
-        }
-        await waitForChildExit(child, 1_000);
-        warning =
-          "ffmpeg did not finalize the video after the capture ended and had to be killed; " +
-          "the file may be truncated or unplayable.";
-      }
+    if (child && !(await finalizeEncoder(child, Boolean(debugCapture)))) {
+      warning =
+        "ffmpeg stopped making progress and had to be killed; the file may be truncated or unplayable.";
     }
 
     if (endedEarly && !warning) {

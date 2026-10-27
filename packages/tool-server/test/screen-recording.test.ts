@@ -1634,11 +1634,54 @@ describe("debug finalization safeguards", () => {
     await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
     const stopping = stopCapture(api);
     await api.debugCapture!.finish();
-    await vi.advanceTimersByTimeAsync(40_000);
+    for (let frame = 1; frame <= 4; frame++) {
+      await vi.advanceTimersByTimeAsync(10_000);
+      child.stderr.emit("data", Buffer.from(`frame=${frame}\n`));
+    }
     expect(child.kill).not.toHaveBeenCalled();
+    expect(getActiveScreenRecordings()).toHaveLength(0);
     expect(api.stopPending).toBe(true);
     child.exit(0);
     expect((await stopping).encodingComplete).toBe(true);
+  });
+
+  it("allows debug dispose to encode beyond the light grace and removes its JPEGs", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    fakeStream();
+    const child = fakeChild();
+    await startAndSettle(instance.api, { mode: "debug" });
+    const directory = (await fs.readdir(scratch)).find((name) =>
+      name.startsWith("argent-recording-frames-")
+    )!;
+    const disposing = instance.dispose();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(child.kill).not.toHaveBeenCalled();
+    child.exit(0);
+    await disposing;
+    await expect(fs.access(path.join(scratch, directory))).rejects.toThrow();
+  });
+
+  it("kills an encoder that emits progress reports without advancing, then waits for its exit", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    await startAndSettle(api, { mode: "debug" });
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    const stopping = stopCapture(api);
+    await api.debugCapture!.finish();
+    for (let i = 0; i < 5; i++) {
+      child.stderr.emit("data", Buffer.from("frame=0\n"));
+      await vi.advanceTimersByTimeAsync(5_000);
+    }
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    expect(api.stopPending).toBe(true);
+    child.exit(null, "SIGKILL");
+    const result = await stopping;
+    expect(result.encodingComplete).toBe(false);
+    expect(result.warning).toContain("stopped making progress");
+    expect(api.stopPending).toBe(false);
   });
 
   it.each(["stop", "dispose"])(

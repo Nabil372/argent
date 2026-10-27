@@ -9,7 +9,7 @@ import {
 } from "@argent/registry";
 import type { ChildProcess } from "child_process";
 import { promises as fs } from "fs";
-import { waitForChildExit } from "../utils/profiler-shared/lifecycle";
+import { finalizeEncoder } from "../tools/screen-recording/encoder";
 import { clearActiveScreenRecording } from "../utils/screen-recording-reminder";
 import { recordReapedSession } from "../utils/reaped-sessions";
 import type { DebugCapture } from "../tools/screen-recording/debug-capture";
@@ -122,14 +122,8 @@ export interface ScreenRecordingSessionApi {
   lastExitInfo: { code: number | null; signal: string | null; stderr?: string } | null;
 }
 
-// Dispose abandons an in-flight recording — process shutdown, or a
-// `stop-all-simulator-servers` reaping this device-owned service — so the video
-// is a best-effort salvage rather than something a caller is waiting on:
-// closing ffmpeg's stdin is what finalizes the container, so give that one
-// short grace before SIGKILL. `screen-recording-stop` has its own, longer
-// finalize contract.
+// Light mode only needs to flush its container; debug still has frames to encode.
 const DISPOSE_FINALIZE_GRACE_MS = 1_500;
-const DISPOSE_REAP_MS = 1_000;
 
 function clearLiveState(state: ScreenRecordingSessionApi): void {
   state.recordingActive = false;
@@ -275,17 +269,8 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
         try {
           const child = state.captureProcess;
           if (child) {
-            // Closing stdin is ffmpeg's normal finalize path, so the abandoned
-            // file still has a chance to be playable.
             if (!state.debugCapture && child.stdin?.writable) child.stdin.end();
-            if (!(await waitForChildExit(child, DISPOSE_FINALIZE_GRACE_MS))) {
-              try {
-                child.kill("SIGKILL");
-              } catch {
-                // already dead
-              }
-              await waitForChildExit(child, DISPOSE_REAP_MS);
-            }
+            await finalizeEncoder(child, Boolean(state.debugCapture), DISPOSE_FINALIZE_GRACE_MS);
           }
         } finally {
           // The logo temp is normally removed by stop, a path this teardown
@@ -307,9 +292,7 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
               "screen-recording",
               state.deviceId,
               abandonedOutput
-                ? `ffmpeg was given a moment to finalize the container first, so the video ` +
-                    `captured up to that point is usually playable at ${abandonedOutput} — ` +
-                    `check it before re-recording.`
+                ? `The recording output is at ${abandonedOutput}. Check that it plays before re-recording.`
                 : undefined
             );
           }
