@@ -138,6 +138,24 @@ describe("native-network-logs arms capture through the blueprint", () => {
     });
   });
 
+  it("drops the missed-launch note once a relaunch is captured from its handshake", async () => {
+    await withService(async (api) => {
+      const before = await connectApp(api.socketPath, BUNDLE);
+      vi.spyOn(api, "ensureEnvReady").mockRejectedValueOnce(new Error("simctl hiccup"));
+      expect(await callTool(api)).toMatchObject({ status: "init_failed" });
+      before.close();
+      await settle();
+
+      const after = await connectApp(api.socketPath, BUNDLE);
+      await vi.waitFor(() => expect(after.received).toContain(ACTIVATE));
+
+      const next = await callTool(api);
+      expect(next).toMatchObject({ status: "ok" });
+      expect((next as { note?: string }).note).toBeUndefined();
+      after.close();
+    });
+  });
+
   it("never activates an Apple system app it refuses", async () => {
     const SYSTEM_APP = "com.apple.Preferences";
     await withService(async (api) => {

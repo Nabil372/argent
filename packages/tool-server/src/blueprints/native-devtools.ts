@@ -821,6 +821,7 @@ export const nativeDevtoolsBlueprint: ServiceBlueprint<NativeDevtoolsApi, Device
               // Our own listener hears an app at its launch, so nothing was
               // missed. A lent agent is an app that was already running.
               if (lentSocketPath) captureGaps.add(bundleId);
+              else captureGaps.delete(bundleId);
               socket.write(
                 JSON.stringify({
                   type: "Control",
