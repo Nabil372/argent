@@ -238,6 +238,16 @@ describe("text check failures", () => {
     expect(step).not.toHaveProperty("expectedKind");
   });
 
+  it("gives no own-text hint for a container with no label of its own", async () => {
+    currentTree = () => screen([label("", { identifier: "total", subtreeText: "Total $41.50" })]);
+    await writeFlow("no-own-text", { executionPrerequisite: "", steps: [assertTotalEquals42] });
+
+    const [step] = (await run("no-own-text")).steps;
+
+    expect(step).toMatchObject({ status: "fail", actual: "Total $41.50" });
+    expect(step.hint).toBeUndefined();
+  });
+
   it("quotes an own text that holds quotes and backslashes as JSON, like the actual text", async () => {
     currentTree = () =>
       screen([label('Say "hi" C:\\x', { identifier: "greet", subtreeText: "Hello there" })]);
