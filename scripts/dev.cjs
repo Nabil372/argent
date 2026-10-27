@@ -116,6 +116,13 @@ execSync("npm run build:dispatcher -w @swmansion/argent", {
 });
 console.log("✓ Dispatcher TypeScript built\n");
 
+console.log("Bundling dispatcher subcommands...");
+execSync("node scripts/bundle-tools.cjs --esm-only", {
+  cwd: ARGENT_PKG,
+  stdio: "inherit",
+});
+console.log("✓ Dispatcher subcommands bundled\n");
+
 // Only the current host's key, unlike bundle-tools.cjs which copies every
 // supported host's binary. Mirrors hostPlatformKey() in
 // @argent/native-devtools-ios.
