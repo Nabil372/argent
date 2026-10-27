@@ -5,8 +5,8 @@ import { FAILURE_CODES, FailureError } from "@argent/registry";
  * Client for simulator-server's live frame stream — the same one the preview UI
  * renders. It is a `multipart/x-mixed-replace` producer that emits a JPEG only
  * when the device screen CHANGES (a still screen produces no frames), so this
- * client tracks just the most recent frame; turning that into an even-cadence
- * video is the pump's job in `capture.ts`.
+ * client keeps the latest frame for light mode's pump in `capture.ts` and
+ * delivers every parsed frame with its host arrival time to debug subscribers.
  */
 
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024;

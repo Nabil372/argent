@@ -88,7 +88,7 @@ export function createScreenRecordingStartTool(
     capability,
     description: `Start recording the device screen to an H.264 MP4 using simulator-server's existing frame stream.
 Use mode: "light" (default) for bug reports and PR videos: 30 fps, static trimming, touch markers and the configured watermark.
-Use mode: "debug" for flicker and frame-by-frame animation inspection. It keeps every delivered frame without trimming or a watermark. Touch markers default off; enable them with showTouches: true. Timestamps measure host arrival, not native device presentation, and upstream frames can be omitted. Debug encodes at stop and can take longer to finalize.
+Use mode: "debug" for flicker and frame-by-frame animation inspection. It keeps every delivered frame without trimming or a watermark. Touch markers default off; enable them with showTouches: true. Timestamps measure host arrival, not native device presentation, and upstream frames can be omitted. Debug saves JPEGs in temporary storage and encodes at stop, which can take longer. Capture ends early with a warning if writes fail or cannot keep up.
 The recording keeps running across other tool calls (every result carries a reminder) until \`screen-recording-stop\` is called or timeLimitSeconds elapses. Immediately after starting, set yourself a reminder/wakeup for the expected end of the recording so it is never left running.
 Use when the user wants a video of an interaction, animation, or app behavior; for a single still frame use \`screenshot\` instead.
 Returns { status: "recording", timeLimitSeconds, outputFile }. The video is retrieved later by \`screen-recording-stop\`, not by reading outputFile directly.
