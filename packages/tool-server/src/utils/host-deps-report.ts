@@ -17,6 +17,12 @@ import { commandOnPath } from "./command-on-path";
 import { getCandidateChromiumPorts } from "./chromium-discovery";
 import { detectSigningTeams } from "./ios-device/team-detect";
 import { linuxBootDiagnostics } from "./linux-preflight";
+import {
+  configuredAdditionalDeviceSets,
+  simctlPrefix,
+  type DeviceSetPath,
+} from "./ios-device-sets";
+import { SIMCTL_KILL_SIGNAL } from "./simctl-config";
 
 /**
  * What `tool-server --check-deps` prints for `argent doctor`. The probes are the
@@ -88,6 +94,8 @@ async function runProbe(
   try {
     const { stdout } = await execFileAsync(cmd, args, {
       timeout: RUN_PROBE_TIMEOUT_MS,
+      // A simctl blocked on a wedged CoreSimulatorService ignores SIGTERM.
+      killSignal: SIMCTL_KILL_SIGNAL,
       maxBuffer: 64 * 1024 * 1024,
     });
     return { stdout };
@@ -107,22 +115,66 @@ async function runProbe(
 
 const IOS_RUNTIME_PREFIX = "com.apple.CoreSimulator.SimRuntime.iOS-";
 
+interface SimctlDevice {
+  isAvailable?: boolean;
+  availabilityError?: string;
+}
+
+// simctl keeps listing the simulators of a deleted runtime under its key, each
+// with "runtime profile not found".
+function isInstalledRuntime(devices: SimctlDevice[]): boolean {
+  return (
+    devices.length === 0 ||
+    devices.some((d) => !/runtime profile not found/i.test(d.availabilityError ?? ""))
+  );
+}
+
+function countIosSimulators(stdout: string): { available: number; runtimes: number } {
+  const { devices } = JSON.parse(stdout) as { devices?: Record<string, SimctlDevice[]> };
+  const ios = Object.entries(devices ?? {})
+    .filter(([runtime]) => runtime.startsWith(IOS_RUNTIME_PREFIX))
+    .map(([, list]) => list);
+  return {
+    available: ios.flat().filter((d) => d.isAvailable).length,
+    runtimes: ios.filter(isInstalledRuntime).length,
+  };
+}
+
+function listDeviceSet(deviceSet: DeviceSetPath) {
+  return runProbe("xcrun", [...simctlPrefix(deviceSet), "list", "devices", "--json"]);
+}
+
+// list-devices skips a set it can't read, so the count does too.
+function availableInSet(result: Awaited<ReturnType<typeof listDeviceSet>>): number {
+  if ("error" in result) return 0;
+  try {
+    return countIosSimulators(result.stdout).available;
+  } catch {
+    return 0;
+  }
+}
+
+/** Available simulators in the `ios.additionalDeviceSets` that list-devices also reads. */
+async function countAdditionalSetSimulators(): Promise<number> {
+  // simctl creates a missing `--set` directory.
+  const sets = configuredAdditionalDeviceSets().filter((set) => existsSync(set));
+  const results = await Promise.all(sets.map(listDeviceSet));
+  return results.reduce((sum, result) => sum + availableInSet(result), 0);
+}
+
 async function probeSimulators(): Promise<{
   simctlError?: string;
   availableSimulators?: number;
   iosRuntimes?: number;
 }> {
-  const result = await runProbe("xcrun", ["simctl", "list", "devices", "--json"]);
+  const [result, additional] = await Promise.all([
+    listDeviceSet(null),
+    countAdditionalSetSimulators(),
+  ]);
   if ("error" in result) return { simctlError: result.error };
   try {
-    const { devices } = JSON.parse(result.stdout) as {
-      devices?: Record<string, Array<{ isAvailable?: boolean }>>;
-    };
-    const ios = Object.entries(devices ?? {}).filter(([runtime]) =>
-      runtime.startsWith(IOS_RUNTIME_PREFIX)
-    );
-    const available = ios.flatMap(([, list]) => list).filter((d) => d.isAvailable);
-    return { availableSimulators: available.length, iosRuntimes: ios.length };
+    const { available, runtimes } = countIosSimulators(result.stdout);
+    return { availableSimulators: available + additional, iosRuntimes: runtimes };
   } catch {
     return { simctlError: "`xcrun simctl list devices --json` printed unreadable output" };
   }

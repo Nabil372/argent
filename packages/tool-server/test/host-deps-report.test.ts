@@ -43,7 +43,11 @@ const runs = vi.hoisted(() => ({
     string,
     { stdout?: string; stderr?: string; fail?: boolean; killed?: boolean }
   >,
-  calls: [] as Array<{ cmd: string; args: string[]; opts: { timeout?: number } }>,
+  calls: [] as Array<{
+    cmd: string;
+    args: string[];
+    opts: { timeout?: number; killSignal?: string };
+  }>,
 }));
 const defaultRuns = (): typeof runs.results => ({
   "xcode-select": { stdout: `${developerDir}\n` },
@@ -64,11 +68,12 @@ vi.mock("node:child_process", () => ({
   execFile: (
     cmd: string,
     args: string[],
-    opts: { timeout?: number },
+    opts: { timeout?: number; killSignal?: string },
     cb: (err: Error | null, out: { stdout: string; stderr: string }) => void
   ) => {
     runs.calls.push({ cmd, args, opts });
-    const run = runs.results[cmd] ?? { stdout: "" };
+    const key = args[1] === "--set" ? `${cmd} --set ${args[2]}` : cmd;
+    const run = runs.results[key] ?? { stdout: "" };
     if (run.fail || run.killed) {
       const err = Object.assign(new Error(`Command failed: ${cmd}`), {
         stderr: run.stderr ?? "",
@@ -96,6 +101,11 @@ vi.mock("../src/utils/ios-device/team-detect", () => ({
 }));
 const kvm = vi.hoisted(() => ({ problem: [] as string[] | null }));
 vi.mock("../src/utils/linux-preflight", () => ({ linuxBootDiagnostics: () => kvm.problem }));
+const deviceSets = vi.hoisted(() => ({ list: [] as string[] }));
+vi.mock("@argent/configuration-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/configuration-core")>()),
+  getAdditionalIosDeviceSets: () => deviceSets.list,
+}));
 vi.mock("../src/utils/chromium-discovery", () => ({
   getCandidateChromiumPorts: () => [9222, 9333],
 }));
@@ -117,6 +127,7 @@ beforeEach(() => {
   runs.results = defaultRuns();
   runs.calls = [];
   missing.clear();
+  deviceSets.list = [];
   signing.detect = async () => [{ teamId: "T1" }];
 });
 
@@ -200,6 +211,45 @@ describe("collectHostDepsReport", () => {
     });
   });
 
+  it("does not count a deleted runtime that still lists its simulators", async () => {
+    runs.results.xcrun = {
+      stdout: JSON.stringify({
+        devices: {
+          "com.apple.CoreSimulator.SimRuntime.iOS-17-0": [
+            {
+              isAvailable: false,
+              availabilityError: 'runtime profile not found using "System" match policy',
+            },
+          ],
+        },
+      }),
+    };
+    expect((await reportOn("darwin")).xcode).toMatchObject({
+      availableSimulators: 0,
+      iosRuntimes: 0,
+    });
+  });
+
+  it("counts simulators in the additional device sets list-devices reads", async () => {
+    const radonSet = path.join(fixture, "radon-devices");
+    fs.mkdirSync(radonSet, { recursive: true });
+    deviceSets.list = [radonSet, path.join(fixture, "missing-set")];
+    runs.results.xcrun = {
+      stdout: JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [] } }),
+    };
+    runs.results[`xcrun --set ${radonSet}`] = {
+      stdout: JSON.stringify({
+        devices: { "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [{ isAvailable: true }] },
+      }),
+    };
+    expect((await reportOn("darwin")).xcode).toMatchObject({
+      availableSimulators: 1,
+      iosRuntimes: 1,
+    });
+    const setArgs = runs.calls.filter((c) => c.args[1] === "--set").map((c) => c.args[2]);
+    expect(setArgs).toEqual([radonSet]);
+  });
+
   it("reports simctl output it can't parse", async () => {
     runs.results.xcrun = { stdout: "not json" };
     expect((await reportOn("darwin")).xcode?.simctlError).toMatch(/unreadable output/);
@@ -233,6 +283,12 @@ describe("collectHostDepsReport", () => {
       ["/sdk/adb", ["version"], 10_000],
       ["/sdk/emulator", ["-version"], 10_000],
     ]);
+  });
+
+  it("kills a timed-out simctl with SIGKILL, which a wedged CoreSimulatorService can't ignore", async () => {
+    await reportOn("darwin");
+    const simctl = runs.calls.find((c) => c.cmd === "xcrun");
+    expect(simctl?.opts).toMatchObject({ timeout: 10_000, killSignal: "SIGKILL" });
   });
 
   it("reports a found emulator that fails to run", async () => {
