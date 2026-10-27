@@ -8,7 +8,11 @@ import { randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { ToolsServerPaths } from "@argent/tools-client";
-import { AUTO_DESCRIBE_HEADER, AUTO_DESCRIBE_LEGEND } from "../src/auto-capture.js";
+import {
+  AUTO_DESCRIBE_HEADER,
+  AUTO_DESCRIBE_LEGEND,
+  getAutoScreenshotDelayMs,
+} from "../src/auto-capture.js";
 
 // Drives the real adapter (`startMcpServer`) over the SDK's in-memory transport
 // against a stub tool-server, so the adapter's own call handling is exercised:
@@ -73,6 +77,7 @@ const LISTING = {
       hideFromMcp: true,
       aliasOf: "e2e-execute",
     },
+    { name: "gesture-tap", description: "Tap", inputSchema: { type: "object", properties: {} } },
   ],
 };
 
@@ -107,6 +112,17 @@ const RUN_REPORT = {
 };
 
 type Route = (res: http.ServerResponse) => void | Promise<void>;
+
+// A profiler records on this device, so the stub flags its calls with `profiling`.
+const PROFILED_UDID = "emulator-5554";
+
+function isProfiledDevice(body: string): boolean {
+  try {
+    return (JSON.parse(body) as { udid?: unknown }).udid === PROFILED_UDID;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * A stub tool-server. With `token`, a request without that bearer token gets
@@ -149,14 +165,25 @@ async function startStub({
       if (req.method === "POST" && reqUrl === "/tools/noted") {
         return json(200, { data: { ok: true }, note: "a note" });
       }
+      if (req.method === "POST" && reqUrl === "/tools/screenshot") {
+        return json(422, { error: "no screen" });
+      }
+      if (req.method === "POST" && isProfiledDevice(body)) {
+        if (reqUrl === "/tools/gesture-tap") {
+          return json(200, { data: { done: true }, profiling: true });
+        }
+        if (reqUrl === "/tools/describe") {
+          return json(200, { data: { description: "Button 'OK'" }, profiling: true });
+        }
+        if (reqUrl === "/tools/await-screen-idle") {
+          return json(200, { data: { settled: true, waitedMs: 450, polls: 3 }, profiling: true });
+        }
+      }
       if (req.method === "POST" && reqUrl === "/tools/gesture-tap") {
         return json(200, { data: { tapped: true } });
       }
       if (req.method === "POST" && reqUrl === "/tools/await-screen-idle") {
         return json(200, { data: { idle: true } });
-      }
-      if (req.method === "POST" && reqUrl === "/tools/screenshot") {
-        return json(422, { error: "no screen" });
       }
       if (req.method === "POST" && reqUrl === "/tools/describe") {
         return json(200, {
@@ -234,7 +261,13 @@ describe("startMcpServer tool calls", () => {
 
   it("lists the tools of the tool-server", async () => {
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(["reinstall-app", "reject", "noted", "e2e-execute"]);
+    expect(tools.map((t) => t.name)).toEqual([
+      "reinstall-app",
+      "reject",
+      "noted",
+      "e2e-execute",
+      "gesture-tap",
+    ]);
   });
 
   it("renders a run report the same whether called as flow-execute or e2e-execute", async () => {
@@ -245,6 +278,37 @@ describe("startMcpServer tool calls", () => {
     expect(textOf(byAlias)).toContain('Running e2e test "demo"');
     expect(textOf(byAlias)).not.toContain('"steps"');
     expect(byAlias.content).toEqual(byId.content);
+  });
+
+  it("skips the post-action capture while a profiler records, with a note except on describe", async () => {
+    const tap = await client.callTool({
+      name: "gesture-tap",
+      arguments: { udid: "emulator-5554", x: 0.5, y: 0.5 },
+    });
+    // The tap still waits for the screen to settle before it returns, so a
+    // describe sent next does not read the screen from before the tap.
+    const toolCalls = () => requests.filter((r) => r.url.startsWith("/tools/"));
+    expect(toolCalls().map((r) => r.url)).toEqual([
+      "/tools/gesture-tap",
+      "/tools/await-screen-idle",
+    ]);
+    expect(JSON.parse(toolCalls()[1]!.body)).toEqual({
+      udid: "emulator-5554",
+      timeoutMs: getAutoScreenshotDelayMs("gesture-tap"),
+    });
+
+    const described = await client.callTool({
+      name: "describe",
+      arguments: { udid: "emulator-5554" },
+    });
+    expect(toolCalls().map((r) => r.url)).toEqual([
+      "/tools/gesture-tap",
+      "/tools/await-screen-idle",
+      "/tools/describe",
+    ]);
+    expect(textOf(tap)).toContain("skipped while a profiler is recording");
+    expect(textOf(described)).toContain("Button 'OK'");
+    expect(textOf(described)).not.toContain("profiler");
   });
 
   it("uploads a tar-upload input and returns the tool result", async () => {
