@@ -110,7 +110,7 @@ export async function otherSection(
     if (!target) {
       checks.push(
         check("info", "Update check skipped (npm registry unreachable or too slow)", {
-          detail: `no answer within ${UPDATE_CHECK_DEADLINE_MS / 1000}s; --offline skips the check`,
+          detail: `the request failed (DNS, proxy, HTTP error) or took over ${UPDATE_CHECK_DEADLINE_MS / 1000}s; --offline skips the check`,
         })
       );
     } else if (installable && isNewerVersion(installable, running)) {

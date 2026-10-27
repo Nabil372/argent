@@ -144,7 +144,7 @@ describe("otherSection guards", () => {
     vi.mocked(resolveInstallableUpdateTarget).mockResolvedValue(null);
     const { checks } = await otherSection(local(), "0.30.1", false, "argent update", "npm");
     expect(checks.find((c) => c.label.startsWith("Update check skipped"))?.detail).toMatch(
-      /--offline/
+      /^the request failed .* or took over 15s; --offline/
     );
   });
 
