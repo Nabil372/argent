@@ -308,6 +308,19 @@ describe("remote entries", () => {
     }
   });
 
+  it("lets Gemini's URL win over a command beside it, as gemini-cli does", () => {
+    const file = path.join(tmpDir, "settings.json");
+    const gemini = ALL_ADAPTERS.find((a) => a.name === "Gemini")!;
+    const url = "http://127.0.0.1:1/mcp";
+    for (const key of ["url", "httpUrl"]) {
+      fs.writeFileSync(
+        file,
+        JSON.stringify({ mcpServers: { argent: { command: "argent", args: ["mcp"], [key]: url } } })
+      );
+      expect(gemini.getArgentEntry(file)).toEqual({ command: "", args: [], url });
+    }
+  });
+
   it("reads each editor's URL key, keeps the switch-off key and prefers the URL to a command", () => {
     const read = (name: string, raw: Record<string, unknown>) => {
       const adapter = ALL_ADAPTERS.find((a) => a.name === name)!;

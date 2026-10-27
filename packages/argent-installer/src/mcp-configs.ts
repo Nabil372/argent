@@ -219,6 +219,7 @@ const REMOTE_URL_KEYS = ["url", "serverUrl", "httpUrl"] as const;
 
 // Claude Code runs an entry with no `type` (or `type: "stdio"`) as a command
 // even when a `url` sits beside it; only a remote `type` makes the URL win.
+// Gemini always prefers httpUrl or url (createTransport in gemini-cli).
 function startsCommand(raw: Record<string, unknown>): boolean {
   const hasCommand = typeof raw.command === "string" || Array.isArray(raw.command);
   return hasCommand && (raw.type === undefined || raw.type === "stdio" || raw.type === "local");
@@ -229,7 +230,10 @@ function startsCommand(raw: Record<string, unknown>): boolean {
 // Env vars ride along (opencode spells the key `environment`): they mark a
 // hand-tuned entry and can make a command resolvable in the client when this
 // shell's probe misses it (nvm PATH), so classification must see them.
-function normalizeServerEntry(raw: unknown): McpServerEntry | null {
+function normalizeServerEntry(
+  raw: unknown,
+  { urlWins = false }: { urlWins?: boolean } = {}
+): McpServerEntry | null {
   if (raw === undefined || raw === null) return null;
   if (isRecord(raw)) {
     const rawEnv = isRecord(raw.env) ? raw.env : isRecord(raw.environment) ? raw.environment : null;
@@ -249,7 +253,7 @@ function normalizeServerEntry(raw: unknown): McpServerEntry | null {
     const url = REMOTE_URL_KEYS.map((key) => raw[key]).find(
       (value): value is string => typeof value === "string" && value !== ""
     );
-    if (url && !startsCommand(raw)) return { command: "", args: [], url, ...extra };
+    if (url && (urlWins || !startsCommand(raw))) return { command: "", args: [], url, ...extra };
     // opencode stores the command as a single array: { command: [cmd, ...args] }.
     if (Array.isArray(raw.command) && raw.command.every((c) => typeof c === "string")) {
       const [command = "", ...args] = raw.command as string[];
@@ -1294,7 +1298,7 @@ const geminiAdapter: McpConfigAdapter = {
     if (!fs.existsSync(configPath)) return null;
     const config = readJsonc(configPath);
     const servers = config.mcpServers as Record<string, unknown> | undefined;
-    return normalizeServerEntry(servers?.[MCP_SERVER_KEY]);
+    return normalizeServerEntry(servers?.[MCP_SERVER_KEY], { urlWins: true });
   },
 
   hasArgentEntry(configPath: string): boolean {
