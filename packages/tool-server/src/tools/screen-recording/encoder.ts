@@ -73,6 +73,8 @@ export async function verifyDebugEncoder(ffmpeg: string, jpeg: Buffer): Promise<
       "image2pipe",
       "-i",
       "pipe:0",
+      "-vf",
+      "format=yuv444p,pad=ceil(iw/2)*2:ceil(ih/2)*2:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
       "-frames:v",
       "1",
       "-c:v",

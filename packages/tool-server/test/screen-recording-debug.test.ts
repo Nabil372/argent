@@ -167,7 +167,7 @@ if (process.env.CI && !hasEncoder) {
   throw new Error("Recording tests require ffmpeg with libx264 and ffprobe in CI.");
 }
 
-function jpeg(rgb: number[], width = 33, height = 31): Buffer {
+function jpeg(rgb: number[], width = 33, height = 31, pixFmt = "yuvj444p"): Buffer {
   const png = new PNG({ width, height });
   for (let i = 0; i < png.data.length; i += 4) {
     png.data.set([...rgb, 255], i);
@@ -188,6 +188,8 @@ function jpeg(rgb: number[], width = 33, height = 31): Buffer {
       "image2pipe",
       "-c:v",
       "mjpeg",
+      "-pix_fmt",
+      pixFmt,
       "-",
     ],
     { input: PNG.sync.write(png) }
@@ -421,3 +423,24 @@ it("retains a 64 MiB write backlog while all write lanes are stalled", async () 
   expect(capture.frameTimesUs).toHaveLength(9);
   expect(fs.writeFile).toHaveBeenCalledTimes(8);
 });
+
+it.skipIf(!hasEncoder)(
+  "preflights an odd-width 4:2:0 JPEG supported by debug recording",
+  async () => {
+    const frame = jpeg([255, 0, 0], 1179, 2556, "yuvj420p");
+    const image = path.join(scratch, "odd.jpg");
+    await fs.writeFile(image, frame);
+    const probe = spawnSync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "stream=width,height,pix_fmt", "-of", "json", image],
+      { encoding: "utf8" }
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    expect(JSON.parse(probe.stdout).streams[0]).toMatchObject({
+      width: 1179,
+      height: 2556,
+      pix_fmt: "yuvj420p",
+    });
+    await expect(verifyDebugEncoder("ffmpeg", frame)).resolves.toBeUndefined();
+  }
+);
