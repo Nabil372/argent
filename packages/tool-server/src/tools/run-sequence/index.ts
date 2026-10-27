@@ -7,7 +7,7 @@ import type {
   ToolContext,
   ToolDefinition,
 } from "@argent/registry";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, isIosPhysicalDevice } from "../../utils/device-info";
 import { assertSupported, UnsupportedOperationError } from "../../utils/capability";
 import { sleepOrAbort, DEFAULT_INTER_STEP_DELAY_MS } from "../../utils/timing";
 import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
@@ -79,7 +79,7 @@ const zodSchema = z.object({
     .boolean()
     .optional()
     .describe(
-      "Applies to the whole sequence; a step's own settle:false skips it after that step only. Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements are already moving, but not motion that starts more than ~100ms after the step (a sheet opened after a fetch) or animations that leave the tree unchanged (a native iOS push), so keep await-ui-element gates for those. There is no wait between two consecutive swipe, scroll or drag steps. A wait can hit the 1s cap after a push or on a spinner, or when the tree cannot be read within it (a slow page, an alert). The rest of the sequence skips the wait once two waits in a row end that way, and the result's note says so; a wait after a swipe, scroll or drag is not counted, since momentum often outlasts the cap.<flag:harmonyos> No wait on HarmonyOS, where one tree read takes longer than the cap.</flag:harmonyos> Set false for timing-critical input (games, double-taps split across steps)."
+      "Applies to the whole sequence; a step's own settle:false skips it after that step only. Default true: after a step that can start a transition (tap, swipe, button, rotate, enter/escape, a met await-ui-element) wait until two reads of the element tree match (max 1s) before the next step. This catches sheets and screens whose elements are already moving, but not motion that starts more than ~100ms after the step (a sheet opened after a fetch) or animations that leave the tree unchanged (a native iOS push), so keep await-ui-element gates for those. There is no wait between two consecutive swipe, scroll or drag steps. A wait can hit the 1s cap after a push or on a spinner, or when the tree cannot be read within it (a slow page, an alert, the first reads after the tool server starts). A read that outlasts the cap keeps running and can delay the next step. The rest of the sequence skips the wait once two waits in a row end that way (two navigations in a row on Android often do), and the result's note says so; a wait after a swipe, scroll or drag is not counted, since momentum often outlasts the cap. No wait on a physical iPhone, where a read would hold up the next step's command.<flag:harmonyos> No wait on HarmonyOS, where one tree read takes longer than the cap.</flag:harmonyos> Set false for timing-critical input (games, double-taps split across steps)."
     ),
 });
 
@@ -117,7 +117,7 @@ function keyMayMoveUi(args: Record<string, unknown> | undefined): boolean {
 }
 
 function canSettle(registry: Registry, device: DeviceInfo): boolean {
-  if (device.platform === "harmony") return false;
+  if (device.platform === "harmony" || isIosPhysicalDevice(device)) return false;
   try {
     assertSupported(SETTLE_IDLE_TOOL_ID, registry.getTool(SETTLE_IDLE_TOOL_ID)?.capability, device);
     return true;
@@ -294,8 +294,9 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
       const { udid, steps } = params;
       const device = resolveDevice(udid);
       const results: StepResult[] = [];
-      let settle = params.settle !== false;
+      const settle = params.settle !== false;
       let failedInARow = 0;
+      let stoppedNote: string | undefined;
       let note: string | undefined;
       // The HTTP layer aborts `signal` on client disconnect, and `longRunning`
       // drops the MCP adapter's own fetch timeout — so honour the signal between
@@ -360,12 +361,15 @@ Stops on the first error (or unmet await-ui-element condition) and returns parti
         }
 
         if (settle && settlesBetween(step, steps[results.length]) && canSettle(registry, device)) {
-          const verdict = await settleScreen(registry, device, signal);
-          if (verdict.kind === "settled") failedInARow = 0;
-          else if (verdict.kind !== "aborted" && !SCROLL_TOOLS.has(step.tool)) failedInARow += 1;
-          if (failedInARow >= MAX_FAILED_SETTLES_IN_A_ROW) {
-            settle = false;
-            note = settleStoppedNote(results.length, verdict);
+          if (stoppedNote !== undefined) {
+            note = stoppedNote;
+          } else {
+            const verdict = await settleScreen(registry, device, signal);
+            if (verdict.kind === "settled") failedInARow = 0;
+            else if (verdict.kind !== "aborted" && !SCROLL_TOOLS.has(step.tool)) failedInARow += 1;
+            if (failedInARow >= MAX_FAILED_SETTLES_IN_A_ROW) {
+              stoppedNote = settleStoppedNote(results.length, verdict);
+            }
           }
         }
 

@@ -459,6 +459,29 @@ describe("run-sequence", () => {
     }
   );
 
+  it("adds no note when the waits stop but no later step would have had one", async () => {
+    idle.mockResolvedValue(CAPPED);
+    const shake = { tool: "shake", args: {}, delayMs: 0 };
+
+    for (const steps of [
+      [tap, tap, tap],
+      [tap, tap, tap, shake],
+    ]) {
+      idle.mockClear();
+      const result = await createRunSequenceTool(mockRegistry()).execute({}, { udid: IOS, steps });
+
+      expect(idle).toHaveBeenCalledTimes(2);
+      expect(result.note).toBeUndefined();
+    }
+  });
+
+  it("does not settle on a physical iPhone, where a read holds up the next command", async () => {
+    expect(await settledAfter([tap, tap], "00008110-000978540290401E")).toEqual([
+      "gesture-tap",
+      "gesture-tap",
+    ]);
+  });
+
   it("resets the count when a wait settles", async () => {
     idle
       .mockResolvedValueOnce(CAPPED)
@@ -469,7 +492,7 @@ describe("run-sequence", () => {
 
     const result = await createRunSequenceTool(registry).execute(
       {},
-      { udid: IOS, steps: [tap, tap, tap, tap, tap] }
+      { udid: IOS, steps: [tap, tap, tap, tap, tap, tap] }
     );
 
     expect(idle).toHaveBeenCalledTimes(4);
@@ -483,7 +506,7 @@ describe("run-sequence", () => {
 
     const result = await createRunSequenceTool(registry).execute(
       {},
-      { udid: IOS, steps: [tap, swipe, tap, tap] }
+      { udid: IOS, steps: [tap, swipe, tap, tap, tap] }
     );
 
     expect(idle).toHaveBeenCalledTimes(3);
