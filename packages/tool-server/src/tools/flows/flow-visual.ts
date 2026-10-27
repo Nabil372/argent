@@ -170,11 +170,12 @@ async function cropPngFile(
  * the tolerance the comparison put it on.
  *
  * Two decimals read best, but the comparison runs at full precision, so a
- * rounded value can contradict the verdict it is printed with: a 0.0028% diff
- * against a `maxMismatch: 0` failed as `diff 0.00% > 0%`, and the step's own
- * `expected: ≤ 0%` / `actual: 0.00%` pair then said the value found satisfied
- * the value wanted. Any tolerance below 0.005% reads that way, and so does a
- * real mismatch that rounds down onto the tolerance.
+ * rounded value can contradict the verdict it is printed with. A failed step
+ * prints the value twice: in its reason and as its `actual`. At two decimals, a
+ * 0.0028% diff against a `maxMismatch: 0` would fail as `diff 0.00% > 0%`, and
+ * its `expected: ≤ 0%` / `actual: 0.00%` pair would say the value found
+ * satisfies the value wanted. Any tolerance below 0.005% reads that way, and so
+ * does a real mismatch that rounds down onto the tolerance.
  *
  * The verdict comes from the caller, whose comparison allows float error: 7
  * of 1000 pixels computes 0.7000000000000001%, which passes `maxMismatch: 0.7`
