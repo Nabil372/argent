@@ -119,7 +119,12 @@ export interface ScreenRecordingSessionApi {
   recordingTimeout: NodeJS.Timeout | null;
   recordingTimedOut: boolean;
   recordingExitedUnexpectedly: boolean;
-  lastExitInfo: { code: number | null; signal: string | null; stderr?: string } | null;
+  lastExitInfo: {
+    code: number | null;
+    signal: string | null;
+    stderr?: string;
+    framesEncoded?: number;
+  } | null;
 }
 
 // Dispose abandons an in-flight recording — process shutdown, or a

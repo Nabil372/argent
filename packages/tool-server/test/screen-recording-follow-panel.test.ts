@@ -84,7 +84,7 @@ class FakeStdin extends EventEmitter {
     this.writes.push(chunk);
     return true;
   });
-  end = vi.fn(() => {
+  end = vi.fn((_input?: string) => {
     this.ended = true;
     this.writable = false;
   });
@@ -92,15 +92,25 @@ class FakeStdin extends EventEmitter {
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
-  stderr = new EventEmitter();
+  stderr = Object.assign(new EventEmitter(), { readableEnded: false });
   stdin = new FakeStdin();
+  reportedFrames: number | undefined;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   kill = vi.fn((_signal?: NodeJS.Signals) => true);
-  exit(code: number | null, signal: NodeJS.Signals | null = null): void {
+  exit(code: number | null, signal: NodeJS.Signals | null = null, close = true): void {
     this.exitCode = code;
     this.signalCode = signal;
+    const input = this.stdin.end.mock.calls.at(-1)?.[0];
+    if (code === 0 && input?.startsWith("ffconcat")) {
+      const frames = this.reportedFrames ?? (input.match(/^file /gm) ?? []).length;
+      this.stderr.emit("data", Buffer.from(`frame=${frames}\n`));
+    }
     this.emit("exit", code, signal);
+    if (close) {
+      this.stderr.readableEnded = true;
+      this.emit("close", code, signal);
+    }
   }
   exitOnStdinEnd(code = 0): void {
     this.stdin.end.mockImplementation(() => {

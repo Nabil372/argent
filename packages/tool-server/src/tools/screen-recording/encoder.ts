@@ -2,14 +2,15 @@ import type { ChildProcess } from "node:child_process";
 import { waitForChildExit } from "../../utils/profiler-shared/lifecycle";
 
 function waitForProgress(child: ChildProcess): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  if ((child.exitCode !== null || child.signalCode !== null) && child.stderr?.readableEnded)
+    return Promise.resolve(true);
   return new Promise((resolve) => {
     let frames = 0;
     let pending = "";
     let timer = setTimeout(() => finish(false), 20_000);
     const finish = (exited: boolean) => {
       clearTimeout(timer);
-      child.removeListener("exit", onExit);
+      child.removeListener("close", onExit);
       child.stderr?.removeListener("data", onData);
       resolve(exited);
     };
@@ -25,7 +26,7 @@ function waitForProgress(child: ChildProcess): Promise<boolean> {
         timer = setTimeout(() => finish(false), 20_000);
       }
     };
-    child.once("exit", onExit);
+    child.once("close", onExit);
     child.stderr?.on("data", onData);
   });
 }
@@ -50,4 +51,9 @@ export async function finalizeEncoder(
   }
   await waitForChildExit(child, 1_000);
   return false;
+}
+
+export function encodedFrameCount(stderr: string): number {
+  const last = [...stderr.matchAll(/^frame=(\d+)\s*$/gm)].at(-1);
+  return last ? Number(last[1]) : 0;
 }

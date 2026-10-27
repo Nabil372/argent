@@ -92,7 +92,7 @@ class FakeStdin extends EventEmitter {
     this.writes.push(chunk);
     return true;
   });
-  end = vi.fn(() => {
+  end = vi.fn((_input?: string) => {
     this.ended = true;
     this.writable = false;
   });
@@ -100,17 +100,27 @@ class FakeStdin extends EventEmitter {
 
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
-  stderr = new EventEmitter();
+  stderr = Object.assign(new EventEmitter(), { readableEnded: false });
   stdin = new FakeStdin();
+  reportedFrames: number | undefined;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
   kill = vi.fn((_signal?: NodeJS.Signals) => true);
 
   /** Simulate the process ending: stamps exitCode/signalCode, emits 'exit'. */
-  exit(code: number | null, signal: NodeJS.Signals | null = null): void {
+  exit(code: number | null, signal: NodeJS.Signals | null = null, close = true): void {
     this.exitCode = code;
     this.signalCode = signal;
+    const input = this.stdin.end.mock.calls.at(-1)?.[0];
+    if (code === 0 && input?.startsWith("ffconcat")) {
+      const frames = this.reportedFrames ?? (input.match(/^file /gm) ?? []).length;
+      this.stderr.emit("data", Buffer.from(`frame=${frames}\n`));
+    }
     this.emit("exit", code, signal);
+    if (close) {
+      this.stderr.readableEnded = true;
+      this.emit("close", code, signal);
+    }
   }
 
   /** ffmpeg's real behaviour: stdin EOF finalizes the file and it exits. */
@@ -1646,6 +1656,37 @@ describe("debug finalization safeguards", () => {
     await startAndSettle(api, { mode: "debug", pointer });
     expect(pointer.enable).not.toHaveBeenCalled();
     await expect(stopCapture(api)).rejects.toThrow("could not keep up");
+  });
+
+  it("reports an encoder that skipped a frame despite exiting successfully", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    child.reportedFrames = 1;
+    child.exitOnStdinEnd();
+    await startAndSettle(api, { mode: "debug" });
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    const result = await stopCapture(api);
+    expect(result.encodingComplete).toBe(false);
+    expect(result.durationMs).toBeNull();
+    expect(result.warning).toContain("encoded=1, expected=2");
+  });
+
+  it("waits for encoder stderr to drain after exit before checking the final frame total", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    child.reportedFrames = 0;
+    await startAndSettle(api, { mode: "debug" });
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    const stopping = stopCapture(api);
+    await api.debugCapture!.finish();
+    child.exit(0, null, false);
+    await vi.advanceTimersByTimeAsync(0);
+    child.stderr.emit("data", Buffer.from("frame=2\nprogress=end\n"));
+    child.stderr.readableEnded = true;
+    child.emit("close", 0, null);
+    expect((await stopping).encodingComplete).toBe(true);
   });
 
   it.each(["missing encoder", "killed encoder", "disk full"])(

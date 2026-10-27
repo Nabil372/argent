@@ -22,5 +22,6 @@ it("keeps finalization pending until the killed encoder exits or its reap grace 
   expect(child.kill).toHaveBeenLastCalledWith("SIGKILL");
   expect(complete).toBe(false);
   child.emit("exit", null, "SIGKILL");
+  child.emit("close", null, "SIGKILL");
   expect(await ending).toBe(false);
 });

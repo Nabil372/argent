@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import type { LivePanel } from "../../utils/foldable";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import type { ScreenRecordingSessionApi } from "../../blueprints/screen-recording-session";
-import { finalizeEncoder } from "./encoder";
+import { encodedFrameCount, finalizeEncoder } from "./encoder";
 import {
   clearActiveScreenRecording,
   markScreenRecordingFinalized,
@@ -525,6 +525,10 @@ async function startCaptureLocked(
   const stderrRef = { text: "" };
   child.stderr?.on("data", (chunk: Buffer) => {
     stderrRef.text = (stderrRef.text + chunk.toString("utf8")).slice(-4_000);
+    if (params.mode === "debug" && api.outputFile === outputFile && api.lastExitInfo) {
+      api.lastExitInfo.framesEncoded = encodedFrameCount(stderrRef.text);
+      api.lastExitInfo.stderr = clip(stderrRef.text);
+    }
   });
   // An EPIPE on a dead encoder must not crash the tool-server.
   child.stdin?.on("error", () => {});
@@ -609,6 +613,7 @@ async function startCaptureLocked(
     api.lastExitInfo = {
       code,
       signal,
+      ...(api.debugCapture ? { framesEncoded: encodedFrameCount(stderrRef.text) } : {}),
       ...(stderrRef.text ? { stderr: clip(stderrRef.text) } : {}),
     };
     api.captureProcess = null;
@@ -811,13 +816,16 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
     }
 
     const encodingComplete = debugCapture
-      ? api.lastExitInfo?.code === 0 && api.lastExitInfo.signal === null
+      ? api.lastExitInfo?.code === 0 &&
+        api.lastExitInfo.signal === null &&
+        api.lastExitInfo.framesEncoded === debugCapture.frameTimesUs.length
       : undefined;
     if (encodingComplete === false) {
       warning = [
         warning,
         `Debug video encoding did not complete (code=${api.lastExitInfo?.code ?? "?"}, ` +
-          `signal=${api.lastExitInfo?.signal ?? "none"}). The duration is unknown; ` +
+          `signal=${api.lastExitInfo?.signal ?? "none"}, encoded=${api.lastExitInfo?.framesEncoded ?? 0}, ` +
+          `expected=${debugCapture!.frameTimesUs.length}). The duration is unknown; ` +
           `the partial video may omit captured frames.` +
           (api.lastExitInfo?.stderr ? ` Encoder stderr: ${api.lastExitInfo.stderr}` : ""),
       ]
