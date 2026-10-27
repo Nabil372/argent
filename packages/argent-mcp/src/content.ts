@@ -298,10 +298,12 @@ function stepLabel(step: FlowStepResult): string {
 }
 
 /**
- * Unpack flow-execute's structured step report into MCP content blocks. Only
- * steps that carry a tool result surface their (image-bearing) content inline;
- * every other kind renders as a status line, with a `script` step's captured
- * output following it as a block of its own.
+ * Unpack flow-execute's structured step report into MCP content blocks. Each
+ * step renders as its status line, followed by these blocks in this order when
+ * the step carries them: its detail lines (`expected:`, `actual:`,
+ * `indeterminate:`, `hint:`, set only on a step that did not pass), a `script`
+ * step's captured output, a tool step's result with its images inline, and its
+ * artifacts (a snapshot's images, or the screenshot of a failed step).
  */
 export async function flowRunToMcpContent(
   result: FlowExecuteResult,
