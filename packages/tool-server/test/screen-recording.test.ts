@@ -1594,6 +1594,36 @@ describe("debug recording lifecycle", () => {
 });
 
 describe("debug finalization safeguards", () => {
+  it.each(["missing encoder", "killed encoder", "disk full"])(
+    "keeps diagnostics when debug produces no video: %s",
+    async (failure) => {
+      const api = await makeSession(iosDevice);
+      const stream = fakeStream();
+      const child = fakeChild();
+      child.exitOnStdinEnd(1);
+      await startAndSettle(api, { mode: "debug" });
+      if (failure === "killed encoder") {
+        child.exit(null, "SIGKILL");
+      } else if (failure === "disk full") {
+        const write = vi.spyOn(fs, "writeFile").mockRejectedValueOnce(new Error("ENOSPC"));
+        const emit = stream.subscribe.mock.calls[0][0];
+        emit(fakeJpeg(), performance.now());
+        await api.debugCapture!.finish();
+        write.mockRestore();
+      } else {
+        child.stderr.emit("data", Buffer.from("Unknown encoder libx264"));
+      }
+      const message =
+        failure === "killed encoder"
+          ? "SIGKILL"
+          : failure === "disk full"
+            ? "ENOSPC"
+            : "Unknown encoder libx264";
+      await expect(stopCapture(api)).rejects.toThrow(message);
+      expect(api.stopPending).toBe(false);
+    }
+  );
+
   it("lets a high-rate capture encode slower than real time", async () => {
     const api = await makeSession(iosDevice);
     const stream = fakeStream();

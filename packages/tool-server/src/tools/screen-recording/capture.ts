@@ -819,7 +819,6 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
         .join(" ");
     }
 
-    const size = await statNonEmptyOutput(outputFile, "screen_recording_stop");
     const encodingComplete = debugCapture
       ? api.lastExitInfo?.code === 0 && api.lastExitInfo.signal === null
       : undefined;
@@ -834,6 +833,22 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
         .filter(Boolean)
         .join(" ");
     }
+    const size = await statNonEmptyOutput(outputFile, "screen_recording_stop").catch(
+      (err: Error) => {
+        if (!debugCapture) throw err;
+        throw new FailureError(
+          [err.message, warning].filter(Boolean).join(" "),
+          {
+            error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
+            failure_stage: "screen_recording_stop",
+            failure_area: "tool_server",
+            error_kind: "subprocess",
+            ...subprocessFailureMetadata(api.lastExitInfo ?? {}, "ffmpeg"),
+          },
+          { cause: err }
+        );
+      }
+    );
     // Wall-clock capture length: after the cap fires (or the encoder dies) the
     // recording is over even if stop arrives much later.
     const wallClockMs =
