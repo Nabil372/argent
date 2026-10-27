@@ -2574,8 +2574,8 @@ function assertReason(
       // holds what that read saw: the element, still on screen.
       return { reason: `an element matching ${sel} was still visible` };
     case "text": {
-      // The same pick evaluateCondition made, so the reason quotes the element
-      // the check read.
+      // The same pick evaluateCondition made, so `actual` and the own-text hint
+      // report the element the check read.
       const first =
         firstInReadingOrder(matches.filter(isVisible), orientation) ??
         firstInReadingOrder(matches, orientation);
