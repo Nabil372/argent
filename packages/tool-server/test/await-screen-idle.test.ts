@@ -341,8 +341,7 @@ describe("await-screen-idle tool", () => {
       expect(result.ambientMotion).toBe(true);
     });
 
-    it("does not count an axis coming to rest as a reversal", async () => {
-      // A slow diagonal: x moves on every other rounded poll, y on every poll.
+    it("keeps waiting on a slow diagonal slide whose x moves every other poll", async () => {
       const result = await run(
         Array.from({ length: 200 }, (_, i) =>
           screen({ label: "toast", x: 0.5 - i * 0.005, y: 0.9 - i * 0.012 })
@@ -364,7 +363,7 @@ describe("await-screen-idle tool", () => {
       expect(result.ambientMotion).toBe(true);
     });
 
-    it("counts nodes that move together as one animation", async () => {
+    it("counts a coach mark whose parts bob together as one animation", async () => {
       // A coach mark: container, arrow, text and button bob as one.
       const result = await run(
         Array.from({ length: 200 }, (_, i) =>
@@ -544,21 +543,6 @@ describe("await-screen-idle tool", () => {
       expect(result.waitedMs).toBeGreaterThanOrEqual(300);
     });
 
-    it("forgets loop evidence when the structure changes", async () => {
-      // The hand bobs, then a toast appears and the hand slides away for good.
-      const result = await run(
-        [
-          ...Array.from({ length: 6 }, (_, i) => screen({ label: "hand", y: bobY(i) })),
-          ...Array.from({ length: 200 }, (_, i) =>
-            screen({ label: "hand", y: 0.24 + i * 0.012 }, { label: "toast", y: 0.8 })
-          ),
-        ],
-        { timeoutMs: 600, minStableMs: 200 }
-      );
-
-      expect(result.settled).toBe(false);
-    });
-
     it("needs fresh loop evidence after the structure changes", async () => {
       // The hand loops next to a sliding sheet; the sheet leaves, then the hand
       // swings a few more times and stops.
@@ -684,6 +668,18 @@ describe("await-screen-idle tool", () => {
 
         expect(result.settled).toBe(false);
       });
+
+      it("forgets loop evidence when copies of a node appear", async () => {
+        const images = (count: number) =>
+          Array.from({ length: count }, (_, k) => ({ label: "", x: 0.05 + k * 0.2, y: 0.7 }));
+        const result = await runOnClock(
+          Array.from({ length: 30 }, (_, i) =>
+            screen({ label: "hand", y: bobY(i) }, ...images(i < 8 ? 1 : 4))
+          )
+        );
+
+        expect(result.settled).toBe(false);
+      });
     });
 
     it("settles on a small pulse whose turns jitter by one rounding step", async () => {
@@ -766,6 +762,244 @@ describe("await-screen-idle tool", () => {
 
       expect(result.settled).toBe(true);
       expect(result.ambientMotion).toBe(true);
+    });
+
+    it("settles on a loop that pauses at each end", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen({ label: "hand", y: bobY(Math.floor(i / 2)) })
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("settles on a loop that jumps to a narrower bob", async () => {
+      const ys = Array.from({ length: 200 }, (_, i) =>
+        i < 6 ? (i % 2 ? 0.2 : 0.26) : i % 2 ? 0.5 : 0.52
+      );
+      const result = await run(
+        ys.map((y) => screen({ label: "hand", y })),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("settles on a small loop whose swing shrinks by two rounding steps", async () => {
+      const ys = [
+        0.2,
+        0.18,
+        0.22,
+        0.19,
+        ...Array.from({ length: 200 }, (_, i) => (i % 2 ? 0.2 : 0.21)),
+      ];
+      const result = await run(
+        ys.map((y) => screen({ label: "badge", y })),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    describe("children of a card that pulses in height", () => {
+      const card = { x: 0.1, y: 0.3, width: 0.6, height: 0.3 };
+      const scaledY = (b: typeof card, s: number) => ({
+        ...b,
+        y: 0.45 + (b.y - 0.45) * s,
+        height: b.height * s,
+      });
+      const pulse = (childX: number) =>
+        Array.from({ length: 200 }, (_, i) => {
+          const s = i % 2 ? 1.1 : 1;
+          return screen(
+            { label: "card", ...scaledY(card, s) },
+            ...[0.32, 0.4, 0.48, 0.53].map((y, k) => ({
+              label: `line-${k}`,
+              ...scaledY({ x: childX, y, width: 0.2, height: 0.05 }, s),
+            }))
+          );
+        });
+
+      it("count as one animation when they overhang it by exactly one rounding step", async () => {
+        const result = await run(pulse(0.09), { timeoutMs: 1000 });
+
+        expect(result.settled).toBe(true);
+        expect(result.ambientMotion).toBe(true);
+      });
+
+      it("count apart when they overhang it by two rounding steps", async () => {
+        const result = await run(pulse(0.084));
+
+        expect(result.settled).toBe(false);
+      });
+    });
+
+    it("settles on unlabeled children that bob inside a coach mark", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "coach", y: bobY(i), height: 0.2 },
+            { label: "", y: bobY(i) + 0.03, height: 0.04 },
+            { label: "", y: bobY(i) + 0.1, height: 0.04 }
+          )
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("settles on unlabeled children that move one read after their coach mark", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "coach", y: bobY(i), height: 0.2 },
+            { label: "", y: bobY(i - 1) + 0.03, height: 0.04 },
+            { label: "", y: bobY(i - 1) + 0.1, height: 0.04 }
+          )
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("keeps waiting while unlabeled bars grow inside a pulsing card", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) => {
+          const s = i % 2 ? 1.1 : 1;
+          return screen(
+            { label: "Offer", x: 0.2, y: 0.3, width: 0.6, height: 0.3 * s },
+            ...[0.35, 0.45, 0.5].map((y) => ({
+              label: "",
+              x: 0.25,
+              y,
+              width: 0.1 + 0.01 * i,
+              height: 0.03,
+            }))
+          );
+        })
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("settles once a cell that shares its label stops moving next to a loop", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "hand", y: bobY(i) },
+            { label: "Photo", x: 0.05, y: 0.6, width: 0.1 },
+            { label: "Photo", x: 0.05, y: 0.8 - Math.min(i, 5) * 0.02, width: 0.1 }
+          )
+        ),
+        { timeoutMs: 1000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+    });
+
+    it("keeps waiting while a second copy of a still toast slides over it", async () => {
+      const toast = { label: "Saved", x: 0.1, y: 0.8, width: 0.8 };
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          i < 5
+            ? screen({ label: "hand", y: bobY(i) }, toast)
+            : screen({ label: "hand", y: bobY(i) }, toast, { ...toast, y: 0.86 - (i - 5) * 0.007 })
+        )
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it.each([
+      ["a sibling of another size over it", { height: 0.1 }],
+      ["a sibling of its size beside it", { y: 0.6 }],
+      ["two siblings of its size over it", { copies: 2 }],
+    ])("keeps waiting while a looping node has %s that keeps sliding", async (_, sibling) => {
+      const { copies = 1, ...shape } = sibling as { copies?: number; y?: number; height?: number };
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) => {
+          const hand = { label: "hand", y: bobY(i) };
+          const siblings = Array.from({ length: copies }, (_, k) => ({
+            ...hand,
+            x: 0.25 + k * 0.01 + i * 0.01,
+            ...shape,
+          }));
+          return screen(hand, ...(i < 3 ? [] : siblings));
+        })
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting while rows that share a label are removed one by one", async () => {
+      const rows = (count: number) =>
+        Array.from({ length: count }, (_, k) => ({
+          label: "Photo",
+          x: 0.05,
+          y: 0.05 * k,
+          width: 0.1,
+        }));
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen({ label: "hand", y: bobY(i) }, ...rows(Math.max(1, 10 - Math.floor(i / 5))))
+        ),
+        { timeoutMs: 400, minStableMs: 100 }
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("keeps waiting while more than three letters bob in a staggered wave", async () => {
+      const wave = (i: number, k: number) =>
+        0.3 + 0.02 * Math.sin((2 * Math.PI * (i - k * 0.25)) / 8);
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            ..."Loading".split("").map((label, k) => ({
+              label,
+              x: 0.1 + k * 0.1,
+              y: wave(i, k),
+              width: 0.08,
+              height: 0.05,
+            }))
+          )
+        ),
+        { timeoutMs: 600 }
+      );
+
+      expect(result.settled).toBe(false);
+    });
+
+    it("settles quickly on a panel that bobs around many rows", async () => {
+      const result = await run(
+        Array.from({ length: 200 }, (_, i) =>
+          screen(
+            { label: "panel", x: 0, y: bobY(i) - 0.2, width: 1, height: 0.99 },
+            ...Array.from({ length: 700 }, (_, k) => ({
+              label: `Row ${k}`,
+              x: 0.1,
+              y: bobY(i) - 0.19 + k * 0.001,
+              width: 0.8,
+              height: 0.001,
+            }))
+          )
+        ),
+        { timeoutMs: 2000 }
+      );
+
+      expect(result.settled).toBe(true);
+      expect(result.ambientMotion).toBe(true);
+      expect(result.waitedMs).toBeLessThan(1000);
     });
 
     it("forgets loop evidence across a blank read", async () => {

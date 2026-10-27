@@ -134,14 +134,16 @@ function nearest(boxes: number[][], target: number[]): number[] {
 
 /**
  * Frame of every node whose role/label/value is unique on the screen, keyed by
- * that identity, plus the structure the identities form. Nodes that share an
- * identity (grid cells, list rows) cannot be followed from read to read, so
- * they are kept as one list of frames per identity. A followed node that the
- * AX service listed twice keeps the listing nearest its last frame.
+ * that identity, plus the structure the identities and their counts form.
+ * Nodes that share an identity (grid cells, list rows) cannot be followed from
+ * read to read, so they are kept as one list of frames per identity. A
+ * followed node that has moved since the structure last changed and is listed
+ * twice keeps the listing nearest its last frame.
  */
 function frameSnapshot(
   root: DescribeNode,
-  lastRaw: Map<string, number[]>
+  lastRaw: Map<string, number[]>,
+  moved: Set<string>
 ): {
   structure: string;
   frames: Map<string, number[]>;
@@ -160,38 +162,41 @@ function frameSnapshot(
   const frames = new Map<string, number[]>();
   const raw = new Map<string, number[]>();
   const shared = new Map<string, number[][]>();
+  const counts: string[] = [];
   for (const [id, nodes] of byIdentity) {
     const boxes = nodes.map(({ frame: f }) => [f.x, f.y, f.width, f.height]);
     const last = lastRaw.get(id);
-    const box = boxes.length === 1 ? boxes[0] : last && listedTwice(boxes) && nearest(boxes, last);
+    const followAsOne = last && moved.has(id) && listedTwice(boxes);
+    const box = boxes.length === 1 ? boxes[0] : followAsOne && nearest(boxes, last);
     if (box) {
       raw.set(id, box);
       frames.set(id, box.map(round));
+      counts.push(`${id}#1`);
     } else {
-      shared.set(
-        id,
-        boxes.map((b) => b.map(round))
-      );
+      shared.set(id, boxes);
+      counts.push(`${id}#${boxes.length}`);
     }
   }
-  return { structure: [...byIdentity.keys()].sort().join("\n"), frames, raw, shared };
+  return { structure: counts.sort().join("\n"), frames, raw, shared };
 }
 
-/**
- * Where nodes that share an identity moved to between two reads. An identity
- * that only turned shared or unique is skipped: the AX service sometimes lists
- * a moving node twice for one read.
- */
+interface SharedMove {
+  box: number[];
+  /** Every frame the node's identity had on the read before. */
+  before: number[][];
+}
+
+/** Where nodes that share an identity moved to between two reads. */
 function movedSharedBoxes(
   prev: Map<string, number[][]>,
   next: Map<string, number[][]>
-): number[][] {
-  const moved: number[][] = [];
+): SharedMove[] {
+  const key = (box: number[]) => box.map((v) => Math.round(v * 100) / 100).join(",");
+  const moved: SharedMove[] = [];
   for (const [id, boxes] of next) {
-    const before = prev.get(id);
-    if (!before) continue;
-    const seen = new Set(before.map((b) => b.join(",")));
-    moved.push(...boxes.filter((b) => !seen.has(b.join(","))));
+    const before = prev.get(id) ?? [];
+    const seen = new Set(before.map(key));
+    for (const box of boxes) if (!seen.has(key(box))) moved.push({ box, before });
   }
   return moved;
 }
@@ -331,13 +336,48 @@ function encloses(outer: number[], inner: number[]): boolean {
   );
 }
 
-function countGroups(ids: string[], together: (a: string, b: string) => boolean): number {
-  const parent = new Map(ids.map((id) => [id, id]));
-  const find = (id: string): string => (parent.get(id) === id ? id : find(parent.get(id)!));
-  ids.forEach((a, i) => {
-    for (const b of ids.slice(i + 1)) if (together(a, b)) parent.set(find(a), find(b));
-  });
-  return new Set(ids.map(find)).size;
+/** A frame's move from one read to the next. */
+type FrameMove = [from: number[], to: number[]];
+
+/** Where `box` lands if it keeps its place within a frame that moves or scales. */
+function carriedBy(box: number[], [from, to]: FrameMove): number[] {
+  const scaleX = from[2]! > 0 ? to[2]! / from[2]! : 1;
+  const scaleY = from[3]! > 0 ? to[3]! / from[3]! : 1;
+  return [
+    to[0]! + (box[0]! - from[0]!) * scaleX,
+    to[1]! + (box[1]! - from[1]!) * scaleY,
+    box[2]! * scaleX,
+    box[3]! * scaleY,
+  ];
+}
+
+function closeTo(a: number[], b: number[]): boolean {
+  return a.every((v, i) => Math.abs(v - b[i]!) <= SYNC_TOLERANCE);
+}
+
+/** The node sits inside or around the moving node and kept its place relative to it. */
+function movesWith({ box, before }: SharedMove, mover: FrameMove): boolean {
+  const [, moverNow] = mover;
+  if (!encloses(moverNow, box) && !encloses(box, moverNow)) return false;
+  return before.some((was) => closeTo(carriedBy(was, mover), box));
+}
+
+/**
+ * Groups `ids` so that every member moves with its group's first member, and
+ * stops counting once there are more than `max` groups.
+ */
+function countGroups(
+  ids: string[],
+  together: (a: string, b: string) => boolean,
+  max: number
+): number {
+  const leaders: string[] = [];
+  for (const id of ids) {
+    if (leaders.some((leader) => together(leader, id))) continue;
+    leaders.push(id);
+    if (leaders.length > max) break;
+  }
+  return leaders.length;
 }
 
 /**
@@ -351,7 +391,9 @@ class AmbientMotion {
   private lastFrames = new Map<string, number[]>();
   private lastRaw = new Map<string, number[]>();
   private lastShared = new Map<string, number[][]>();
-  /** Last read where a node that shares its identity moved outside every moving node. */
+  /** Frames that moved on the last read. */
+  private lastMoves: FrameMove[] = [];
+  /** Last read where a node that shares its identity moved without a moving node carrying it. */
   private sharedMovedAt = -Infinity;
   private readonly motion = new Map<string, AxisMotion[]>();
   /** Unrounded frame change per node, indexed by poll. */
@@ -365,6 +407,7 @@ class AmbientMotion {
     this.lastFrames = new Map();
     this.lastRaw = new Map();
     this.lastShared = new Map();
+    this.lastMoves = [];
     this.sharedMovedAt = -Infinity;
     this.motion.clear();
     this.moves.clear();
@@ -379,7 +422,10 @@ class AmbientMotion {
     windowMs: number,
     minLoopMs: number
   ): boolean {
-    const snap = frameSnapshot(root, this.lastRaw);
+    const moved = new Set(
+      [...this.motion].filter(([, axes]) => axes.some((axis) => axis.sign !== 0)).map(([id]) => id)
+    );
+    const snap = frameSnapshot(root, this.lastRaw, moved);
     if (snap.structure !== this.structure) {
       this.reset();
       this.structure = snap.structure;
@@ -390,11 +436,13 @@ class AmbientMotion {
       return false;
     }
     this.polls += 1;
+    const frameMoves: FrameMove[] = [];
     for (const [id, frame] of snap.raw) {
       const prev = this.lastRaw.get(id);
       if (!prev || prev.every((v, i) => v === frame[i])) continue;
       if (!this.moves.has(id)) this.moves.set(id, []);
       this.moves.get(id)![this.polls] = frame.map((v, i) => v - prev[i]!);
+      frameMoves.push([prev, frame]);
     }
     this.lastRaw = new Map([...this.lastRaw, ...snap.raw]);
     for (const [id, frame] of snap.frames) {
@@ -410,13 +458,15 @@ class AmbientMotion {
     this.lastFrames = new Map([...this.lastFrames, ...snap.frames]);
     const movedRecently = (axis: AxisMotion) => nowMs - axis.lastMovedAt < windowMs;
     const recent = [...this.motion].filter(([, axes]) => axes.some(movedRecently));
-    const moverFrames = recent.map(([id]) => this.lastFrames.get(id)!);
-    const movesWithAMover = (box: number[]) =>
-      moverFrames.some((frame) => encloses(frame, box) || encloses(box, frame));
+    // AX frames of a view's children can move one read after the view does.
+    const moverMoves = [...frameMoves, ...this.lastMoves];
+    const movesWithAMover = (move: SharedMove) =>
+      moverMoves.some((mover) => movesWith(move, mover));
     if (!movedSharedBoxes(this.lastShared, snap.shared).every(movesWithAMover)) {
       this.sharedMovedAt = nowMs;
     }
     this.lastShared = snap.shared;
+    this.lastMoves = frameMoves;
 
     if (nowMs - this.structureSince < minStableMs) return false;
     if (nowMs - this.sharedMovedAt < windowMs) return false;
@@ -428,7 +478,8 @@ class AmbientMotion {
     if (!recent.every(([, axes]) => isLoop(axes))) return false;
     const animations = countGroups(
       recent.map(([id]) => id),
-      (a, b) => this.oneAnimation(a, b)
+      (a, b) => this.oneAnimation(a, b),
+      MAX_AMBIENT_MOVERS
     );
     return animations <= MAX_AMBIENT_MOVERS;
   }
@@ -492,10 +543,10 @@ ${DEFAULT_TIMEOUT_MS}ms) is reached. Returns { settled, waitedMs, polls<flag:har
 still before the timeout. A screen where only up to ${MAX_AMBIENT_MOVERS} looping animations keep moving (a bobbing hint, a
 pulsing badge) counts as settled and adds ambientMotion: true; those elements are still moving. A loop counts once it has
 swung through a full period and for at least ${MIN_LOOP_POLLS} poll intervals, so a loop slower than about 2s rarely settles
-within the default timeout. A progress bar or spinner role on screen turns that path off, but an indicator whose frame
-holds still (an indeterminate bar) settles like any still screen, and so does a loop that changes a label or value (an
-animated "Loading..." label) once one step holds for minStableMs. settled=true does not mean loading finished: confirm
-the content you expect with await-ui-element. <flag:harmonyos>A note on settled=true
+within the default timeout. A progress bar or spinner role on screen turns that path off (the iOS simulator reports no
+such role), but an indicator whose frame holds still (an indeterminate bar) settles like any still screen, and so does a
+loop that changes a label or value (an animated "Loading..." label) once one step holds for minStableMs. settled=true
+does not mean loading finished: confirm the content you expect with await-ui-element. <flag:harmonyos>A note on settled=true
 means the screen it settled on is not live: a suspended HarmonyOS panel settles instantly on its last frame, and taps land
 nowhere until it is woken.
 </flag:harmonyos>Use after a launch/navigation to wait for the UI to render before screenshotting or tapping.`,
