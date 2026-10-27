@@ -1,5 +1,5 @@
-import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
-import { getFailureSignal, printCapped } from "@argent/registry";
+import type { DeviceInfo, FailureCode, Registry, ToolContext } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   getDescribeTapPoint,
   type DescribeFrame,
@@ -200,16 +200,20 @@ export interface DirectiveOutcome extends StepDetails {
    * re-probe keeps the step and warns that the conversion is UNKNOWN, not
    * known-bad.
    *
-   * A step that resolves a frame (the tap family, `cropOn`) sets it too, when
-   * every settled read in its window was blind (see {@link selectorMiss}).
+   * `snapshot: { cropOn }` sets it too, when every settled read in its frame
+   * wait was blind (see {@link selectorMiss}). The tap family shares that wait
+   * but never gets the flag: only Vega's tree source flags an empty read as
+   * degraded, and `runDirective` refuses a touch directive on Vega before any
+   * tree read.
    */
   indeterminate?: boolean;
   /**
    * Set with `indeterminate` when the last tree read was refused with a
-   * `validation` failure: the flow reads an app it must not read, or reads the
-   * app after it left the foreground. The check did not run, but a re-run gets
-   * the same refusal, so the step report does not flag the step as one to run
-   * again.
+   * `validation` failure: the flow reads an app it must not read (an Apple
+   * system app), or names no app to read. The check did not run, but a re-run
+   * gets the same refusal, so the step report does not flag the step as one to
+   * run again. A failure that says which app is connected or in the foreground
+   * now is not a refusal (see {@link isRefusedRead}).
    */
   refused?: true;
   /**
@@ -226,9 +230,32 @@ export interface DirectiveOutcome extends StepDetails {
   warning?: string;
 }
 
+/**
+ * `validation` failures that say which app is connected or in the foreground
+ * at the time of the read. A crash, a relaunch or a step that left the app
+ * causes them, and a re-run can find another app state, so they are not
+ * refusals. With nothing connected, the same crash is a `not_found` failure.
+ */
+const APP_STATE_READ_FAILURES: ReadonlySet<FailureCode> = new Set<FailureCode>([
+  FAILURE_CODES.NATIVE_TARGET_SINGLE_APP_NOT_FOREGROUND,
+  FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS,
+]);
+
+/**
+ * The same state on a physical iPhone: the runner does not read a backgrounded
+ * app. Its code is also the code of a true refusal (no app under automation),
+ * so the stage tells them apart.
+ */
+const IOS_DEVICE_BACKGROUNDED_STAGE = "ios_device_snapshot_backgrounded";
+
 /** Whether a failed tree read was refused (see {@link DirectiveOutcome.refused}). */
 function isRefusedRead(err: unknown): boolean {
-  return getFailureSignal(err)?.error_kind === "validation";
+  const signal = getFailureSignal(err);
+  return (
+    signal?.error_kind === "validation" &&
+    !APP_STATE_READ_FAILURES.has(signal.error_code) &&
+    signal.failure_stage !== IOS_DEVICE_BACKGROUNDED_STAGE
+  );
 }
 
 /**
@@ -886,7 +913,9 @@ async function scrollIncrement(
  * nothing) and the target is accepted wherever it landed: the LAST item sits
  * flush against the far edge and can never clear it, and a genuinely stuck
  * partial can't be improved either. A target already fully on screen returns
- * immediately.
+ * immediately. A scroll that stops without the target, while the last settled
+ * tree holds it at zero area, reports that zero-area miss: the selector is
+ * right and the element is in the tree, so "not found" would mislead.
  */
 async function scrollToVisible(
   env: ActionEnv,
@@ -896,6 +925,9 @@ async function scrollToVisible(
 ): Promise<ScrollResolve> {
   let prevFp: string | undefined;
   let warning: string | undefined;
+  // The target's matches on the last settled tree that showed no visible one:
+  // every one of them has a zero-area frame (see flowFindAll).
+  let zeroArea = 0;
   for (let i = 0; i < MAX_SCROLL_ITERATIONS; i++) {
     if (env.signal?.aborted) return { aborted: true };
 
@@ -923,6 +955,7 @@ async function scrollToVisible(
     if (frame && axisFullyInside(frame, axisDirection, region)) {
       return { frame, ...warnedBy(warning) };
     }
+    zeroArea = frame ? 0 : flowFindAll(tree, target, orientation).length;
 
     // Fingerprint only the scrolled content: a continuously-animating node
     // outside it (a spinner, a ticking clock) would keep a wider fingerprint
@@ -944,10 +977,14 @@ async function scrollToVisible(
       // End of the scroll — accept the target wherever it landed (best effort).
       if (frame) return { frame, ...warnedBy(warning) };
       return {
-        reason: `reached the end of the scroll without finding ${describeSelector(target)}`,
-        hint:
-          "the target is not in this scroll direction or not inside this scroll container; " +
-          "check the direction:, the within: scope and the selector",
+        ...(zeroArea > 0
+          ? zeroAreaMiss(describeSelector(target), zeroArea, " in another scroll direction")
+          : {
+              reason: `reached the end of the scroll without finding ${describeSelector(target)}`,
+              hint:
+                "the target is not in this scroll direction or not inside this scroll container; " +
+                "check the direction:, the within: scope and the selector",
+            }),
         ...warnedBy(warning),
       };
     }
@@ -956,10 +993,18 @@ async function scrollToVisible(
     warning ??= await scrollIncrement(env, axisDirection, region);
   }
   return {
-    reason: `${describeSelector(target)} not found after ${MAX_SCROLL_ITERATIONS} scroll attempts`,
-    hint:
-      `the target may be further than ${MAX_SCROLL_ITERATIONS} scroll steps, or the container ` +
-      `is not scrolling; check the within: scope`,
+    ...(zeroArea > 0
+      ? zeroAreaMiss(
+          describeSelector(target),
+          zeroArea,
+          ` more than ${MAX_SCROLL_ITERATIONS} scroll steps away or in another scroll direction`
+        )
+      : {
+          reason: `${describeSelector(target)} not found after ${MAX_SCROLL_ITERATIONS} scroll attempts`,
+          hint:
+            `the target may be further than ${MAX_SCROLL_ITERATIONS} scroll steps, or the container ` +
+            `is not scrolling; check the within: scope`,
+        }),
     ...warnedBy(warning),
   };
 }
@@ -976,14 +1021,33 @@ function noMatchReason(sel: string): string {
   return `no element matched selector ${sel}`;
 }
 
+/** The off-screen remedy of a step that a scroll-to step can go before. */
+const SCROLL_TO_FIRST = "add a scroll-to step before this one";
+
+/**
+ * One wording for a selector whose `matched` matches all have a zero-area
+ * frame, whether a gesture, a `visible` check or a scroll-to says it. A tree
+ * source can keep an off-screen node at zero area, and the same frame also
+ * means an element that is collapsed or not laid out yet. `offScreen` follows
+ * "off-screen" in the hint, with what the step can add about that cause.
+ */
+function zeroAreaMiss(
+  sel: string,
+  matched: number,
+  offScreen: string
+): Required<Pick<DirectiveOutcome, "reason" | "hint">> {
+  return {
+    reason: `${matched} element${matched === 1 ? "" : "s"} matched ${sel} but none was visible (zero-area frame)`,
+    hint: `the element is in the tree but has no on-screen area; it may be off-screen${offScreen}, collapsed, or not laid out yet`,
+  };
+}
+
 // `tap`/`type` auto-wait but deliberately do NOT auto-scroll: an implicit
 // scroll would widen a loose selector's match scope from the viewport to the
 // whole page, mutate scroll state even when the step fails, and stretch a
 // failure to the scroll search's worst case.
-// A zero-area match gets a wider hint: a tree source can keep an
-// off-screen node at zero area, and the same frame also means an element that
-// is hidden or not laid out. On a device that refuses scroll-to (Vega), neither
-// hint suggests one.
+// A zero-area match gets a wider hint (see zeroAreaMiss). On a device that
+// refuses scroll-to (Vega), neither hint suggests one.
 //
 // A blind read gets neither: "no element matched" is a claim about what the
 // screen HOLDS, and a read the reader flagged as blind supports no such claim —
@@ -1005,20 +1069,13 @@ export function selectorMiss({
       ...(blind.hint !== undefined && { hint: blind.hint }),
     };
   }
-  const scrollTo = noScrollTo ? undefined : "add a scroll-to step before this one";
   if (matched === 0) {
     return {
       reason: noMatchReason(sel),
-      ...(scrollTo !== undefined && { hint: `if it is off-screen, ${scrollTo}` }),
+      ...(!noScrollTo && { hint: `if it is off-screen, ${SCROLL_TO_FIRST}` }),
     };
   }
-  return {
-    reason: `${matched} element${matched === 1 ? "" : "s"} matched ${sel} but none was visible (zero-area frame)`,
-    hint:
-      "the element is in the tree but has no on-screen area; it may be off-screen" +
-      (scrollTo === undefined ? "" : ` (${scrollTo})`) +
-      ", collapsed, or not laid out yet",
-  };
+  return zeroAreaMiss(sel, matched, noScrollTo ? "" : ` (${SCROLL_TO_FIRST})`);
 }
 
 /**
@@ -1843,7 +1900,7 @@ async function waitForCondition(
   // Assigned on every pass, like `lastReadTrusted`.
   let fetchRefused: boolean;
   // The reader's own repair, when the last read came back blind with one.
-  // `tap` and `idle` pass it on the same way.
+  // `snapshot: { cropOn }` and `idle` pass it on the same way.
   let blindHint: string | undefined;
   let everMatched = false;
   // Date.now() of the most recent TRUSTED read — undefined until one lands.
@@ -1912,12 +1969,14 @@ async function waitForCondition(
   //    clean report. `hidden` is held to a stricter bar: there "condition false"
   //    means the element was VISIBLE, and the element leaving is the transition
   //    itself — so ANY untrusted final read leaves gone-ness unconfirmable.
-  // 3. Dark tail within the tolerance — a genuine last-poll blip: the trusted
-  //    reads still describe the window, so a transient error on the trailing
-  //    poll must not flip a clean skip into a hard error. The determinate
-  //    verdict stands. A final read that threw is reported as a note; one that
-  //    came back empty or degraded has no error to report, so the verdict
-  //    stands without one.
+  // 3. Dark tail within the tolerance — a genuine last-poll blip: a transient
+  //    error on the trailing poll must not flip a clean skip into a hard error,
+  //    so the verdict is determinate. It comes from `lastMatches`, which every
+  //    read that arrives overwrites, blind or not. A final read that threw
+  //    leaves the matches of the last read that arrived, and its error is
+  //    reported as a note. A final read that came back empty or degraded
+  //    overwrites them with no match and adds no note, so a check whose element
+  //    matched on every trusted read reports that no element matched.
   //
   // Every indeterminate return goes through this, so none drops the refusal or
   // the reader's repair.
@@ -1970,7 +2029,8 @@ async function waitForCondition(
       lastMatches,
       // The read `lastMatches` came from is the last one that answered, and
       // only a read that answers writes the orientation.
-      readingOrientation(env)
+      readingOrientation(env),
+      env.device.platform === "vega"
     ),
     ...(!lastReadTrusted &&
       fetchError && { note: `the final poll could not read the UI tree: ${fetchError}` }),
@@ -2363,18 +2423,15 @@ async function waitForIdle(
 
   // An unreadable window is never a verdict about the app. Which flavour of
   // unreadable it was decides the repair, so they stay apart.
+  //
+  // A failed read sets no hint, so the runner gives it the one an `assert` on
+  // the same read gets (see `outcomeDetails` in flow-run.ts): the shared hint
+  // for an outage, none for a refused read.
   const unreadable = (underlying: Error): DirectiveOutcome => ({
     ok: false,
     indeterminate: true,
     ...(isRefusedRead(underlying) && { refused: true as const }),
     reason: `could not read the UI tree while waiting for the screen to settle: ${underlying.message}`,
-    // The underlying reader reports an instrumentation failure, whose remedy
-    // (relaunch the app) is the wrong repair for the commonest cause here: the
-    // app is simply not in the foreground, which reads exactly the same from the
-    // tree source. The hint names that.
-    hint:
-      "check the app is still in the foreground (a backgrounded app reads the same as an " +
-      "uninstrumented one)",
   });
 
   // The other flavour: the source answered, and said it could not see the app.
@@ -2554,19 +2611,20 @@ function assertReason(
   expectedText: string | undefined,
   textMatch: TextMatchMode | undefined,
   matches: ReturnType<typeof findAll>,
-  orientation: UiOrientation | undefined
+  orientation: UiOrientation | undefined,
+  /** The device refuses `scroll-to` (Vega is remote-driven), so no hint may suggest one. */
+  noScrollTo: boolean
 ): Pick<DirectiveOutcome, "reason"> & StepDetails {
   const sel = describeSelector(selector);
   switch (condition) {
     case "exists":
       return { reason: noMatchReason(sel) };
     case "visible":
-      return {
-        reason:
-          matches.length > 0
-            ? `element(s) matched ${sel} but none was visible (zero-area frame)`
-            : noMatchReason(sel),
-      };
+      // A failed `visible` check saw no visible match, so every match left has
+      // a zero-area frame: the tap family's miss, with the same hint.
+      return matches.length > 0
+        ? zeroAreaMiss(sel, matches.length, noScrollTo ? "" : ` (${SCROLL_TO_FIRST})`)
+        : { reason: noMatchReason(sel) };
     case "hidden":
       // Reached only when the final read was trusted (waitForCondition returns
       // indeterminate when it was blind or threw), and a trusted read without a
@@ -2574,8 +2632,8 @@ function assertReason(
       // holds what that read saw: the element, still on screen.
       return { reason: `an element matching ${sel} was still visible` };
     case "text": {
-      // The same pick evaluateCondition made, so the reason quotes the element
-      // the check read.
+      // The same pick evaluateCondition made, so `actual` and the own-text hint
+      // report the element the check read.
       const first =
         firstInReadingOrder(matches.filter(isVisible), orientation) ??
         firstInReadingOrder(matches, orientation);
@@ -2592,10 +2650,10 @@ function assertReason(
         actual: shown,
         ...(own !== "" &&
           own !== shown && {
-            // JSON-quoted and cut like the `actual:` line, so a quote or a
-            // backslash in the device text cannot end the quoted value early.
-            // A step's `actual` keeps the whole text; only this prose is cut.
-            hint: `the element's own text is ${printCapped(own, JSON.stringify)}; the check accepts the subtree text or the own text`,
+            // JSON-quoted like the `actual:` line, so a quote or a backslash in
+            // the device text cannot end the quoted value early. Never cut: no
+            // other field of the report holds the own text.
+            hint: `the element's own text is ${JSON.stringify(own)}; the check accepts the subtree text or the own text`,
           }),
       };
     }

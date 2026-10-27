@@ -10,12 +10,12 @@ import {
   MAX_RUN_DEPTH,
   canonicalToolId,
   e2eShadowWarning,
+  escapeInvisible,
   printCapped,
   resolveE2eFile,
 } from "@argent/registry";
 import {
   createToolsClient,
-  escapeInvisible,
   getResolvedToolsUrl,
   isArtifactHandle,
   materializeArtifacts,
@@ -478,8 +478,10 @@ function firstFailedStep(
  * reason is wire data, so it is stringified the way renderStepLine's template
  * does rather than trusted to be a string.
  *
- * The reason says only what failed: the text the step found and the advice
+ * Most reasons say only what failed: the text the step found and the advice
  * are in its expected, actual and hint lines, so the recap carries those too.
+ * Some reasons, such as a touch directive refused on Vega, keep their advice
+ * and come with no hint line.
  */
 export function summarizeFailure(report: FlowReport): Pick<FailedFlow, "headline" | "detail"> {
   const failed = firstFailedStep(report);

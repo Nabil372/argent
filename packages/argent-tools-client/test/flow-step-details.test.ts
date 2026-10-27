@@ -138,6 +138,45 @@ describe("renderFlowStepDetails", () => {
     ).toEqual(["expected: /^a\\u200bb$/"]);
   });
 
+  it("escapes an invisible character outside the BMP as its surrogate pair", () => {
+    // The Scotland flag is a black flag followed by tag characters, format
+    // characters from U+E0067 on. A JSON escape has four hex digits, so each
+    // tag character prints as two of them: a five-digit escape reads as a
+    // different character followed by a digit.
+    const flag = "\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}";
+    const lines = renderFlowStepDetails({ kind: "assert", actual: `${flag} Scotland` });
+    expect(lines).toEqual([
+      'actual:   "\u{1F3F4}\\udb40\\udc67\\udb40\\udc62\\udb40\\udc73\\udb40\\udc63\\udb40\\udc74\\udb40\\udc7f Scotland"',
+    ]);
+    // The quoted value reads back as the device text.
+    expect(JSON.parse(lines[0]!.replace("actual:   ", ""))).toBe(`${flag} Scotland`);
+  });
+
+  it("spells a backspace so that a pattern cannot read it as a word boundary", () => {
+    // A double-quoted YAML `matches: "\bTotal\b"` loads U+0008, not a word
+    // boundary. Printed as JSON's `\b`, it reads as the pattern its author meant.
+    const backspace = String.fromCharCode(8);
+    const step: Step = {
+      kind: "assert",
+      expected: `${backspace}Total${backspace}`,
+      expectedKind: "pattern",
+      actual: "Order Total: 42",
+    };
+    const backspaced = renderFlowStepDetails(step)[0];
+    const bounded = renderFlowStepDetails({ ...step, expected: "\\bTotal\\b" })[0];
+    expect(backspaced).toBe("expected: /\\u0008Total\\u0008/");
+    expect(bounded).toBe("expected: /\\bTotal\\b/");
+    expect(backspaced).not.toBe(bounded);
+    // A snapshot value and a hint that quotes device text spell it the same way.
+    expect(
+      renderFlowStepDetails({
+        kind: "snapshot",
+        expected: `a${backspace}b`,
+        hint: `own text is "a${backspace}b"`,
+      })
+    ).toEqual(["expected: a\\u0008b", 'hint: own text is "a\\u0008b"']);
+  });
+
   it("marks a step whose check did not run, above its hint", () => {
     const step: Step = { kind: "await", indeterminate: true, hint: "check the app first" };
     expect(renderFlowStepDetails(step)).toEqual([
@@ -163,5 +202,19 @@ describe("renderFlowStepDetails", () => {
     expect(renderFlowStepDetails({ kind: "snapshot", actual: "d".repeat(302) })).toEqual([
       `actual:   ${"d".repeat(300)} … (2 more characters)`,
     ]);
+  });
+
+  it("prints the whole actual with wholeActual, escaped the same way", () => {
+    const text = "a".repeat(299) + "😀" + "b\n".repeat(650);
+    expect(renderFlowStepDetails({ kind: "assert", actual: text }, { wholeActual: true })).toEqual([
+      `actual:   "${"a".repeat(299)}😀${"b\\n".repeat(650)}"`,
+    ]);
+    expect(
+      renderFlowStepDetails({ kind: "snapshot", actual: "d".repeat(302) }, { wholeActual: true })
+    ).toEqual([`actual:   ${"d".repeat(302)}`]);
+    // Without it, the line is cut.
+    expect(
+      renderFlowStepDetails({ kind: "assert", actual: text }, { wholeActual: false })[0]
+    ).toMatch(/ … \(1,300 more characters\)$/);
   });
 });

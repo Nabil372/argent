@@ -2765,13 +2765,13 @@ type LeafStep = Exclude<FlowStep, BlockStep | { kind: "run" }>;
  * The shared hint for a step whose check never ran, used when the reader gave
  * no hint of its own.
  *
- * It must not call the app innocent. An unreadable screen is exactly what an
- * app that crashed, was terminated, or emptied its own screen after the
- * element was seen looks like from here — `isBlindRead` cannot tell any of
- * those from a tree source that stopped answering. A hint that promised "this
- * is not a verdict on the app" therefore sent a real crash or a blank-screen
- * regression back for a re-run as environment noise. Order the checks instead,
- * and put the app first.
+ * It puts the app first. An unreadable screen is exactly what an app that
+ * crashed, was terminated, or emptied its own screen after the element was
+ * seen looks like from here — `isBlindRead` cannot tell any of those from a
+ * tree source that stopped answering. So the hint orders the checks: the app,
+ * then the device and the tree source, then a re-run before any edit to the
+ * e2e test. A hint that blamed only the environment would send a real crash
+ * or a blank-screen regression back for a re-run as noise.
  */
 const INDETERMINATE_HINT =
   "check the app first — a crash, or a screen the app emptied itself, reads the same here as a " +

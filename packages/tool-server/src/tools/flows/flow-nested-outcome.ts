@@ -27,11 +27,16 @@ const RUN_SEQUENCE_TOOL_ID = "run-sequence";
 
 /**
  * Beside the status and reason: the detail fields of the inner step that
- * failed, carried onto the outer step. A failed check keeps the text it found,
- * and the advice about it, beside its reason rather than inside it — so an
- * outer step built from the inner `reason` alone would say "did not equal"
- * with no found text, or "no element matched" with no advice, and nothing else
- * in the run prints the inner step.
+ * failed, carried onto the outer step. A failed check keeps the text it found
+ * beside its reason rather than inside it, so an outer step built from the
+ * inner `reason` alone would say "did not equal" with no found text. The
+ * outer step also keeps the whole inner report as its `result`, which
+ * `flowRunToMcpContent` prints as JSON under the step and `--json` and
+ * `--json-stream` carry, so those outputs hold the inner values twice. The
+ * CLI text output prints no inner step, so there these fields are the only
+ * place the inner values print. The inner hint is one of them only when the
+ * inner check did not run; otherwise it stays in the reason (see
+ * `firstFailingStep`).
  */
 interface NestedOutcome extends StepDetails {
   status: StepStatus;
@@ -60,6 +65,16 @@ function firstFailingStep(steps: unknown): ({ label: string } & NestedDetails) |
     const what = str(entry.tool) ?? str(entry.kind) ?? "step";
     const why = str(entry.reason) ?? "no reason given";
     const hint = str(entry.hint);
+    const indeterminate = entry.indeterminate === true;
+    // The inner hint advises on the inner step: a tap's "add a scroll-to step
+    // before this one" names a place in the composed e2e test. As the outer
+    // step's own `hint:` line it would advise on the outer step, so it stays
+    // in the label, after the inner reason. An inner step that could not read
+    // the tree is the exception: its hint is the reader's repair or the
+    // runner's advice to check the app, the device and the tree source, and
+    // that holds for the outer step too.
+    const ownHint = indeterminate ? hint : undefined;
+    const labelHint = hint !== undefined && !indeterminate ? `; hint: ${hint}` : "";
     // A snapshot's values are a tolerance and a measured diff, or two image
     // sizes. The renderers print them unquoted only on a `snapshot` step, so
     // on this `tool` step they would read as quoted device text. The label
@@ -68,12 +83,12 @@ function firstFailingStep(steps: unknown): ({ label: string } & NestedDetails) |
     const expected = snapshot ? undefined : str(entry.expected);
     const actual = snapshot ? undefined : str(entry.actual);
     return {
-      label: `${what}: ${why}`,
-      ...(hint !== undefined && { hint }),
+      label: `${what}: ${why}${labelHint}`,
+      ...(ownHint !== undefined && { hint: ownHint }),
       ...(expected !== undefined && { expected }),
       ...(entry.expectedKind === "pattern" && { expectedKind: "pattern" as const }),
       ...(actual !== undefined && { actual }),
-      ...(entry.indeterminate === true && { indeterminate: true as const }),
+      ...(indeterminate && { indeterminate: true as const }),
     };
   }
   return undefined;

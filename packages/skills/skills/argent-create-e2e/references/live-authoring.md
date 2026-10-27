@@ -294,14 +294,23 @@ A failed step can show these lines under its reason:
 - `indeterminate:` shows that the step did not do its check, because Argent could not read the UI tree.
 - `hint:` shows a thing to try first, or a fact that helps you find the cause.
 
-Many failed steps have no `hint:` line. An `assert` or `await` with `exists`, `visible` or `hidden` that read the screen has none. `launch:`, `script:`, `run:` and most `tool:` steps have none. A `tool: e2e-execute` step shows the lines of the step that failed in the composed e2e test. Before you use a hint, look at the screen. A hint is only one possible cause.
+Many failed steps have no `hint:` line. An `assert` or `await` with `exists`, `visible` or `hidden` that read the screen has none. `launch:`, `script:`, `run:` and most `tool:` steps have none. A `tool: e2e-execute` step shows the lines of the step that failed in the composed e2e test, with two exceptions. If the failed step is a `snapshot:` step, the reason of the `tool: e2e-execute` step holds its `expected:` and `actual:` values. If the failed step has no `indeterminate:` line, the reason of the `tool: e2e-execute` step holds its hint. Before you use a hint, look at the screen. A hint is only one possible cause.
 
 Manual rescue invalidates the pass. These steps did not do their check:
 
 - An `errored` step: an `idle` wait whose tree source could not be read, a step that threw, an unresolvable `run:` target, or a `launch:` that did not start the app.
 - A failed step with the `indeterminate:` line.
 
-The environment is not the only possible cause of such a step. An app crash gives the same result as a tree source that stopped. A screen that the app made empty gives the same result too. Look at the app first. Then look at the device and the tree source. A failed `launch:` is a verdict about the app. Unconfirmed focus is not in this class at all: the replay focus poll has no failure return, so a `type:` step whose focus was never confirmed is scored a **pass**, and only the value check after typing catches it.
+Some of these steps fail the same way on every run, because the test is wrong:
+
+- a tree read that Argent refuses, for example of an Apple system app
+- an unresolvable `run:` target
+- a `script:` path with the wrong letter case
+- a `tool:` step with a wrong parameter
+
+Change the test as the reason tells you.
+
+For any other such step, the environment is not the only possible cause. An app crash gives the same result as a tree source that stopped. A screen that the app made empty gives the same result too. Look at the app first. Then look at the device and the tree source. A failed `launch:` is a verdict about the app. Unconfirmed focus is not in this class at all: the replay focus poll has no failure return, so a `type:` step whose focus was never confirmed is scored a **pass**, and only the value check after typing catches it.
 
 **A passing step that carries a `warning` is a finding, not noise.** `await: { idle: true }` raises [six different warnings](e2e-yaml.md#idle-readiness) and they do not share one meaning. Two say the screen was moving; one says the wait ran out mid-hold and is repaired by raising the step's `timeout:`; one says the tree stayed empty; one says the tree did hold still and only the screenshot pairs were missing, so the capture path is what to check; one says the step ended with no evidence either way. No report separates intended motion from a load that never finished. Read which one it is, look at that screen, disclose what you found, and confirm the following step targets a stable element rather than stillness.
 

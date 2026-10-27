@@ -19,7 +19,7 @@ vi.mock("../../src/tools/flows/flow-tree", async (importOriginal) => ({
 import { createFlowTestHarness, label, screen } from "./harness";
 import { selectorMiss, waitForFrame, type ActionEnv } from "../../src/tools/flows/flow-actions";
 
-const { run, writeFlow } = createFlowTestHarness({
+const { run, runWithCalls, writeFlow } = createFlowTestHarness({
   tempDirectoryPrefix: "flow-failure-details-",
   reset: () => {
     currentTree = () => screen([]);
@@ -37,6 +37,11 @@ const INDETERMINATE_HINT =
   "check the app first — a crash, or a screen the app emptied itself, reads the same here as a " +
   "tree source that stopped answering — then check the device and the tree source; re-run " +
   "before you edit the e2e test";
+
+/** The repair Vega's toolkit reader sends with an empty tree. */
+const VEGA_HINT =
+  "No UI tree from the Vega automation toolkit. The toolkit attaches at app launch — " +
+  "relaunch the foreground app.";
 
 function disconnected(): never {
   throw new Error("native devtools disconnected");
@@ -86,6 +91,65 @@ describe("tap-family selector misses", () => {
   }, 15_000);
 });
 
+describe("zero-area misses in a visibility check", () => {
+  it("gives a tap, an assert and an await the same counted reason and hint", async () => {
+    currentTree = () =>
+      screen([
+        label("Buy", { frame: { x: 0.1, y: 0.3, width: 0.5, height: 0 } }),
+        label("Buy", { frame: { x: 0.1, y: 0.4, width: 0, height: 0 } }),
+      ]);
+    await writeFlow("tap-buy", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tap", selector: { text: "Buy" } }],
+    });
+    await writeFlow("assert-buy", {
+      executionPrerequisite: "",
+      steps: [{ kind: "assert", condition: "visible", selector: { text: "Buy" } }],
+    });
+    await writeFlow("await-buy", {
+      executionPrerequisite: "",
+      steps: [{ kind: "await", condition: "visible", selector: { text: "Buy" }, timeout: 500 }],
+    });
+
+    const runs = await Promise.all([run("tap-buy"), run("assert-buy"), run("await-buy")]);
+
+    for (const {
+      steps: [step],
+    } of runs) {
+      expect(step).toMatchObject({
+        status: "fail",
+        reason: '2 elements matched text="Buy" but none was visible (zero-area frame)',
+        hint:
+          "the element is in the tree but has no on-screen area; it may be off-screen (add a " +
+          "scroll-to step before this one), collapsed, or not laid out yet",
+      });
+      expect(step).not.toHaveProperty("indeterminate");
+    }
+  }, 15_000);
+
+  it("does not suggest a scroll-to step on Vega, which refuses it", async () => {
+    currentSource = "vega-automation";
+    currentTree = () =>
+      screen([
+        label("Price", { identifier: "price", frame: { x: 0, y: 1.2, width: 0, height: 0 } }),
+      ]);
+    await writeFlow("vega-assert", {
+      executionPrerequisite: "",
+      steps: [{ kind: "assert", condition: "visible", selector: { identifier: "price" } }],
+    });
+
+    const [step] = (await runWithCalls("vega-assert", "amazon-4a27df03c9777152")).steps;
+
+    expect(step).toMatchObject({
+      status: "fail",
+      reason: '1 element matched id="price" but none was visible (zero-area frame)',
+      hint:
+        "the element is in the tree but has no on-screen area; it may be off-screen, " +
+        "collapsed, or not laid out yet",
+    });
+  });
+});
+
 describe("zero-area selector misses on Vega", () => {
   it("does not suggest a scroll-to step, which Vega refuses", async () => {
     // Vega's tree keeps an off-screen node at zero area, so a cropOn that
@@ -115,9 +179,6 @@ describe("selector misses on a screen that was never read", () => {
   // it reads a tree, so a snapshot's cropOn is where a flow meets this read.
   // "no element matched" is a claim about what the screen holds, and this read
   // supports no such claim.
-  const VEGA_HINT =
-    "No UI tree from the Vega automation toolkit. The toolkit attaches at app launch — " +
-    "relaunch the foreground app.";
   it("refuses a verdict on a Vega cropOn and gives the toolkit's repair, not the scroll-to advice", async () => {
     currentSource = "vega-automation";
     currentTree = () => screen([]);
@@ -238,6 +299,16 @@ describe("text check failures", () => {
     expect(step).not.toHaveProperty("expectedKind");
   });
 
+  it("gives no own-text hint for a container with no label of its own", async () => {
+    currentTree = () => screen([label("", { identifier: "total", subtreeText: "Total $41.50" })]);
+    await writeFlow("no-own-text", { executionPrerequisite: "", steps: [assertTotalEquals42] });
+
+    const [step] = (await run("no-own-text")).steps;
+
+    expect(step).toMatchObject({ status: "fail", actual: "Total $41.50" });
+    expect(step.hint).toBeUndefined();
+  });
+
   it("quotes an own text that holds quotes and backslashes as JSON, like the actual text", async () => {
     currentTree = () =>
       screen([label('Say "hi" C:\\x', { identifier: "greet", subtreeText: "Hello there" })]);
@@ -253,17 +324,34 @@ describe("text check failures", () => {
     );
   });
 
-  it("cuts a long own text in the hint at 300 characters and counts the rest outside the quotes", async () => {
-    const own = "Total ".repeat(80);
-    currentTree = () => screen([label(own, { identifier: "total", subtreeText: `${own} $41.50` })]);
-    await writeFlow("own-text-long", { executionPrerequisite: "", steps: [assertTotalEquals42] });
+  it("keeps the whole of a long own text in the report", async () => {
+    // The hint is the only field of the report that holds the own text, and
+    // the check accepts the own text. A difference after character 300 must
+    // stay in the report.
+    const own =
+      "Terms of Service, " +
+      "lorem ipsum dolor sit amet ".repeat(13) +
+      "and more, version 2.1 effective 2026";
+    currentTree = () =>
+      screen([label(own, { identifier: "terms", subtreeText: "Terms of Service Accept" })]);
+    await writeFlow("own-text-whole", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { identifier: "terms" },
+          expectedText: own.replace("2.1", "2.0"),
+          textMatch: "equals",
+        },
+      ],
+    });
 
-    const [step] = (await run("own-text-long")).steps;
+    const report = await run("own-text-whole");
 
-    expect(step.hint).toBe(
-      `the element's own text is "${own.slice(0, 300)}" … (180 more characters); the check ` +
-        "accepts the subtree text or the own text"
-    );
+    expect(report.steps[0].status).toBe("fail");
+    expect(own).toHaveLength(405);
+    expect(JSON.stringify(report)).toContain(own);
   });
 
   it("keeps the own-text hint when the final poll fails, and closes the reason with the note", async () => {
@@ -455,6 +543,138 @@ describe("refused tree read", () => {
       expect(step).not.toHaveProperty("hint");
     }
   });
+});
+
+describe("a wait that could not judge its condition", () => {
+  // The flag and the hint of such a step come from its last read attempt, not
+  // from any earlier read in the window.
+
+  /** A read refused because a step left the app: a `validation` failure. */
+  function systemApp(): never {
+    throw new FailureError("com.apple.Preferences is an Apple system app", {
+      error_code: FAILURE_CODES.NATIVE_DEVTOOLS_NOT_INJECTABLE,
+      failure_stage: "flow_tree_pinned_target",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    });
+  }
+
+  it("flags a wait whose first read was refused when the reads after it came back blind", async () => {
+    // The reads after the refusal arrived, so the refusal does not decide the
+    // step: a re-run can give another verdict.
+    currentSource = "vega-automation";
+    let reads = 0;
+    currentTree = () => {
+      if (reads++ === 0) systemApp();
+      currentFlags = { hint: VEGA_HINT };
+      return screen([]);
+    };
+    await writeFlow("refused-then-blind", {
+      executionPrerequisite: "",
+      steps: [{ kind: "await", condition: "visible", selector: { text: "Home" }, timeout: 500 }],
+    });
+
+    const [step] = (await run("refused-then-blind")).steps;
+
+    expect(reads).toBeGreaterThan(1);
+    expect(step).toMatchObject({ status: "fail", indeterminate: true, hint: VEGA_HINT });
+    expect(step.reason).toMatch(/every read of the UI tree was empty or degraded/);
+  });
+
+  it("gives a device error after a blind read the shared hint, not the blind read's repair", async () => {
+    // The toolkit's repair is for the blind read that sent it. The reads that
+    // throw after it send none, so the step gets the shared hint.
+    currentSource = "vega-automation";
+    let reads = 0;
+    currentTree = () => {
+      if (reads++ > 0) disconnected();
+      currentFlags = { hint: VEGA_HINT };
+      return screen([]);
+    };
+    await writeFlow("blind-then-throw", {
+      executionPrerequisite: "",
+      steps: [{ kind: "await", condition: "visible", selector: { text: "Home" }, timeout: 500 }],
+    });
+
+    const [step] = (await run("blind-then-throw")).steps;
+
+    expect(reads).toBeGreaterThan(1);
+    expect(step).toMatchObject({ status: "fail", indeterminate: true, hint: INDETERMINATE_HINT });
+    expect(step.reason).toContain("native devtools disconnected");
+  });
+
+  // The screen answers for the first two reads (one poll interval), then the
+  // reads go dark. A `visible` wait then ends on its dark tail: the window is
+  // long enough for the dark reads to outlast the tolerance. A `hidden` wait
+  // saw the element, so it ends on its evidence gap.
+  const spinner = screen([label("Loading", { identifier: "spinner" })]);
+  const awaitHome = {
+    kind: "await",
+    condition: "visible",
+    selector: { text: "Home" },
+    timeout: 2000,
+  } as const;
+  const awaitSpinnerGone = {
+    kind: "await",
+    condition: "hidden",
+    selector: { identifier: "spinner" },
+    timeout: 1000,
+  } as const;
+
+  function answerThen(dark: () => DescribeNode): void {
+    let reads = 0;
+    currentTree = () => {
+      if (reads++ >= 2) return dark();
+      currentFlags = {};
+      return spinner;
+    };
+  }
+
+  function blind(): DescribeNode {
+    currentFlags = { hint: VEGA_HINT };
+    return screen([]);
+  }
+
+  it("gives the reader's repair to a wait whose reads went blind after the screen answered", async () => {
+    currentSource = "vega-automation";
+    await writeFlow("blind-tail", { executionPrerequisite: "", steps: [awaitHome] });
+    await writeFlow("blind-gap", { executionPrerequisite: "", steps: [awaitSpinnerGone] });
+
+    answerThen(blind);
+    const [visible] = (await run("blind-tail")).steps;
+    answerThen(blind);
+    const [hidden] = (await run("blind-gap")).steps;
+
+    expect(visible.reason).toMatch(
+      /reads were empty or degraded for the final \d+ms of the window/
+    );
+    expect(hidden.reason).toMatch(/it was visible earlier, but the last UI reads were empty/);
+    for (const step of [visible, hidden]) {
+      expect(step).toMatchObject({ status: "fail", indeterminate: true, hint: VEGA_HINT });
+    }
+  }, 15_000);
+
+  it("does not flag a wait whose reads were refused after the screen answered", async () => {
+    await writeFlow("refused-tail", { executionPrerequisite: "", steps: [awaitHome] });
+    await writeFlow("refused-gap", { executionPrerequisite: "", steps: [awaitSpinnerGone] });
+
+    answerThen(systemApp);
+    const [visible] = (await run("refused-tail")).steps;
+    answerThen(systemApp);
+    const [hidden] = (await run("refused-gap")).steps;
+
+    expect(visible.reason).toMatch(
+      /unreadable for the final \d+ms of the window: .+Apple system app/
+    );
+    expect(hidden.reason).toMatch(
+      /visible earlier, but the last UI read failed: .+Apple system app/
+    );
+    for (const step of [visible, hidden]) {
+      expect(step.status).toBe("fail");
+      expect(step).not.toHaveProperty("indeterminate");
+      expect(step).not.toHaveProperty("hint");
+    }
+  }, 15_000);
 });
 
 describe("passing steps", () => {

@@ -692,6 +692,41 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(warningOf(exact, "textequals")).toContain('actual: "Total: $5.00"');
   });
 
+  // iOS renders a time with a U+202F before "AM", and JSON quoting leaves that
+  // character as it is. Unescaped, the found text prints as the twin of the
+  // expected text.
+  it("escapes an invisible character in the found text it echoes back", async () => {
+    serveTree(iosRunnerTree([iosLabel("10:30 AM", { identifier: "clock" })]));
+    await startRecording("narrowspace");
+
+    const result = await recordWait("narrowspace", {
+      condition: "text",
+      selector: { identifier: "clock" },
+      expectedText: "10:30 AM",
+      textMatch: "equals",
+    });
+    const echoed = echoedReasonOf(warningOf(result, "narrowspace") ?? "");
+
+    expect(echoed).toContain('did not equal "10:30 AM"');
+    expect(echoed).toContain('actual: "10:30\\u202fAM"');
+  });
+
+  it("escapes an invisible character in the expected text it echoes back", async () => {
+    serveTree(iosRunnerTree([iosLabel("10:30 AM", { identifier: "clock" })]));
+    await startRecording("narrowexpected");
+
+    const result = await recordWait("narrowexpected", {
+      condition: "text",
+      selector: { identifier: "clock" },
+      expectedText: "10:30\u202fAM",
+      textMatch: "equals",
+    });
+    const echoed = echoedReasonOf(warningOf(result, "narrowexpected") ?? "");
+
+    expect(echoed).toContain('did not equal "10:30\\u202fAM"');
+    expect(echoed).toContain('actual: "10:30 AM"');
+  });
+
   // ── Per-platform divergences, each produced by that platform's adapter ────
 
   // iOS: an `accessible` container. The AX tree merges it into ONE leaf whose
@@ -1512,6 +1547,41 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(echoed).not.toContain("more chars)");
     expect(echoed).toContain(`actual: "Total ${found}"`);
     expect(echoed).toContain(`the element's own text is "Total"`);
+  });
+
+  // The own-text hint shows only when the own text and the subtree text differ,
+  // so it usually comes with a long found text. The cap keeps the head and the
+  // tail, and the found text must not push the hint into the cut.
+  it("keeps the own-text hint whole when the found text is cut", async () => {
+    serveTree(
+      iosRunnerTree([
+        {
+          className: "UIView",
+          identifier: "total",
+          label: "Subtotal before tax",
+          frame: IOS_ROW,
+          windowFrame: IOS_ROW,
+          children: [iosLabel("Lorem ipsum dolor sit amet ".repeat(20))],
+        },
+      ])
+    );
+    await startRecording("longowntext");
+
+    const result = await recordWait("longowntext", {
+      condition: "text",
+      selector: { identifier: "total" },
+      expectedText: "$5.00",
+    });
+    const echoed = echoedReasonOf(warningOf(result, "longowntext") ?? "");
+    const [head, tail] = echoed.split(/… \(\d+ more chars\) …/);
+
+    expect(tail).toBeDefined();
+    expect(head).toContain(
+      `the element's own text is "Subtotal before tax"; the check accepts the subtree text or the own text`
+    );
+    // The tail is the end of the found text, not the end of the own text.
+    expect(tail).not.toContain("own text");
+    expect(tail).toMatch(/Lorem ipsum dolor sit amet ?"$/);
   });
 
   // The cap ELIDES THE MIDDLE: the note about a dark final poll lives at the END.

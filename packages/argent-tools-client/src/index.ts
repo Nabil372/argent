@@ -67,11 +67,7 @@ export {
   type MaterializedImage,
 } from "./artifacts.js";
 
-export {
-  escapeInvisible,
-  renderFlowStepDetails,
-  type FlowStepDetails,
-} from "./flow-step-details.js";
+export { renderFlowStepDetails, type FlowStepDetails } from "./flow-step-details.js";
 
 export {
   prepareFileInputs,

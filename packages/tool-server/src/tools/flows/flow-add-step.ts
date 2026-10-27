@@ -5,6 +5,7 @@ import {
   canonicalToolId,
   e2eFileCandidates,
   e2eRunFallbackDirs,
+  escapeInvisible,
   FAILURE_CODES,
   FailureError,
   getFailureSignal,
@@ -488,15 +489,26 @@ function elisionMarker(dropped: number): string {
   return `… (${dropped} more chars) …`;
 }
 
+/**
+ * The reason and the own-text hint come first and the note comes last, so
+ * {@link cappedReason} keeps them. The found text, which can run long, goes
+ * between them, and the cut takes the middle of it.
+ *
+ * The expected text in the reason, the own text in the hint and the found text
+ * all quote text from the flow or the device. Their invisible characters are
+ * escaped, so two values that differ only by one never print as twins.
+ */
 function probeVerdict(outcome: DirectiveOutcome): string {
-  return [
-    outcome.reason ?? "no match",
-    outcome.actual !== undefined ? `actual: ${JSON.stringify(outcome.actual)}` : undefined,
-    outcome.hint,
-    outcome.note,
-  ]
-    .filter((part) => part !== undefined)
-    .join("; ");
+  return escapeInvisible(
+    [
+      outcome.reason ?? "no match",
+      outcome.hint,
+      outcome.actual !== undefined ? `actual: ${JSON.stringify(outcome.actual)}` : undefined,
+      outcome.note,
+    ]
+      .filter((part) => part !== undefined)
+      .join("; ")
+  );
 }
 
 /**

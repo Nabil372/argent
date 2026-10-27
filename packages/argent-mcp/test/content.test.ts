@@ -636,6 +636,34 @@ describe("flowRunToMcpContent", () => {
     ]);
   });
 
+  it("prints the whole found text, past the 300 characters the CLI line shows", async () => {
+    // The result holds only these blocks, so a cut line would hide the part of
+    // the found text after character 300, here the only difference.
+    const terms = (version: string) =>
+      `Terms: ${"lorem ipsum ".repeat(30)}version ${version} effective 2026`;
+    const blocks = await flowRunToMcpContent({
+      flow: "f",
+      steps: [
+        {
+          index: 0,
+          kind: "assert",
+          status: "fail",
+          target: `id=terms equals "${terms("2.0")}"`,
+          reason: `element matched id="terms" but its text did not equal "${terms("2.0")}"`,
+          expected: terms("2.0"),
+          actual: terms("2.1"),
+        },
+      ],
+    });
+
+    expect(Array.from(terms("2.1")).length).toBeGreaterThan(300);
+    expect(blocks[2]).toEqual({
+      type: "text",
+      text: `  expected: "${terms("2.0")}"\n  actual:   "${terms("2.1")}"`,
+    });
+    expect(blocks.some((b) => b.type === "text" && b.text.includes("version 2.1"))).toBe(true);
+  });
+
   it("adds no detail block for detail values that are not strings", async () => {
     const hostile = await flowRunToMcpContent({
       flow: "f",
@@ -659,7 +687,8 @@ describe("flowRunToMcpContent", () => {
 
   it("puts a failed tool step's detail block between its line and its result", async () => {
     // A composed flow-execute that failed carries its inner step's values up
-    // onto the tool step, beside the inner report as its result.
+    // onto the tool step, beside the inner report as its result. The inner
+    // step's hint stays in the reason: it advises on the inner step.
     const inner = {
       flow: "login",
       ok: false,
@@ -686,10 +715,9 @@ describe("flowRunToMcpContent", () => {
           tool: "flow-execute",
           status: "fail",
           reason:
-            'flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome")',
+            'flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome"; hint: the login may not have finished)',
           expected: "Welcome",
           actual: "Sign in",
-          hint: "the login may not have finished",
           result: inner,
         },
       ],
@@ -699,15 +727,11 @@ describe("flowRunToMcpContent", () => {
       { type: "text", text: 'Running e2e test "outer" (1 steps)' },
       {
         type: "text",
-        text: '[1] ✗ flow-execute — flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome")',
+        text: '[1] ✗ flow-execute — flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome"; hint: the login may not have finished)',
       },
       {
         type: "text",
-        text: [
-          '  expected: "Welcome"',
-          '  actual:   "Sign in"',
-          "  hint: the login may not have finished",
-        ].join("\n"),
+        text: ['  expected: "Welcome"', '  actual:   "Sign in"'].join("\n"),
       },
       { type: "text", text: JSON.stringify(inner, null, 2) },
       { type: "text", text: 'E2E test "outer" complete.' },

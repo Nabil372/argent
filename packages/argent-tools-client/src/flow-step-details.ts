@@ -4,7 +4,7 @@
  * spelling of each value.
  */
 
-import { printCapped } from "@argent/registry";
+import { escapeInvisible, printCapped } from "@argent/registry";
 
 /**
  * What a step that did not pass found, wanted and advises, set by the
@@ -25,32 +25,6 @@ export interface FlowStepDetails {
 }
 
 /**
- * Characters that print as nothing, or as a plain space: control characters
- * (C0, DEL, C1), format characters (zero-width, bidi), line and paragraph
- * separators, and each space that is not U+0020 (for example NBSP, or the
- * U+202F in iOS's `10:30 AM`). A value that differs from another only by one of
- * these must not print as its twin.
- */
-const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|(?! )\p{Zs}/gu;
-
-/**
- * Escape only the invisible characters of a value, each in its JSON spelling
- * (`\n`, `\t`, `\u0007`, `\u00a0`). Everything else — a backslash above all —
- * stays as it is.
- */
-export function escapeInvisible(v: string): string {
-  return v.replace(INVISIBLE, (c) => {
-    const json = JSON.stringify(c).slice(1, -1);
-    if (json !== c) return json;
-    let escaped = "";
-    for (let i = 0; i < c.length; i++) {
-      escaped += `\\u${c.charCodeAt(i).toString(16).padStart(4, "0")}`;
-    }
-    return escaped;
-  });
-}
-
-/**
  * The `expected:`, `actual:`, `indeterminate:` and `hint:` lines of a step,
  * unindented: each renderer places them under its own step line. The
  * tool-server sets these fields only on a step that did not pass, so a passing
@@ -59,10 +33,18 @@ export function escapeInvisible(v: string): string {
  * An invisible character is ESCAPED, never replaced: these lines are the only
  * place the found text is printed, and a value that differs from the expected
  * one only by a line break, a tab or a no-break space has to look different
- * here — replacing it with a space printed the two as twins. The escape keeps
- * each value on one line and keeps a raw escape sequence out of the terminal.
+ * from it here. The escape also keeps each value on one line and keeps a raw
+ * escape sequence out of the terminal.
+ *
+ * The `actual:` line cuts the found text at 300 characters and counts the
+ * rest. The report keeps the whole text, so a caller whose output also gives
+ * the report (the CLI's `--json`) keeps the cut. A caller whose output is only
+ * these lines (the MCP result) passes `wholeActual` to print the whole text.
  */
-export function renderFlowStepDetails(step: FlowStepDetails & { kind: string }): string[] {
+export function renderFlowStepDetails(
+  step: FlowStepDetails & { kind: string },
+  options: { wholeActual?: boolean } = {}
+): string[] {
   // A `hint:` and a snapshot value print unquoted, so only their invisible
   // characters are escaped. The tool-server relies on this: it keeps an inner
   // snapshot's values off a nested flow-execute step, which is not a snapshot
@@ -79,8 +61,10 @@ export function renderFlowStepDetails(step: FlowStepDetails & { kind: string }):
     step.expectedKind === "pattern" ? `/${escapeInvisible(v)}/` : value(v);
   const lines: string[] = [];
   if (typeof step.expected === "string") lines.push(`expected: ${expected(step.expected)}`);
-  // The report keeps the whole found text; the cut is only for the line.
-  if (typeof step.actual === "string") lines.push(`actual:   ${printCapped(step.actual, value)}`);
+  if (typeof step.actual === "string") {
+    const actual = options.wholeActual ? value(step.actual) : printCapped(step.actual, value);
+    lines.push(`actual:   ${actual}`);
+  }
   // The JSON outputs carry the flag; without this line a reader of the text
   // can tell a check that never ran only from the prose of its reason.
   if (step.indeterminate === true) lines.push("indeterminate: the check did not run");

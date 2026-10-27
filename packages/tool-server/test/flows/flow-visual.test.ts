@@ -360,6 +360,20 @@ describe("runSnapshot baselines", () => {
     expect(r).toMatchObject({ expected: "≤ 0.5%", actual: "0.5004%" });
   });
 
+  it("widens a pixel-count ratio only to the first decimal that clears the tolerance", async () => {
+    await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
+    await writeFakePng(baselinePath());
+    // 18035 pixels of a 1290x2796 capture compute 0.50002218008007%, which
+    // rounds onto the tolerance up to 4 decimals and clears it at 5.
+    h.mismatchPercentage = (18035 / (1290 * 2796)) * 100;
+
+    const r = await runSnapshot(env, opts({ maxMismatch: 0.5 }));
+
+    expect(r.status).toBe("fail");
+    expect(r.reason).toContain("diff 0.50002% > 0.5%");
+    expect(r).toMatchObject({ expected: "≤ 0.5%", actual: "0.50002%" });
+  });
+
   it("prints a diff that passes on float error at two decimals", async () => {
     await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
     await writeFakePng(baselinePath());
@@ -394,6 +408,19 @@ describe("runSnapshot baselines", () => {
 
     expect(r.status).toBe("pass");
     expect(r.reason).toContain("diff 0.50% ≤ 0.5%");
+  });
+
+  it("prints a passing diff that two decimals round above the tolerance at more precision", async () => {
+    await fs.mkdir(path.dirname(baselinePath()), { recursive: true });
+    await writeFakePng(baselinePath());
+    // 1 pixel of 20000 sits exactly on the tolerance, and two decimals round it
+    // up past it: `diff 0.01% ≤ 0.005%`.
+    h.mismatchPercentage = (1 / 20000) * 100;
+
+    const r = await runSnapshot(env, opts({ maxMismatch: 0.005 }));
+
+    expect(r.status).toBe("pass");
+    expect(r.reason).toContain("diff 0.005% ≤ 0.005%");
   });
 
   it("passes a diff exactly at maxMismatch despite float error, and fails one pixel over", async () => {
