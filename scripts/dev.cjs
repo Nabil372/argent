@@ -406,10 +406,12 @@ async function main() {
   toolServer.stdout.pipe(logStream);
   toolServer.stderr.pipe(logStream);
 
-  toolServer.on("exit", (code) => {
-    if (code !== 0 && code !== null) {
-      console.error(`\nTool-server exited with code ${code}. Check ~/.argent/tool-server.log`);
-    }
+  toolServer.on("exit", (code, signal) => {
+    if (code === 0) return;
+    console.error(
+      `\nTool-server exited with ${signal ?? `code ${code}`}. Check ~/.argent/tool-server.log`
+    );
+    process.exitCode = 1;
   });
 
   process.stdout.write("Waiting for tool-server");
