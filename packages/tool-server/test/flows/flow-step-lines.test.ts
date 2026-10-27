@@ -99,6 +99,15 @@ describe("flowStepLine", () => {
     expect(stepLines(marked.steps)).toEqual([3]);
   });
 
+  it("counts the blank lines above steps: for the steps inside a when: block too", () => {
+    const flow = parseFlow(
+      "\n\n" +
+        yaml("steps:", "  - when: { platform: ios }", "    steps:", "      - tap: A", "  - echo: b")
+    );
+
+    expect(stepLines(flow.steps)).toEqual([4, 6, 7]);
+  });
+
   it("counts CRLF line endings the same as LF", () => {
     const lf = "\n" + yaml("steps:", "  - echo: a", "", "  - tap: b");
     const crlf = lf.replaceAll("\n", "\r\n");
