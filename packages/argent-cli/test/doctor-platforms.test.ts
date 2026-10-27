@@ -56,9 +56,18 @@ describe("platformChecks", () => {
     });
   });
 
-  it("warns when Xcode has no available simulators", () => {
-    const checks = platformChecks(hostDeps({ xcode: { ...xcode, availableSimulators: 0 } }), "r");
-    expect(checks.find((c) => c.label.startsWith("iOS simulator"))?.label).toMatch(/no available/);
+  it("asks for an iOS runtime when Xcode has no available simulators and no runtime", () => {
+    for (const iosRuntimes of [undefined, 0]) {
+      const checks = platformChecks(
+        hostDeps({ xcode: { ...xcode, availableSimulators: 0, iosRuntimes } }),
+        "r"
+      );
+      expect(checks.find((c) => c.label.startsWith("iOS simulator"))).toMatchObject({
+        status: "warn",
+        label: "iOS simulator: no available simulators (no iOS runtime installed?)",
+        fix: expect.stringMatching(/xcodebuild -downloadPlatform iOS/),
+      });
+    }
   });
 
   it("asks for a simulator, not a runtime, when an iOS runtime is installed", () => {
