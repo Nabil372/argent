@@ -152,6 +152,31 @@ describe("renderFlowStepDetails", () => {
     expect(JSON.parse(lines[0]!.replace("actual:   ", ""))).toBe(`${flag} Scotland`);
   });
 
+  it("spells a backspace so that a pattern cannot read it as a word boundary", () => {
+    // A double-quoted YAML `matches: "\bTotal\b"` loads U+0008, not a word
+    // boundary. Printed as JSON's `\b`, it reads as the pattern its author meant.
+    const backspace = String.fromCharCode(8);
+    const step: Step = {
+      kind: "assert",
+      expected: `${backspace}Total${backspace}`,
+      expectedKind: "pattern",
+      actual: "Order Total: 42",
+    };
+    const backspaced = renderFlowStepDetails(step)[0];
+    const bounded = renderFlowStepDetails({ ...step, expected: "\\bTotal\\b" })[0];
+    expect(backspaced).toBe("expected: /\\u0008Total\\u0008/");
+    expect(bounded).toBe("expected: /\\bTotal\\b/");
+    expect(backspaced).not.toBe(bounded);
+    // A snapshot value and a hint that quotes device text spell it the same way.
+    expect(
+      renderFlowStepDetails({
+        kind: "snapshot",
+        expected: `a${backspace}b`,
+        hint: `own text is "a${backspace}b"`,
+      })
+    ).toEqual(["expected: a\\u0008b", 'hint: own text is "a\\u0008b"']);
+  });
+
   it("marks a step whose check did not run, above its hint", () => {
     const step: Step = { kind: "await", indeterminate: true, hint: "check the app first" };
     expect(renderFlowStepDetails(step)).toEqual([

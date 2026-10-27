@@ -34,11 +34,15 @@ const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|(?! )\p{Zs}/gu;
  * Escape only the invisible characters of a value, each in its JSON spelling
  * (`\n`, `\t`, `\u0007`, `\u00a0`). Everything else — a backslash above all —
  * stays as the device reported it.
+ *
+ * U+0008 is the exception: it is spelled `\u0008`, not JSON's `\b`. Between the
+ * slashes of a pattern, `\b` reads as a word boundary, so a pattern that holds
+ * a backspace would print as the pattern with word boundaries.
  */
 export function escapeInvisible(v: string): string {
   return v.replace(INVISIBLE, (c) => {
     const json = JSON.stringify(c).slice(1, -1);
-    if (json !== c) return json;
+    if (json !== c && c !== "\u0008") return json;
     let escaped = "";
     for (let i = 0; i < c.length; i++) {
       escaped += `\\u${c.charCodeAt(i).toString(16).padStart(4, "0")}`;
