@@ -357,3 +357,41 @@ it.skipIf(!hasEncoder || process.platform === "win32")(
     );
   }
 );
+
+it.skipIf(!hasEncoder)(
+  "keeps a phone-sized debug video within a playable H.264 level",
+  async () => {
+    const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
+    const output = path.join(scratch, "phone.mp4");
+    const child = spawn(
+      "ffmpeg",
+      ffmpegArgs({
+        outputFile: output,
+        logoFile: null,
+        graph: null,
+        canvas: { width: 390, height: 844 },
+        mode: "debug",
+      })
+    );
+    let stderr = "";
+    child.stderr.on("data", (data: Buffer) => {
+      stderr += data.toString();
+    });
+    const closed = new Promise<number | null>((resolve) => child.once("close", resolve));
+    const capture = startDebugCapture(child.stdin, scratch, vi.fn());
+    capture.attach(source(jpeg([0, 0, 255], 390, 844)).stream);
+    now.mockReturnValue(2_000);
+    await capture.finish();
+    expect(await closed, stderr).toBe(0);
+    const probe = spawnSync(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "stream=level,width,height", "-of", "json", output],
+      { encoding: "utf8" }
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    const stream = JSON.parse(probe.stdout).streams[0];
+    expect(stream).toMatchObject({ width: 390, height: 844 });
+    expect(stream.level).toBeLessThan(62);
+    expect(stderr).not.toContain("MB rate");
+  }
+);
