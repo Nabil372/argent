@@ -27,11 +27,16 @@ const RUN_SEQUENCE_TOOL_ID = "run-sequence";
 
 /**
  * Beside the status and reason: the detail fields of the inner step that
- * failed, carried onto the outer step. A failed check keeps the text it found,
- * and the advice about it, beside its reason rather than inside it — so an
- * outer step built from the inner `reason` alone would say "did not equal"
- * with no found text, or "no element matched" with no advice, and nothing else
- * in the run prints the inner step.
+ * failed, carried onto the outer step. A failed check keeps the text it found
+ * beside its reason rather than inside it, so an outer step built from the
+ * inner `reason` alone would say "did not equal" with no found text. The
+ * outer step also keeps the whole inner report as its `result`, which
+ * `flowRunToMcpContent` prints as JSON under the step and `--json` and
+ * `--json-stream` carry, so those outputs hold the inner values twice. The
+ * CLI text output prints no inner step, so there these fields are the only
+ * place the inner values print. The inner hint is one of them only when the
+ * inner check did not run; otherwise it stays in the reason (see
+ * `firstFailingStep`).
  */
 interface NestedOutcome extends StepDetails {
   status: StepStatus;
