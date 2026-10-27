@@ -138,7 +138,8 @@ function appLabel(target: CDPTarget): string {
  * Resolve an iOS simulator UDID to its target by the device name the app
  * reported to Metro, which never sees the UDID.
  *
- * Returns the matching targets, or [] to fall back to the id-only rules.
+ * Returns the matching targets, or [] to fall back to the id-only rules, which
+ * includes a same-named simulator's app being the only device on Metro.
  * Throws when the name proves the simulator's app is not on this Metro, or
  * cannot single out one target.
  */
@@ -163,18 +164,21 @@ function matchByDeviceName(
     throw failure(
       `device_id "${deviceId}" is the simulator "${hint.name}", which is not booted, so no app ` +
         `on it can be connected to Metro on port ${port}. Boot it and launch the app, then retry.`,
-      FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS
+      FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH
     );
   }
   if (!matched.length) {
     throw failure(
       `device_id "${deviceId}" is the simulator "${hint.name}", but no app on that simulator ` +
         `is connected to Metro on port ${port}. Connected: ${describeDevices(pool).listed}. ` +
-        `Launch or reload the app on "${hint.name}", then retry.`,
+        `Launch or reload the app on "${hint.name}", then retry. If the simulator was renamed ` +
+        `since it booted, shut it down and boot it first, since an app keeps reporting the name ` +
+        `its simulator booted with.`,
       FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH
     );
   }
   if (hint.bootedTwins > 0) {
+    if (describeDevices(pool).count === 1) return [];
     throw failure(
       `device_id "${deviceId}" is the simulator "${hint.name}", and ${hint.bootedTwins} other ` +
         `booted simulator(s) have the same name, so Metro on port ${port} cannot tell them apart. ` +

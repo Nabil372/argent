@@ -253,6 +253,16 @@ describe("selectTarget by simulator UDID (device name hint)", () => {
     );
     expect(f.code).toBe(FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH);
     expect(f.message).toContain("bench-ARG-A");
+    expect(f.message).toMatch(/renamed since it booted, shut it down and boot it first/);
+  });
+
+  it("falls back to the only device on Metro when a same-named simulator is booted elsewhere", () => {
+    const result = selectTarget([b], 8082, {
+      deviceId: "UDID-B",
+      deviceNames: hint("bench-ARG-B", { bootedTwins: 1 }),
+    });
+    expect(result.target.id).toBe("b");
+    expect(result.matchedDeviceId).toBe(false);
   });
 
   it("refuses when another booted simulator has the same name, even if only one is on Metro", () => {
@@ -328,7 +338,7 @@ describe("selectTarget by simulator UDID (device name hint)", () => {
         deviceNames: hint("bench-ARG-B", { booted: false, bootedTwins: 1 }),
       })
     );
-    expect(f.code).toBe(FAILURE_CODES.DEBUGGER_METRO_NO_TARGETS);
+    expect(f.code).toBe(FAILURE_CODES.DEBUGGER_TARGET_DEVICE_MISMATCH);
     expect(f.message).toMatch(/not booted/);
   });
 
