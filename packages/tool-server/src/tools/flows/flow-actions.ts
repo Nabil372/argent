@@ -1,5 +1,5 @@
-import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
-import { getFailureSignal } from "@argent/registry";
+import type { DeviceInfo, FailureCode, Registry, ToolContext } from "@argent/registry";
+import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   getDescribeTapPoint,
   type DescribeFrame,
@@ -209,10 +209,11 @@ export interface DirectiveOutcome extends StepDetails {
   indeterminate?: boolean;
   /**
    * Set with `indeterminate` when the last tree read was refused with a
-   * `validation` failure: the flow reads an app it must not read, or reads the
-   * app after it left the foreground. The check did not run, but a re-run gets
-   * the same refusal, so the step report does not flag the step as one to run
-   * again.
+   * `validation` failure: the flow reads an app it must not read (an Apple
+   * system app), or names no app to read. The check did not run, but a re-run
+   * gets the same refusal, so the step report does not flag the step as one to
+   * run again. A failure that says which app is connected or in the foreground
+   * now is not a refusal (see {@link isRefusedRead}).
    */
   refused?: true;
   /**
@@ -229,9 +230,32 @@ export interface DirectiveOutcome extends StepDetails {
   warning?: string;
 }
 
+/**
+ * `validation` failures that say which app is connected or in the foreground
+ * at the time of the read. A crash, a relaunch or a step that left the app
+ * causes them, and a re-run can find another app state, so they are not
+ * refusals. With nothing connected, the same crash is a `not_found` failure.
+ */
+const APP_STATE_READ_FAILURES: ReadonlySet<FailureCode> = new Set<FailureCode>([
+  FAILURE_CODES.NATIVE_TARGET_SINGLE_APP_NOT_FOREGROUND,
+  FAILURE_CODES.NATIVE_TARGET_MULTIPLE_APPS_AMBIGUOUS,
+]);
+
+/**
+ * The same state on a physical iPhone: the runner does not read a backgrounded
+ * app. Its code is also the code of a true refusal (no app under automation),
+ * so the stage tells them apart.
+ */
+const IOS_DEVICE_BACKGROUNDED_STAGE = "ios_device_snapshot_backgrounded";
+
 /** Whether a failed tree read was refused (see {@link DirectiveOutcome.refused}). */
 function isRefusedRead(err: unknown): boolean {
-  return getFailureSignal(err)?.error_kind === "validation";
+  const signal = getFailureSignal(err);
+  return (
+    signal?.error_kind === "validation" &&
+    !APP_STATE_READ_FAILURES.has(signal.error_code) &&
+    signal.failure_stage !== IOS_DEVICE_BACKGROUNDED_STAGE
+  );
 }
 
 /**
