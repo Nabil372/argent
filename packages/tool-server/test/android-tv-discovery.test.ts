@@ -401,6 +401,37 @@ describe("listAndroidDevices on a device that stops answering", () => {
     features.open();
     expect((await listing)[0]?.runtimeKind).toBe("mobile");
   });
+
+  it("reads the feature list without waiting for the characteristics fallback", async () => {
+    const characteristics = gate();
+    mockEmulator("emulator-5578", (shell) => {
+      if (shell === "getprop ro.build.characteristics")
+        return characteristics.promise.then(() => out("emulator"));
+      if (shell === "pm list features") return out(PHONE_FEATURES);
+      if (shell.includes("avd_name")) return out("Pixel_API_34");
+      return out("1");
+    });
+    const listing = listAndroidDevices({ runtimeKind: true });
+    await tick();
+    expect(shellCalls("pm list features")).toHaveLength(1);
+    characteristics.open();
+    expect((await listing)[0]?.runtimeKind).toBe("mobile");
+  });
+
+  it("a TV listed while its avd read timed out is not inherited by a frozen occupant", async () => {
+    const serial = "emulator-5554";
+    let answers = true;
+    mockEmulator(serial, (shell) => {
+      if (shell.includes("avd_name")) return new Error("timeout");
+      if (!answers) return new Error("timeout");
+      if (shell === "pm list features") return out(LEANBACK_FEATURES);
+      return out("1");
+    });
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("tv");
+
+    answers = false;
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBeUndefined();
+  });
 });
 
 describe("listAndroidDevices runtime-kind cache", () => {
@@ -417,6 +448,20 @@ describe("listAndroidDevices runtime-kind cache", () => {
     expect(shellCalls("pm list features")).toHaveLength(0);
   });
 
+  it("keeps a known physical phone's kind while it stops answering", async () => {
+    let answers = true;
+    mockEmulator("R58M12345", (shell) => {
+      if (!answers) return new Error("timeout");
+      if (shell.includes("avd_name")) return out("");
+      if (shell === "pm list features") return out(PHONE_FEATURES);
+      return out("1");
+    });
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("mobile");
+
+    answers = false;
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("mobile");
+  });
+
   it("re-probes a reused emulator slot when a different AVD that answers takes it", async () => {
     const serial = "emulator-5554";
     let occupant: "tv" | "phone" = "tv";
@@ -430,6 +475,36 @@ describe("listAndroidDevices runtime-kind cache", () => {
 
     occupant = "phone";
     expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("mobile");
+    expect(getCachedAndroidRuntimeKind(serial)).toBe("mobile");
+  });
+
+  it("re-probes a reused emulator slot when an answering occupant has no avd props", async () => {
+    const serial = "emulator-5554";
+    let occupant: "tv" | "other" = "tv";
+    mockEmulator(serial, (shell) => {
+      if (shell.includes("avd_name")) return out(occupant === "tv" ? "TV_API_34" : "");
+      if (shell === "pm list features")
+        return out(occupant === "tv" ? LEANBACK_FEATURES : PHONE_FEATURES);
+      return out("1");
+    });
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("tv");
+
+    occupant = "other";
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("mobile");
+  });
+
+  it("does not report a booting phone on a reused TV slot as the TV", async () => {
+    const serial = "emulator-5554";
+    let occupant: "tv" | "phone" = "tv";
+    mockEmulator(serial, (shell) => {
+      if (shell.includes("avd_name")) return out(occupant === "tv" ? "TV_API_34" : "Pixel_API_34");
+      if (shell === "pm list features") return out(occupant === "tv" ? LEANBACK_FEATURES : "");
+      return out("emulator");
+    });
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBe("tv");
+
+    occupant = "phone";
+    expect((await listAndroidDevices({ runtimeKind: true }))[0]?.runtimeKind).toBeUndefined();
   });
 
   it("does not cache an indeterminate verdict, so a booting TV is found on the next listing", async () => {

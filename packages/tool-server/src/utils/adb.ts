@@ -379,11 +379,25 @@ function readEnrichment(serial: string, shellCommand: string): Promise<string> {
  * ENRICH_TIMEOUT_MS here, not two.
  */
 async function readAvdName(serial: string): Promise<string | null> {
+  return (await readAvd(serial)).name;
+}
+
+/**
+ * {@linkcode readAvdName} plus whether the device answered either getprop, so
+ * a null name from a device without the avd props can be told apart from one
+ * that didn't answer.
+ */
+async function readAvd(serial: string): Promise<{ name: string | null; answered: boolean }> {
+  const read = (prop: string) =>
+    adbShell(serial, `getprop ${prop}`, { timeoutMs: ENRICH_TIMEOUT_MS }).then(
+      (value) => value.trim(),
+      () => null
+    );
   const [modern, legacy] = await Promise.all([
-    readEnrichment(serial, "getprop ro.boot.qemu.avd_name"),
-    readEnrichment(serial, "getprop ro.kernel.qemu.avd_name"),
+    read("ro.boot.qemu.avd_name"),
+    read("ro.kernel.qemu.avd_name"),
   ]);
-  return modern.trim() || legacy.trim() || null;
+  return { name: modern || legacy || null, answered: modern !== null || legacy !== null };
 }
 
 /**
@@ -466,22 +480,23 @@ async function resolveRuntimeKindCached(
  * `listAndroidDevices` variant of {@linkcode resolveRuntimeKindCached}, sharing
  * its cache. On a cache miss the probe starts without waiting for the avd read,
  * so a wedged device costs one ENRICH_TIMEOUT_MS for the whole enrichment. A
- * cached device whose avd read fails gets undefined instead of a re-probe: it
- * may be a new AVD on a reused slot, and a fresh probe would cost a second
- * window on a device that isn't answering. A new AVD that does answer re-probes.
+ * cached emulator that doesn't answer the avd read gets undefined instead of a
+ * re-probe: it may be a new occupant of a reused slot, and a fresh probe would
+ * cost a second window on a device that isn't answering. A new occupant that
+ * does answer re-probes, with or without avd props.
  */
 async function resolveRuntimeKindAlongside(
   serial: string,
-  avdPromise: Promise<string | null>
+  avdPromise: Promise<{ name: string | null; answered: boolean }>
 ): Promise<"mobile" | "tv" | undefined> {
   const cached = androidRuntimeKindCache.get(serial);
   const probe = cached ? undefined : readRuntimeKind(serial);
-  const avdName = await avdPromise;
-  if (cached && cached.avdName === avdName) return cached.kind;
-  if (cached && avdName === null) return undefined;
+  const avd = await avdPromise;
+  if (cached && !avd.answered && serial.startsWith("emulator-")) return undefined;
+  if (cached && cached.avdName === avd.name) return cached.kind;
   const kind = await (probe ?? readRuntimeKind(serial));
   if (kind === undefined) return undefined;
-  androidRuntimeKindCache.set(serial, { avdName, kind });
+  androidRuntimeKindCache.set(serial, { avdName: avd.name, kind });
   return kind;
 }
 
@@ -568,7 +583,7 @@ export async function listAndroidDevices(
           sdkLevel: null,
         };
       }
-      const avdPromise = readAvdName(d.serial);
+      const avdPromise = readAvd(d.serial);
       const [model, sdk, avd, runtimeKind] = await Promise.all([
         readEnrichment(d.serial, "getprop ro.product.model"),
         readEnrichment(d.serial, "getprop ro.build.version.sdk"),
@@ -581,7 +596,7 @@ export async function listAndroidDevices(
         state: d.state,
         isEmulator: d.serial.startsWith("emulator-"),
         model: model.trim() || null,
-        avdName: avd,
+        avdName: avd.name,
         sdkLevel: Number.isFinite(sdkLevel) ? sdkLevel : null,
         runtimeKind,
       };
