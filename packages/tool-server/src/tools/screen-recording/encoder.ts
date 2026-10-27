@@ -1,5 +1,9 @@
-import type { ChildProcess } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
+import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import { waitForChildExit } from "../../utils/profiler-shared/lifecycle";
+
+const execFileAsync = promisify(execFile);
 
 function waitForProgress(child: ChildProcess): Promise<boolean> {
   if ((child.exitCode !== null || child.signalCode !== null) && child.stderr?.readableEnded)
@@ -56,4 +60,45 @@ export async function finalizeEncoder(
 export function encodedFrameCount(stderr: string): number {
   const last = [...stderr.matchAll(/^frame=(\d+)\s*$/gm)].at(-1);
   return last ? Number(last[1]) : 0;
+}
+
+export async function verifyDebugEncoder(ffmpeg: string, jpeg: Buffer): Promise<void> {
+  const probe = execFileAsync(
+    ffmpeg,
+    [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-f",
+      "image2pipe",
+      "-i",
+      "pipe:0",
+      "-frames:v",
+      "1",
+      "-c:v",
+      "libx264",
+      "-f",
+      "null",
+      "-",
+    ],
+    { timeout: 10_000, killSignal: "SIGKILL" }
+  );
+  probe.child.stdin?.on("error", () => {});
+  probe.child.stdin?.end(jpeg);
+  try {
+    await probe;
+  } catch (err) {
+    const error = err instanceof Error ? err : new Error(String(err));
+    throw new FailureError(
+      `ffmpeg could not encode the first debug frame: ${error.message}`,
+      {
+        error_code: FAILURE_CODES.SCREEN_RECORDING_START_EXITED,
+        failure_stage: "screen_recording_encoder_ready",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+        ...subprocessFailureMetadata(err, "ffmpeg"),
+      },
+      { cause: error }
+    );
+  }
 }

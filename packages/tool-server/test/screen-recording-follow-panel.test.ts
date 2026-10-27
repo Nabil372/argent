@@ -10,6 +10,10 @@ vi.mock("child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("child_process")>();
   return { ...actual, spawn: vi.fn() };
 });
+vi.mock("../src/tools/screen-recording/encoder", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/tools/screen-recording/encoder")>()),
+  verifyDebugEncoder: vi.fn(async () => {}),
+}));
 vi.mock("../src/tools/screen-recording/mjpeg-stream", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../src/tools/screen-recording/mjpeg-stream")>();

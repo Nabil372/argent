@@ -8,6 +8,7 @@ import { PNG } from "pngjs";
 import type { DeviceInfo } from "@argent/registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { screenRecordingSessionBlueprint } from "../src/blueprints/screen-recording-session";
+import { verifyDebugEncoder } from "../src/tools/screen-recording/encoder";
 import { startDebugCapture } from "../src/tools/screen-recording/debug-capture";
 import { ffmpegArgs, startCapture, stopCapture } from "../src/tools/screen-recording/capture";
 import * as mjpegStreams from "../src/tools/screen-recording/mjpeg-stream";
@@ -340,4 +341,19 @@ it.skipIf(!hasEncoder).each([false, true])(
     }
   },
   20_000
+);
+
+it.skipIf(!hasEncoder || process.platform === "win32")(
+  "surfaces a real encoder preflight failure",
+  async () => {
+    const wrapper = path.join(scratch, "unavailable-encoder");
+    await fs.writeFile(
+      wrapper,
+      `#!${process.execPath}\nprocess.stderr.write("Unknown encoder libx264\\n"); process.exit(1);\n`,
+      { mode: 0o755 }
+    );
+    await expect(verifyDebugEncoder(wrapper, jpeg([255, 0, 0]))).rejects.toThrow(
+      "Unknown encoder libx264"
+    );
+  }
 );

@@ -65,7 +65,7 @@ export const screenRecordingStopTool: ToolDefinition<
   },
   capability,
   description: `Stop the screen recording started by \`screen-recording-start\` and retrieve the video: frame capture ends and ffmpeg finalizes the mp4.
-Debug encoding can take longer to finish. Debug returns encodingComplete; if false, durationMs is null and warning explains the encoding failure.
+Debug encoding can take longer to finish. For a partial video, debug returns encodingComplete: false, durationMs: null and an encoding warning. If no video was saved, the tool fails with encoder diagnostics.
 Also retrieves the video when the recording already ended on its own (time limit reached, capture process died); call it even after the cap fired.
 Use when the interaction being captured is finished, or a tool-result note reminds you a recording is still running.
 Returns { video, durationMs, wallClockMs?, trimmedMs?, panelSwitches?, encodingComplete?, warning? }; video is a downloadable artifact materialized to a local path. When static-frame trimming removed dead air, durationMs is the trimmed video length and wallClockMs/trimmedMs report the real duration and how much was cut. On a foldable simulator, the recording follows the panel that shows the UI. panelSwitches gives the number of panel changes. The video keeps the size of the first panel. warning is set when argent could not find that panel during the recording.

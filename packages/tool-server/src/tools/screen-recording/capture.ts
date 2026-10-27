@@ -5,7 +5,7 @@ import { spawn } from "child_process";
 import type { LivePanel } from "../../utils/foldable";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import type { ScreenRecordingSessionApi } from "../../blueprints/screen-recording-session";
-import { encodedFrameCount, finalizeEncoder } from "./encoder";
+import { encodedFrameCount, finalizeEncoder, verifyDebugEncoder } from "./encoder";
 import {
   clearActiveScreenRecording,
   markScreenRecordingFinalized,
@@ -492,6 +492,7 @@ async function startCaptureLocked(
           failure_area: "tool_server",
           error_kind: "validation",
         });
+      await verifyDebugEncoder(ffmpeg, firstFrame);
       frameDirectory = await createFrameDirectory();
     }
     let graph: string | null = null;

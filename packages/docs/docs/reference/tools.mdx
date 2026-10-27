@@ -114,7 +114,7 @@ Set `showTouches` in either mode to control touch markers. Debug requires `trimS
 
 Debug uses host arrival timestamps, not device presentation timestamps. It cannot recover frames omitted by the stream. It encodes at stop, so retrieval can take longer.
 
-Call `screen-recording-stop` to retrieve the video, including after the time limit ends capture. Debug returns `encodingComplete` to indicate whether encoding succeeded.
+Call `screen-recording-stop` to retrieve the video, including after the time limit ends capture. Debug returns `encodingComplete` to indicate whether encoding succeeded. Partial videos include a warning and an unknown duration. If no video exists, stop fails with encoder diagnostics.
 
 Both modes require ffmpeg with `libx264`. Debug also requires `-fps_mode` support.
 

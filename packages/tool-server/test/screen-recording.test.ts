@@ -16,6 +16,10 @@ vi.mock("child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("child_process")>();
   return { ...actual, spawn: vi.fn() };
 });
+vi.mock("../src/tools/screen-recording/encoder", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/tools/screen-recording/encoder")>()),
+  verifyDebugEncoder: vi.fn(async () => {}),
+}));
 vi.mock("../src/tools/screen-recording/mjpeg-stream", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../src/tools/screen-recording/mjpeg-stream")>();
@@ -32,6 +36,7 @@ vi.mock("../src/tools/screen-recording/watermark", async (importOriginal) => {
 });
 
 import { spawn } from "child_process";
+import { verifyDebugEncoder } from "../src/tools/screen-recording/encoder";
 import {
   screenRecordingSessionBlueprint,
   type ScreenRecordingSessionApi,
@@ -680,6 +685,26 @@ describe("screen recording capture", () => {
     expect(stream.close).toHaveBeenCalled();
     expect(mockSpawn).not.toHaveBeenCalled();
     expect(api.recordingActive).toBe(false);
+  });
+
+  it("rejects an unavailable debug encoder before accepting capture", async () => {
+    const api = await makeSession(iosDevice);
+    const stream = fakeStream();
+    vi.mocked(verifyDebugEncoder).mockRejectedValueOnce(new Error("Unknown encoder libx264"));
+    await expect(
+      startCapture(api, {
+        streamUrl: STREAM_URL,
+        timeLimitSeconds: 30,
+        watermark: false,
+        trimStatic: false,
+        mode: "debug",
+      })
+    ).rejects.toThrow("Unknown encoder libx264");
+    expect(stream.close).toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
+    expect(getActiveScreenRecordings()).toHaveLength(0);
+    expect(api.recordingActive).toBe(false);
+    expect(await fs.readdir(scratch)).toEqual([]);
   });
 
   it("fails the start when ffmpeg dies inside the fail-fast grace", async () => {
