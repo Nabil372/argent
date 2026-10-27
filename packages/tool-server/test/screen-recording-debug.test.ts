@@ -103,6 +103,36 @@ it("drains the JPEG backlog across more than its total byte budget", async () =>
   expect(capture.warning).toBeNull();
 });
 
+it("keeps writing other frames while one JPEG write stalls", async () => {
+  const actual = fs.writeFile.bind(fs);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.spyOn(fs, "writeFile").mockImplementation(async (file, data, ...args) => {
+    if (String(file).endsWith("0.jpg")) await held;
+    return actual(file, data, ...args);
+  });
+  const stdin = new Writable({
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+  const input = source(Buffer.from("first"));
+  const capture = startDebugCapture(stdin, scratch, vi.fn());
+  capture.attach(input.stream);
+  input.emit(Buffer.from("second"), performance.now());
+  try {
+    await vi.waitFor(async () =>
+      expect(await readFile(path.join(scratch, "1.jpg"), "utf8")).toBe("second")
+    );
+  } finally {
+    release();
+    await capture.finish();
+  }
+  expect(capture.frameTimesUs).toHaveLength(3);
+});
+
 it("retains only the contiguous saved frames after a write failure", async () => {
   const actual = fs.writeFile.bind(fs);
   vi.spyOn(fs, "writeFile").mockImplementation(async (file, data, ...args) => {
@@ -123,7 +153,8 @@ it("retains only the contiguous saved frames after a write failure", async () =>
   expect(ended).toHaveBeenCalledOnce();
   expect(capture.warning).toContain("disk full");
   expect(capture.frameTimesUs).toHaveLength(2);
-  expect((await readdir(scratch)).length).toBeLessThan(10);
+  expect(fs.writeFile).toHaveBeenCalledTimes(4);
+  await expect(readFile(path.join(scratch, "4.jpg"))).rejects.toThrow();
 });
 
 const hasEncoder =

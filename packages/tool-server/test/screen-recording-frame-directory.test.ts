@@ -8,8 +8,8 @@ import {
 } from "../src/tools/screen-recording/frame-directory";
 import { redirectTmpdir } from "./helpers/tmpdir-env";
 
-let root: string;
-let restore: () => void;
+let root = "";
+let restore = () => {};
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "argent-spool-test-"));
   restore = redirectTmpdir(root);

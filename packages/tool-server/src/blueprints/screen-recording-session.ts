@@ -122,6 +122,9 @@ export interface ScreenRecordingSessionApi {
   lastExitInfo: { code: number | null; signal: string | null; stderr?: string } | null;
 }
 
+// Dispose abandons an in-flight recording — process shutdown, or a
+// `stop-all-simulator-servers` reaping this device-owned service — so the video
+// is a best-effort salvage rather than something a caller is waiting on.
 // Light mode only needs to flush its container; debug still has frames to encode.
 const DISPOSE_FINALIZE_GRACE_MS = 1_500;
 
@@ -269,6 +272,8 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
         try {
           const child = state.captureProcess;
           if (child) {
+            // Closing stdin is ffmpeg's normal finalize path, so the abandoned
+            // file still has a chance to be playable.
             if (!state.debugCapture && child.stdin?.writable) child.stdin.end();
             await finalizeEncoder(child, Boolean(state.debugCapture), DISPOSE_FINALIZE_GRACE_MS);
           }
