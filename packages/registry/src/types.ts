@@ -148,7 +148,7 @@ export interface ToolContext extends InvokeToolOptions {
   artifacts: ArtifactStore;
 }
 
-export type Platform = "ios" | "android" | "ios-remote" | "chromium" | "vega";
+export type Platform = "ios" | "android" | "ios-remote" | "chromium" | "vega" | "harmony";
 
 export type DeviceKind = "simulator" | "emulator" | "vvd" | "device" | "app" | "unknown";
 
@@ -195,6 +195,11 @@ export interface ToolCapability {
     vvd?: boolean;
     device?: boolean;
   };
+  /** `emulator` is a DevEco instance only `boot-device` addresses; interaction tools drive `device`. */
+  harmony?: {
+    emulator?: boolean;
+    device?: boolean;
+  };
   supports?: (device: DeviceInfo) => boolean;
 }
 
@@ -210,7 +215,8 @@ export interface ToolCapability {
  * A missing binary answers 424 Failed Dependency with an install hint the agent
  * can surface verbatim.
  */
-export type ToolDependency = "adb" | "xcrun" | "emulator" | "sim-remote" | "vega";
+export type ToolDependency =
+  "adb" | "xcrun" | "emulator" | "sim-remote" | "vega" | "harmony-emulator" | "hdc";
 
 export interface ToolDefinition<TParams = void, TResult = unknown> {
   id: string;
@@ -271,6 +277,12 @@ export interface ToolDefinition<TParams = void, TResult = unknown> {
    * callers such as the Node client and `argent run`.
    */
   hideFromMcp?: boolean;
+  /**
+   * Sets the MCP `readOnlyHint` annotation. Only for tools that observe state
+   * without changing the device, app, files or server in a user-visible way:
+   * Claude Code runs them without a prompt in plan mode.
+   */
+  readOnly?: boolean;
   /**
    * Gates this tool behind a flag name in @argent/configuration-core's
    * FLAG_REGISTRY. Enforced in TWO places, both re-checked per request so
