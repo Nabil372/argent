@@ -148,7 +148,7 @@ describe("createToolsClient options", () => {
       fetchImpl,
     });
 
-    await callTool("slow", {});
+    expect((await callTool("slow", {})).data).toEqual({ ok: true });
 
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(fetchImpl).toHaveBeenNthCalledWith(1, `${url}/tools`, expect.any(Object), {
@@ -158,7 +158,10 @@ describe("createToolsClient options", () => {
     expect(fetchImpl).toHaveBeenNthCalledWith(
       2,
       `${url}/tools/slow`,
-      expect.objectContaining({ method: "POST" }),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Accept: "application/x-ndjson" }),
+      }),
       { longRunning: true, carriesUpload: false }
     );
   });

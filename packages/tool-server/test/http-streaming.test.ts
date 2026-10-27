@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import supertest from "supertest";
+import type { AddressInfo } from "node:net";
 import type { Response } from "supertest";
 import { createHttpApp, type HttpAppHandle } from "../src/http";
 import {
@@ -93,6 +94,50 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       { event: "progress", data: { index: 1, status: "fail" } },
       { event: "result", data: { ok: false, steps: 2 } },
     ]);
+  });
+
+  it("sends headers before a silent tool finishes and keeps its body active past five minutes", async () => {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    handle = createHttpApp(
+      stubRegistry(async () => {
+        await pending;
+        return { ok: true };
+      })
+    );
+    const server = handle.app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const { port } = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${port}/tools/test-tool`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Accept": "application/x-ndjson" },
+        body: "{}",
+        signal: AbortSignal.timeout(2_000),
+      });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      await vi.advanceTimersByTimeAsync(310_000);
+      const keepalive = await reader.read();
+      expect(new TextDecoder().decode(keepalive.value)).toMatch(/^\n+$/);
+      finish();
+      let result = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        result += new TextDecoder().decode(value);
+      }
+      expect(JSON.parse(result.trim())).toEqual({ event: "result", data: { ok: true } });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      finish();
+      vi.useRealTimers();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   it("does NOT pass emitProgress (nor stream) without the Accept header", async () => {

@@ -452,9 +452,10 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       return { ...result, warning: shadowWarning };
     };
 
-    // A call that sends a flow's closure runs that flow over a link, and its
-    // progress lines keep the connection busy through a proxy's idle timeout.
-    const stream = opts?.onProgress !== undefined || carriesMembers(finalArgs);
+    // Streaming starts the response before a long-running tool finishes and
+    // keeps calls over a link busy through proxy idle timeouts.
+    const stream =
+      meta?.longRunning === true || opts?.onProgress !== undefined || carriesMembers(finalArgs);
     const sentOnce = carriesUpload(finalArgs);
     const res = await doFetch(
       `${url}/tools/${encodeURIComponent(meta?.name ?? name)}`,
