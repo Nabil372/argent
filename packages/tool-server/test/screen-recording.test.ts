@@ -118,7 +118,7 @@ class FakeChild extends EventEmitter {
     this.exitCode = code;
     this.signalCode = signal;
     const input = this.stdin.end.mock.calls.at(-1)?.[0];
-    if (code === 0 && input?.startsWith("ffconcat")) {
+    if ((code === 0 || this.reportedFrames !== undefined) && input?.startsWith("ffconcat")) {
       const frames = this.reportedFrames ?? (input.match(/^file /gm) ?? []).length;
       this.stderr.emit("data", Buffer.from(`frame=${frames}\n`));
     }
@@ -1740,6 +1740,21 @@ describe("debug finalization safeguards", () => {
     expect(result.encodingComplete).toBe(false);
     expect(result.durationMs).toBeNull();
     expect(result.warning).toContain("encoded=1, expected=2");
+  });
+
+  it("rejects a nonzero encoder exit even when every frame was encoded", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    child.reportedFrames = 2;
+    child.exitOnStdinEnd(1);
+    await startAndSettle(api, { mode: "debug" });
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    const result = await stopCapture(api);
+    expect(result.encodingComplete).toBe(false);
+    expect(result.durationMs).toBeNull();
+    expect(result.warning).toContain("code=1");
+    expect(result.warning).toContain("encoded=2, expected=2");
   });
 
   it("waits for encoder stderr to drain after exit before checking the final frame total", async () => {

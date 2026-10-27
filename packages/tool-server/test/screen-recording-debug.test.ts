@@ -395,3 +395,29 @@ it.skipIf(!hasEncoder)(
     expect(stderr).not.toContain("MB rate");
   }
 );
+
+it("retains a 64 MiB write backlog while all write lanes are stalled", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  vi.spyOn(fs, "writeFile").mockImplementation(async () => {
+    await held;
+  });
+  const stdin = new Writable({
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+  const input = source(Buffer.alloc(8 * 1024 * 1024));
+  const ended = vi.fn();
+  const capture = startDebugCapture(stdin, scratch, ended);
+  capture.attach(input.stream);
+  for (let i = 1; i < 8; i++) input.emit(input.stream.latest!, performance.now());
+  expect(ended).not.toHaveBeenCalled();
+  expect(capture.warning).toBeNull();
+  release();
+  await capture.finish();
+  expect(capture.frameTimesUs).toHaveLength(9);
+  expect(fs.writeFile).toHaveBeenCalledTimes(8);
+});

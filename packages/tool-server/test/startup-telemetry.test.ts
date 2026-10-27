@@ -1,4 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { cleanupAbandonedFrames } from "../src/tools/screen-recording/frame-directory";
 
 const telemetryMock = vi.hoisted(() => ({
   init: vi.fn(),
@@ -59,6 +60,9 @@ vi.mock("@argent/configuration-core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@argent/configuration-core")>();
   return { ...actual, isFlagEnabled: vi.fn(() => false) };
 });
+vi.mock("../src/tools/screen-recording/frame-directory", () => ({
+  cleanupAbandonedFrames: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("../src/utils/setup-registry", () => ({
   createRegistry: vi.fn(() => registryMock),
 }));
@@ -93,6 +97,7 @@ describe("tool-server startup telemetry", () => {
     const { start } = await import("../src/index");
 
     start();
+    expect(cleanupAbandonedFrames).toHaveBeenCalledOnce();
 
     // The identity warm-up is kicked off during startup (before the readiness
     // gate), so the fingerprint resolve happens off the accept path. Regression
