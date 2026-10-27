@@ -275,11 +275,14 @@ function durationSuffix(ms: unknown): string {
 
 /**
  * The step's detail lines as one block, under its line and indented to the
- * step's depth; undefined when it carries none.
+ * step's depth; undefined when it carries none. The `actual:` line holds the
+ * whole found text: the MCP result has only these text blocks, not the report.
  */
 function stepDetailText(step: FlowStepResult): string | undefined {
   const indent = `  ${stepIndent(step.depth)}`;
-  const lines = renderFlowStepDetails(step).map((line) => `${indent}${line}`);
+  const lines = renderFlowStepDetails(step, { wholeActual: true }).map(
+    (line) => `${indent}${line}`
+  );
   return lines.length > 0 ? lines.join("\n") : undefined;
 }
 

@@ -636,6 +636,34 @@ describe("flowRunToMcpContent", () => {
     ]);
   });
 
+  it("prints the whole found text, past the 300 characters the CLI line shows", async () => {
+    // The result holds only these blocks, so a cut line would hide the part of
+    // the found text after character 300, here the only difference.
+    const terms = (version: string) =>
+      `Terms: ${"lorem ipsum ".repeat(30)}version ${version} effective 2026`;
+    const blocks = await flowRunToMcpContent({
+      flow: "f",
+      steps: [
+        {
+          index: 0,
+          kind: "assert",
+          status: "fail",
+          target: `id=terms equals "${terms("2.0")}"`,
+          reason: `element matched id="terms" but its text did not equal "${terms("2.0")}"`,
+          expected: terms("2.0"),
+          actual: terms("2.1"),
+        },
+      ],
+    });
+
+    expect(Array.from(terms("2.1")).length).toBeGreaterThan(300);
+    expect(blocks[2]).toEqual({
+      type: "text",
+      text: `  expected: "${terms("2.0")}"\n  actual:   "${terms("2.1")}"`,
+    });
+    expect(blocks.some((b) => b.type === "text" && b.text.includes("version 2.1"))).toBe(true);
+  });
+
   it("adds no detail block for detail values that are not strings", async () => {
     const hostile = await flowRunToMcpContent({
       flow: "f",

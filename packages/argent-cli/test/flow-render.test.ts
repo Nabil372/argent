@@ -275,6 +275,29 @@ describe("flow report rendering", () => {
     expect(lines[1]!.indexOf("expected")).toBe(lines[0]!.indexOf("assert"));
   });
 
+  it("cuts a long actual at 300 characters in the step lines and the failure recap", () => {
+    // `--json` prints the whole found text, so the text output keeps the cut.
+    const step: StepReport = {
+      index: 0,
+      kind: "assert",
+      status: "fail",
+      target: "id=terms",
+      reason: "text did not match",
+      actual: "a".repeat(300) + "version 2.1",
+    };
+    const cut = `actual:   "${"a".repeat(300)}" … (11 more characters)`;
+    expect(renderStepLines(step, 1, "f")).toEqual([
+      "  ✗  1 assert id=terms — text did not match",
+      `       ${cut}`,
+    ]);
+    expect(renderSingleFailure(mkReport([step]))).toEqual([
+      "",
+      "  ✗ step 1 assert id=terms",
+      "    text did not match",
+      `    ${cut}`,
+    ]);
+  });
+
   it("renderStepLines keeps the detail lines under the label when nested and past step 99", () => {
     // The number column widens at 100+ and the label shifts with depth; each
     // detail line has to move with both.

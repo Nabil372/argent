@@ -61,8 +61,16 @@ function escapeInvisible(v: string): string {
  * one only by a line break, a tab or a no-break space has to look different
  * from it here. The escape also keeps each value on one line and keeps a raw
  * escape sequence out of the terminal.
+ *
+ * The `actual:` line cuts the found text at 300 characters and counts the
+ * rest. The report keeps the whole text, so a caller whose output also gives
+ * the report (the CLI's `--json`) keeps the cut. A caller whose output is only
+ * these lines (the MCP result) passes `wholeActual` to print the whole text.
  */
-export function renderFlowStepDetails(step: FlowStepDetails & { kind: string }): string[] {
+export function renderFlowStepDetails(
+  step: FlowStepDetails & { kind: string },
+  options: { wholeActual?: boolean } = {}
+): string[] {
   // A `hint:` and a snapshot value print unquoted, so only their invisible
   // characters are escaped. The tool-server relies on this: it keeps an inner
   // snapshot's values off a nested flow-execute step, which is not a snapshot
@@ -79,8 +87,10 @@ export function renderFlowStepDetails(step: FlowStepDetails & { kind: string }):
     step.expectedKind === "pattern" ? `/${escapeInvisible(v)}/` : value(v);
   const lines: string[] = [];
   if (typeof step.expected === "string") lines.push(`expected: ${expected(step.expected)}`);
-  // The report keeps the whole found text; the cut is only for the line.
-  if (typeof step.actual === "string") lines.push(`actual:   ${printCapped(step.actual, value)}`);
+  if (typeof step.actual === "string") {
+    const actual = options.wholeActual ? value(step.actual) : printCapped(step.actual, value);
+    lines.push(`actual:   ${actual}`);
+  }
   // The JSON outputs carry the flag; without this line a reader of the text
   // can tell a check that never ran only from the prose of its reason.
   if (step.indeterminate === true) lines.push("indeterminate: the check did not run");

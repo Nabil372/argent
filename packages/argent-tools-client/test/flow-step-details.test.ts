@@ -178,4 +178,18 @@ describe("renderFlowStepDetails", () => {
       `actual:   ${"d".repeat(300)} … (2 more characters)`,
     ]);
   });
+
+  it("prints the whole actual with wholeActual, escaped the same way", () => {
+    const text = "a".repeat(299) + "😀" + "b\n".repeat(650);
+    expect(renderFlowStepDetails({ kind: "assert", actual: text }, { wholeActual: true })).toEqual([
+      `actual:   "${"a".repeat(299)}😀${"b\\n".repeat(650)}"`,
+    ]);
+    expect(
+      renderFlowStepDetails({ kind: "snapshot", actual: "d".repeat(302) }, { wholeActual: true })
+    ).toEqual([`actual:   ${"d".repeat(302)}`]);
+    // Without it, the line is cut.
+    expect(
+      renderFlowStepDetails({ kind: "assert", actual: text }, { wholeActual: false })[0]
+    ).toMatch(/ … \(1,300 more characters\)$/);
+  });
 });

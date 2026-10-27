@@ -1,8 +1,7 @@
 /**
- * How a flow report prints device text it may cut. The tool-server quotes an
- * element's own text in a step's hint, and the CLI and the MCP client print
- * the text a step found on its `actual:` line. Both cut here, so a hint that
- * quotes device text reads the way the `actual:` line beside it does.
+ * How a flow report prints device text it may cut. The CLI prints the text a
+ * step found on its `actual:` line, cut here. The MCP client prints the whole
+ * found text, as its result holds no report.
  */
 
 const MAX_PRINTED_CHARS = 300;

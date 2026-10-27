@@ -414,12 +414,12 @@ Each step line shows the time of the step before the reason, for example `(1.2s)
 
 The reason of a step that did not pass states what failed. Under that step, Argent prints each of these lines that applies to the failure. The CLI and the result of the `e2e-execute` tool show the same lines:
 
-| Line             | Content                                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `expected:`      | The value that the check wanted: a text, a snapshot tolerance or an image size                                                       |
-| `actual:`        | The value that the check found. Argent shows the first 300 characters of a text, then the number of characters that it does not show |
-| `indeterminate:` | The check did not run, because Argent could not read the UI tree                                                                     |
-| `hint:`          | A thing to try first, or a fact that helps you find the cause                                                                        |
+| Line             | Content                                                                                                                                                                                           |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `expected:`      | The value that the check wanted: a text, a snapshot tolerance or an image size                                                                                                                    |
+| `actual:`        | The value that the check found. The CLI shows the first 300 characters of a text, then the number of characters that it does not show. The result of the `e2e-execute` tool shows all of the text |
+| `indeterminate:` | The check did not run, because Argent could not read the UI tree                                                                                                                                  |
+| `hint:`          | A thing to try first, or a fact that helps you find the cause                                                                                                                                     |
 
 ```
   ✗  3 assert id=total equals "$42.00" (1.0s) — element matched id="total" but its text did not equal "$42.00"
