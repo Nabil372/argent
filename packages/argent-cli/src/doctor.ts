@@ -43,11 +43,13 @@ import { exitAfterFlush } from "./e2e.js";
 
 const execFileAsync = promisify(execFile);
 
-// `argent doctor`: a read-only health report. Every check reuses the probe the
-// real code path runs (install topology, MCP entries, tool-server state, the
-// tool-server's own dependency resolvers), so doctor and the failure it
-// explains can't disagree. It never repairs anything: each problem names the
-// command that does (`argent init`, `argent update`, an installer).
+// `argent doctor`: a read-only health report. Checks reuse the probes the real
+// code paths run (install topology, MCP entries, tool-server state, the
+// tool-server's own dependency resolvers). Two are stricter on purpose:
+// probeProjectInstall ignores an argent above the project that `argent update`
+// still counts, and classifyMcpEntry flags entries `init` would keep. It never
+// repairs anything: each problem names the command that does (`argent init`,
+// `argent update`, an installer).
 
 /**
  * This shell's PATH without the dirs package scripts add (an editor started
@@ -88,9 +90,10 @@ export function globalReinstallCommand(pm: PackageManager): string {
 }
 
 /**
- * resolveProjectRoot counts ~/.claude, ~/.cursor and the like as project
- * markers, so a project under ~ without markers of its own resolves to ~.
- * Those are global config dirs: use the project's git root, or cwd.
+ * resolveProjectRoot stops below ~ by comparing paths as strings. When HOME
+ * names the home dir through a symlink, that misses, and ~/.claude, ~/.cursor
+ * and the like make a project without markers of its own resolve to ~. Those
+ * are global config dirs: use the project's git root, or cwd.
  */
 function doctorProjectRoot(cwd: string): string {
   const resolved = resolveProjectRoot(cwd);
