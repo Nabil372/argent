@@ -50,6 +50,7 @@ function makeSequencedAXService(
     alertCheck: async () => false,
     livePanel: async () => null,
     foregroundApp: async () => ({ alertVisible: false }),
+    fill: async () => ({ focused: false, verified: false }),
     tree: async () => ({ alertVisible: false, nodes: [], truncated: false }),
     ping: async () => true,
   };
@@ -67,6 +68,7 @@ function makeFailingAXService(): AXServiceApi {
     alertCheck: async () => false,
     livePanel: async () => null,
     foregroundApp: async () => ({ alertVisible: false }),
+    fill: async () => ({ focused: false, verified: false }),
     tree: async () => ({ alertVisible: false, nodes: [], truncated: false }),
     ping: async () => false,
   };
@@ -736,6 +738,32 @@ describe("await-ui-element tool", () => {
     expect(result.note).toMatch(/boot-device/i);
   });
 
+  it.each(["visible", "exists"] as const)(
+    "a `%s` success on a degraded simulator carries no note",
+    async (condition) => {
+      // A degraded tree is live; its boot hint does not qualify a success.
+      const { api } = makeSequencedAXService(
+        [axResponse([{ label: "General", frame: FRAME, traits: ["button"] }])],
+        { degraded: true }
+      );
+      const tool = createAwaitUiElementTool(iosRegistry(api));
+
+      const result = await tool.execute(
+        {},
+        {
+          udid: IOS_UDID,
+          condition,
+          selector: { text: "General" },
+          timeoutMs: 2000,
+          pollIntervalMs: 10,
+        }
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.note).toBeUndefined();
+    }
+  );
+
   // ── The cause an unmet wait reports ──────────────────────────────────────
   //
   // Only `unmet` judges the condition. `flow-add-step` quotes it to tell an
@@ -917,6 +945,7 @@ describe("await-ui-element tool", () => {
       alertCheck: async () => false,
       livePanel: async () => null,
       foregroundApp: async () => ({ alertVisible: false }),
+      fill: async () => ({ focused: false, verified: false }),
       tree: async () => ({ alertVisible: false, nodes: [], truncated: false }),
       ping: async () => true,
     };
@@ -1131,6 +1160,7 @@ describe("await-ui-element tool", () => {
       alertCheck: async () => false,
       livePanel: async () => null,
       foregroundApp: async () => ({ alertVisible: false }),
+      fill: async () => ({ focused: false, verified: false }),
       tree: async () => ({ alertVisible: false, nodes: [], truncated: false }),
       ping: async () => true,
     };
@@ -1169,6 +1199,7 @@ describe("await-ui-element tool", () => {
       alertCheck: async () => false,
       livePanel: async () => null,
       foregroundApp: async () => ({ alertVisible: false }),
+      fill: async () => ({ focused: false, verified: false }),
       tree: async () => ({ alertVisible: false, nodes: [], truncated: false }),
       ping: async () => true,
     };
@@ -1200,6 +1231,7 @@ describe("await-ui-element tool", () => {
       alertCheck: async () => false,
       livePanel: async () => null,
       foregroundApp: async () => ({ alertVisible: false }),
+      fill: async () => ({ focused: false, verified: false }),
       tree: async () => ({ alertVisible: false, nodes: [], truncated: false }),
       ping: async () => true,
     };

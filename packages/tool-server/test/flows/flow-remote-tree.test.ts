@@ -130,7 +130,7 @@ describe("the recorder reads the runner's tree on a remote simulator", () => {
         }),
       }
     );
-    const yaml = await fs.readFile(path.join(tmpDir, ".argent", "flows", "rec.yaml"), "utf8");
+    const yaml = await fs.readFile(path.join(tmpDir, ".argent", "e2e", "rec.yaml"), "utf8");
     return { result, steps: parseFlow(yaml).steps };
   }
 

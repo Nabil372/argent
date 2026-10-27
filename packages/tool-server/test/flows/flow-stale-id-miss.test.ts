@@ -16,6 +16,9 @@ vi.mock("../../src/tools/flows/flow-ios-tree", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/tools/flows/flow-ios-tree")>();
   return { ...actual, readIosSimulatorUiTree: vi.fn(actual.readIosSimulatorUiTree) };
 });
+// Vitest clears every mock before each test, which would wipe the reads of the
+// concurrent cases still running; each case counts only its own registry's.
+vi.setConfig({ clearMocks: false });
 
 const APP = "com.example.app";
 const PLAIN =

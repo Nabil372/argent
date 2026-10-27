@@ -163,13 +163,13 @@ export function adaptIosUiTreeForFlows(tree: UiTree): DescribeNode {
 }
 
 const UPDATE_REMEDY =
-  "The accessibility service bundled with this argent is too old for flows: update argent " +
+  "The accessibility service bundled with this argent is too old for e2e tests: update argent " +
   "(the `update-argent` tool or `npm i -g @swmansion/argent@latest`), then run " +
   "`argent server stop` so the new service starts.";
 
 const BOOT_REMEDY =
   "Boot the simulator with `boot-device` (`force: true` when it is already booted), then " +
-  "run the flow again.";
+  "run the e2e test again.";
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -196,7 +196,7 @@ function treeUnavailable(device: DeviceInfo, err: unknown): Error {
   const remedy =
     code === FAILURE_CODES.AX_QUERY_TIMEOUT
       ? "The screen took too long to read: wait for the app to settle, or scroll a long list or " +
-        "web page out of view, then run the flow again."
+        "web page out of view, then run the e2e test again."
       : BOOT_REMEDY;
   return new Error(
     `the accessibility tree of ${device.id} could not be read: ${errMsg(err)}. ${remedy}`
@@ -252,7 +252,7 @@ export async function queryIosSimulatorFlowTree(
     throw new Error(
       `${target.bundleId} is not the foreground app on ${device.id} ` +
         `(${tree.foregroundApp ? `${tree.foregroundApp} is` : "no app is"}). ` +
-        `It may have crashed or opened another app. If the flow meant to leave it, switch apps ` +
+        `It may have crashed or opened another app. If the e2e test meant to leave it, switch apps ` +
         `with a \`tool: launch-app\` step first (a \`launch:\` step restarts the app).`
     );
   }
@@ -263,7 +263,7 @@ export async function queryIosSimulatorFlowTree(
             `its accessibility service cannot see the app. ${BOOT_REMEDY}`
         : `the accessibility tree of ${device.id} is empty: the foreground app ` +
             `(${tree.foregroundApp ?? "unknown"}) exposes no accessible elements. Wait for it to ` +
-            `draw, or relaunch it with \`restart-app\`, then run the flow again.`
+            `draw, or relaunch it with \`restart-app\`, then run the e2e test again.`
     );
   }
   return {
@@ -326,7 +326,7 @@ export async function queryIosDeviceFlowTree(
   // hint on a non-empty tree still has nodes.
   if (data.tree.children.length === 0 && data.hint) {
     throw new Error(
-      `${data.hint} Flows resolve selectors against this runner tree, so the step fails ` +
+      `${data.hint} E2E tests resolve selectors against this runner tree, so the step fails ` +
         `rather than treating the unreadable screen as empty.`
     );
   }

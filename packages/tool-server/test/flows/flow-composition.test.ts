@@ -360,7 +360,7 @@ describe("flow composition (run:)", () => {
           },
         }
       )
-    ).rejects.toThrow('flow files must use the lowercase .yaml extension, not ".YAML"');
+    ).rejects.toThrow('e2e test files must use the lowercase .yaml extension, not ".YAML"');
   });
 
   it("resolves a run: path against the containing flow's own directory, not the root's", async () => {
@@ -629,7 +629,7 @@ describe("flow composition (run:)", () => {
     // does), so the collision disambiguation renders it as-written — which
     // names the exact edge that closes the loop, rather than the bare "a"
     // that reads like a self-reference from the root's own directory.
-    expect(errored?.reason).toMatch(/cyclic flow reference: a → b → \.\.\/a/);
+    expect(errored?.reason).toMatch(/cyclic e2e test reference: a → b → \.\.\/a/);
     // Where the as-written path differs from the stem it is the value that
     // locates the reference — `run ../a.yaml`, not a stem-derived fallback.
     expect(errored?.target).toBe("../a.yaml");
@@ -1081,7 +1081,7 @@ describe("flow composition (run:)", () => {
     expect(result.steps.map((s) => `${s.kind}:${s.status}:${s.depth ?? 0}`)).toEqual([
       "run:error:0",
     ]);
-    expect(result.steps[0]?.reason).toBe("cyclic flow reference: a → alias");
+    expect(result.steps[0]?.reason).toBe("cyclic e2e test reference: a → alias");
   });
 
   it("names a cycle that closes exactly at the run-depth limit as a cycle", async () => {
@@ -1104,7 +1104,7 @@ describe("flow composition (run:)", () => {
     // spelling as `./<stem>`, so the chain's final entry renders as ./root.
     const chain = ["root", ...Array.from({ length: links }, (_, i) => `n${i + 1}`), "./root"];
     const errored = result.steps.find((s) => s.status === "error");
-    expect(errored?.reason).toBe(`cyclic flow reference: ${chain.join(" → ")}`);
+    expect(errored?.reason).toBe(`cyclic e2e test reference: ${chain.join(" → ")}`);
     expect(errored?.reason).not.toContain("max run depth");
   });
 
@@ -1560,10 +1560,10 @@ describe("flow composition (run:)", () => {
     expect(registry.invokeTool).not.toHaveBeenCalled();
   });
 
-  it("rejects an uploaded chromium e2e flow's run: before booting the launch's Electron app", async () => {
+  it("rejects an uploaded chromium standalone flow's run: before booting the launch's Electron app", async () => {
     // The guard's docstring promises the rejection fires "before anything
     // executes" — a POSITIONAL contract its mere existence doesn't keep. For
-    // an uploaded chromium e2e flow that also carries a run:, the guard
+    // an uploaded chromium standalone flow that also carries a run:, the guard
     // sitting above resolveRunDevice is what decides whether an Electron
     // instance is booted (and orphaned by the throw, which lands before the
     // teardown finally) just to deliver a contract error. The absolute app
@@ -1983,7 +1983,7 @@ describe("flow composition (run:)", () => {
       { kind: "run", flow: "frag.yaml" },
     ]);
     expect((err as Error).message).toContain(
-      "  - step 1: tool: flow-start-recording (records a flow)\n  - step 2: run: frag.yaml"
+      "  - step 1: tool: flow-start-recording (records an e2e test)\n  - step 2: run: frag.yaml"
     );
     expect(getFailureSignal(err)).toMatchObject({
       failure_stage: "flow_upload_recording_tool",
@@ -2064,7 +2064,7 @@ describe("flow composition (run:)", () => {
     expect(message).toContain(
       "  - step 2: tool: screenshot-diff (/client/base.png, /client/now.png)\n" +
         "  - step 4: tool: reinstall-app (/client/app.apk)\n" +
-        "  - step 5: tool: flow-add-step (records a flow)\n"
+        "  - step 5: tool: flow-add-step (records an e2e test)\n"
     );
     expect(message).not.toContain("step 3");
     expect(getFailureSignal(err)).toMatchObject({
@@ -2499,7 +2499,7 @@ describe("flow composition (run:)", () => {
     expect(result.steps[4].depth).toBeUndefined();
   });
 
-  it("expands a referenced e2e flow inline, launch step and all", async () => {
+  it("expands a referenced standalone flow inline, launch step and all", async () => {
     await writeFlow("other-e2e", {
       executionPrerequisite: "",
       steps: [
@@ -3145,7 +3145,7 @@ describe("device binding (portability)", () => {
 });
 
 describe("flow validation", () => {
-  it("rejects an e2e flow that declares executionPrerequisite", () => {
+  it("rejects a standalone flow that declares executionPrerequisite", () => {
     expect(() =>
       parseFlow("executionPrerequisite: nope\nsteps:\n  - launch: com.acme.app\n")
     ).toThrow(/must not declare executionPrerequisite/i);
