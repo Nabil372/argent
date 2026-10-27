@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { parseDocument } from "yaml";
 import { FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import {
   countStepsOnDisk,
@@ -235,6 +236,15 @@ describe("parseFlow", () => {
     } finally {
       emitWarning.mockRestore();
     }
+  });
+
+  it("reports the first of several YAML errors, as the yaml package's parse does", async () => {
+    const content = "steps:\n  - tap: [\n  - echo: }";
+    expect(parseDocument(content).errors).toHaveLength(2);
+
+    expect(() => parseFlow(content)).toThrow(
+      "Invalid e2e test file: Flow sequence in block collection must be sufficiently indented and end with a ] at line 3, column 3"
+    );
   });
 
   // `step must be an object` is spelled twice — here for a top-level entry, and
