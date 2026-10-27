@@ -21,8 +21,6 @@ import {
   forgetDeviceAlias,
   rememberLogicalKeyedDevice,
   forgetLogicalKeyedDevice,
-  isLogicalKeyedDevice,
-  canonicalDeviceId,
 } from "../utils/debugger/device-alias";
 import { recordReapedSession } from "../utils/reaped-sessions";
 import { CDPClient, type ConsoleAPICalledParams } from "../utils/debugger/cdp-client";
@@ -144,26 +142,17 @@ export interface JsRuntimeDebuggerApi {
 }
 
 /**
- * The device_id of each connect still setting up its session, by the
- * logicalDeviceId of the target it selected. The alias maps only learn the
- * target once setup finishes, so without this two overlapping connects would
- * both pass the live-session check.
+ * The device_id of the live or connecting debugger session on each target, by
+ * Metro port and the target's logicalDeviceId. Another spelling of the same
+ * UDID (its case or `ext:` form) keys a separate service, so it shows up here
+ * as a different id. An app that has switched bundlers is listed under one
+ * logicalDeviceId by both Metros, and each inspector-proxy has its own
+ * debugger slot, hence the port.
  */
-const connectingTargets = new Map<string, string>();
+const sessionsByTarget = new Map<string, string>();
 
-/**
- * The device_id of the live or connecting debugger session on the target Metro
- * lists as `logicalDeviceId`: the logicalDeviceId itself, or the id it was
- * connected with (another spelling of the same UDID, its case or `ext:` form,
- * keys a separate service). Undefined when nothing is connected to it.
- */
-function liveSessionOn(logicalDeviceId: string | undefined): string | undefined {
-  if (!logicalDeviceId) return undefined;
-  const connecting = connectingTargets.get(logicalDeviceId);
-  if (connecting) return connecting;
-  if (isLogicalKeyedDevice(logicalDeviceId)) return logicalDeviceId;
-  const connectId = canonicalDeviceId(logicalDeviceId);
-  return connectId !== logicalDeviceId ? connectId : undefined;
+function targetSessionKey(port: number, logicalDeviceId: string): string {
+  return `${port}:${logicalDeviceId}`;
 }
 
 function sameDevice(a: string, b: string): boolean {
@@ -181,9 +170,9 @@ function liveSessionConflict(
   port: number,
   selected: { logicalDeviceId: string; matchedDeviceId: boolean }
 ): FailureError {
-  const isSameApp =
-    sameDevice(liveSessionId, deviceId) ||
-    (selected.matchedDeviceId && liveSessionId === selected.logicalDeviceId);
+  const namesTheApp = deviceId === selected.logicalDeviceId;
+  const sessionNamesTheApp = selected.matchedDeviceId && liveSessionId === selected.logicalDeviceId;
+  const isSameApp = sameDevice(liveSessionId, deviceId) || namesTheApp || sessionNamesTheApp;
   const message = isSameApp
     ? `device_id "${deviceId}" is the app already connected as "${liveSessionId}" on ` +
       `Metro port ${port}. Pass device_id "${liveSessionId}" to keep using that session.`
@@ -288,7 +277,8 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
       deviceNames,
     });
     const targetId = selected.target.reactNative?.logicalDeviceId;
-    const liveSessionId = liveSessionOn(targetId);
+    const sessionKey = targetId ? targetSessionKey(port, targetId) : undefined;
+    const liveSessionId = sessionKey ? sessionsByTarget.get(sessionKey) : undefined;
     // inspector-proxy keeps one debugger per device, so a second session on
     // this target would evict the live one, whichever id keys it.
     if (targetId && liveSessionId && liveSessionId !== deviceId) {
@@ -297,7 +287,12 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
         matchedDeviceId: selected.matchedDeviceId,
       });
     }
-    if (targetId) connectingTargets.set(targetId, deviceId);
+    const releaseTarget = () => {
+      if (sessionKey && sessionsByTarget.get(sessionKey) === deviceId) {
+        sessionsByTarget.delete(sessionKey);
+      }
+    };
+    if (sessionKey) sessionsByTarget.set(sessionKey, deviceId);
     try {
       /**
        * React Native's inspector-proxy keeps one debugger per device and
@@ -432,7 +427,8 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
       // opening a second one. See utils/debugger/device-alias.ts.
       rememberDeviceAlias(api.logicalDeviceId, deviceId);
       // Equal ids mean the caller connected with the logicalDeviceId itself, as
-      // `selectTarget` demands once a second device shares this Metro. Nothing
+      // `selectTarget` demands on a shared Metro for a serial, or for a
+      // simulator its name cannot single out. Nothing
       // then joins the session to a udid or serial, so a `list-devices`-scoped
       // `stop-all-simulator-servers` can only report it, never reach it.
       rememberLogicalKeyedDevice(api.logicalDeviceId, deviceId);
@@ -478,14 +474,16 @@ export const jsRuntimeDebuggerBlueprint: ServiceBlueprint<JsRuntimeDebuggerApi, 
           }
           forgetDeviceAlias(api.logicalDeviceId);
           forgetLogicalKeyedDevice(deviceId);
+          releaseTarget();
           await consoleServer.close();
           logWriter.close({ keepFile });
           await cdp.disconnect();
         },
         events,
       };
-    } finally {
-      if (targetId) connectingTargets.delete(targetId);
+    } catch (error) {
+      releaseTarget();
+      throw error;
     }
   },
 };
