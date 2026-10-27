@@ -7,6 +7,7 @@ import {
   getManagedContentTargets,
   hasCodexRules,
   listBundledSkills,
+  probeLocalInstall,
   ARGENT_SKILL_PREFIX,
   RULES_DIR,
   AGENTS_DIR,
@@ -21,8 +22,9 @@ import {
   home,
   isUnreadable,
   realPath,
+  shellPath,
 } from "./doctor-shared.js";
-import { claudeLocalKey, configuredScopes, rootFor } from "./doctor-editors.js";
+import { GIT_ROOT_EDITORS, claudeLocalKey, configuredScopes, rootFor } from "./doctor-editors.js";
 
 // `argent doctor`: the Skills & rules section.
 
@@ -76,30 +78,55 @@ function unreadableAdapters(ctx: DoctorContext): McpConfigAdapter[] {
   );
 }
 
-/** The rules and agents dirs `argent update` run from `root` refreshes. */
-function dirsUpdateRefreshes(root: string): Set<string> {
+/** Codex and opencode load project skills from cwd and every dir above it up to the git root. */
+function dirsUpTo(cwd: string, top: string): string[] {
+  const from = realPath(cwd);
+  const rel = path.relative(top, from);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) return [top];
+  const dirs = [top];
+  for (let dir = from; dir !== top; dir = path.dirname(dir)) dirs.push(dir);
+  return dirs;
+}
+
+/** In a local-mode project, its own argent's copy of `name`, which its entries load. */
+function projectShipped(ctx: DoctorContext, name: "skills" | "rules" | "agents"): string | null {
+  if (ctx.mode !== "local") return null;
+  const { packageDir } = probeLocalInstall(ctx.projectRoot);
+  const dir = packageDir ? path.join(packageDir, name) : null;
+  return dir && fs.existsSync(dir) ? dir : null;
+}
+
+/** The rules dirs, agents dirs and Codex configs `argent update` run from `root` refreshes. */
+function targetsUpdateRefreshes(root: string): Set<string> {
   const dirs = findConfiguredAdapterScopes(ALL_ADAPTERS, root).flatMap((c) => {
     const scope = c.scope === "project" ? "local" : "global";
     const targets = getManagedContentTargets([c.adapter], root, scope);
-    return [...targets.ruleTargets, ...targets.agentTargets].map((t) => realPath(t.targetPath));
+    return [...targets.ruleTargets, ...targets.agentTargets, ...targets.codexConfigTargets].map(
+      (t) => realPath(t.targetPath)
+    );
   });
   return new Set(dirs);
 }
 
 /**
- * `argent update` refreshes only the dirs of entries it finds from its project
- * root, so a Claude Code local-scope entry or a package inside a monorepo
- * needs another fix.
+ * `argent update` refreshes only the targets of entries it finds from its
+ * project root, so a Claude Code local-scope entry or a package inside a
+ * monorepo needs another fix.
  */
-function refreshFix(ctx: DoctorContext, target: string, sourceDir: string): string {
+function refreshFix(ctx: DoctorContext, target: string, manualFix: string): string {
   const updateRoot = resolveProjectRoot(ctx.cwd);
-  if (dirsUpdateRefreshes(updateRoot).has(realPath(target))) return `${ctx.argentCmd} update`;
-  const claudeRoot = rootFor(ctx, "Claude Code");
-  if (claudeRoot !== updateRoot && dirsUpdateRefreshes(claudeRoot).has(realPath(target))) {
-    return `${ctx.argentCmd} update --project-root ${home(claudeRoot)}`;
+  if (targetsUpdateRefreshes(updateRoot).has(realPath(target))) return `${ctx.argentCmd} update`;
+  const roots = new Set([rootFor(ctx, "Claude Code"), rootFor(ctx, "Codex")]);
+  for (const root of roots) {
+    if (root !== updateRoot && targetsUpdateRefreshes(root).has(realPath(target))) {
+      return `${ctx.argentCmd} update --project-root ${shellPath(root)}`;
+    }
   }
-  return `mkdir -p ${home(target)} && cp ${home(sourceDir)}/*.md ${home(target)}/`;
+  return manualFix;
 }
+
+const copyFix = (target: string, sourceDir: string) =>
+  `mkdir -p ${shellPath(target)} && cp ${shellPath(sourceDir)}/*.md ${shellPath(target)}/`;
 
 export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSection {
   const checks: DoctorCheck[] = [];
@@ -116,8 +143,13 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
 
   // Each editor loads skills from its own dirs in either scope, whatever scope
   // its MCP entry is in. The shared .agents/skills is not read by Claude Code.
-  const projectDirs = (adapter: McpConfigAdapter | null): string[] =>
-    adapter?.name === "Claude Code" ? claudeProjectDirs(ctx) : [rootFor(ctx, adapter)];
+  const projectDirs = (adapter: McpConfigAdapter | null): string[] => {
+    if (adapter?.name === "Claude Code") return claudeProjectDirs(ctx);
+    if (adapter && GIT_ROOT_EDITORS.has(adapter.name)) {
+      return dirsUpTo(ctx.cwd, rootFor(ctx, adapter));
+    }
+    return [rootFor(ctx, adapter)];
+  };
   const targetsIn = (adapter: McpConfigAdapter | null, scope: "local" | "global") =>
     scope === "global"
       ? [getManagedContentTargets(adapter ? [adapter] : [], rootFor(ctx, adapter), scope)]
@@ -147,7 +179,7 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     return [...groups.values()];
   };
 
-  const bundled = listBundledSkills();
+  const bundled = listBundledSkills(projectShipped(ctx, "skills") ?? undefined);
   if (bundled.length === 0) {
     checks.push(
       check("error", "The argent package ships no skills (a partial install)", { fix: reinstall })
@@ -184,9 +216,10 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
     }
   }
 
+  const rulesDir = projectShipped(ctx, "rules") ?? RULES_DIR;
   let ruleFiles: string[] = [];
   try {
-    ruleFiles = fs.readdirSync(RULES_DIR).filter((f) => f.endsWith(".md"));
+    ruleFiles = fs.readdirSync(rulesDir).filter((f) => f.endsWith(".md"));
   } catch {
     // Reported below.
   }
@@ -233,29 +266,33 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
         ? check("ok", `Rules present in ${home(target)}`)
         : check("warn", `Rules missing in ${home(target)}`, {
             detail: absent.join(", "),
-            fix: refreshFix(ctx, target, RULES_DIR),
+            fix: refreshFix(ctx, target, copyFix(target, rulesDir)),
           })
     );
   }
 
-  // Codex reads argent's rules from developer_instructions in its config.toml.
-  for (const { adapter, scope } of configured) {
-    for (const target of getManagedContentTargets([adapter], rootFor(ctx, adapter), scope)
-      .codexConfigTargets) {
-      checks.push(
-        hasCodexRules(target.targetPath)
-          ? check("ok", `Rules present in ${home(target.targetPath)} (developer_instructions)`)
-          : check("warn", `Rules missing in ${home(target.targetPath)} (developer_instructions)`, {
-              fix: `${ctx.argentCmd} update`,
-            })
-      );
-    }
+  // Codex reads argent's rules from developer_instructions in the config.toml holding its entry.
+  for (const { adapter, scope, configPath } of configuredScopes(ctx)) {
+    if (adapter.name !== "Codex") continue;
+    const updateHere = `${ctx.argentCmd} update --project-root ${shellPath(path.dirname(path.dirname(configPath)))}`;
+    checks.push(
+      hasCodexRules(configPath)
+        ? check("ok", `Rules present in ${home(configPath)} (developer_instructions)`)
+        : check("warn", `Rules missing in ${home(configPath)} (developer_instructions)`, {
+            fix: refreshFix(
+              ctx,
+              configPath,
+              scope === "project" ? updateHere : `${ctx.argentCmd} update`
+            ),
+          })
+    );
   }
 
   // Subagents the rules tell the agent to run (argent-environment-inspector).
+  const agentsDir = projectShipped(ctx, "agents") ?? AGENTS_DIR;
   let agentFiles: string[] = [];
   try {
-    agentFiles = fs.readdirSync(AGENTS_DIR).filter((f) => f.endsWith(".md"));
+    agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".md"));
   } catch {
     // An older package without agents.
   }
@@ -278,7 +315,7 @@ export function skillsSection(ctx: DoctorContext, reinstall: string): DoctorSect
       checks.push(
         check("warn", `Agents missing in ${home(target)}`, {
           detail: agentsAbsentIn(target).join(", "),
-          fix: refreshFix(ctx, target, AGENTS_DIR),
+          fix: refreshFix(ctx, target, copyFix(target, agentsDir)),
         })
       );
     }

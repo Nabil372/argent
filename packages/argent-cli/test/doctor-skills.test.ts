@@ -81,6 +81,52 @@ describe("skills", () => {
     ]);
   });
 
+  it("names the one editor with no skills when another has them all", () => {
+    projectClaude();
+    writeJson(path.join(projectRoot, ".cursor", "mcp.json"), { mcpServers: { argent } });
+    installSkills(path.join(projectRoot, ".claude", "skills"));
+    expect(find(checksOf(), /argent skills installed/)).toEqual([
+      { status: "error", label: "Cursor: No argent skills installed", fix: "argent init" },
+    ]);
+  });
+
+  it("reports one unprefixed line when no editor has any skill", () => {
+    projectClaude();
+    writeJson(path.join(projectRoot, ".cursor", "mcp.json"), { mcpServers: { argent } });
+    expect(find(checksOf(), /argent skills installed/)).toEqual([
+      { status: "error", label: "No argent skills installed", fix: "argent init" },
+    ]);
+  });
+
+  it("finds Codex skills in a monorepo package below the git root, as Codex does", () => {
+    const app = path.join(projectRoot, "packages", "app");
+    writeFile(
+      path.join(projectRoot, ".codex", "config.toml"),
+      '[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n'
+    );
+    installSkills(path.join(app, ".agents", "skills"));
+    const checks = checksOf(ctx({ projectRoot: app, cwd: app, gitRoot: projectRoot }));
+    expect(find(checks, /argent skills installed/)[0]?.status).toBe("ok");
+  });
+
+  it("expects the skills of a local-mode project's own argent", () => {
+    const pkg = path.join(projectRoot, "node_modules", "@swmansion", "argent");
+    writeJson(path.join(pkg, "package.json"), { name: "@swmansion/argent", version: "0.29.0" });
+    for (const name of ["argent-create-flow", "argent-qa-flows"]) {
+      writeFile(path.join(pkg, "skills", name, "SKILL.md"));
+    }
+    writeJson(path.join(projectRoot, "package.json"), {
+      devDependencies: { "@swmansion/argent": "0.29.0" },
+    });
+    projectClaude();
+    installSkills(path.join(projectRoot, ".claude", "skills"));
+    fs.mkdirSync(path.join(projectRoot, ".claude", "skills", "argent-create-flow"));
+    fs.mkdirSync(path.join(projectRoot, ".claude", "skills", "argent-qa-flows"));
+    expect(find(checksOf(ctx({ mode: "local" })), /argent skills installed/)).toEqual([
+      { status: "ok", label: "2/2 argent skills installed" },
+    ]);
+  });
+
   it("reports editors that share a skills dir on one line", () => {
     writeJson(path.join(projectRoot, ".gemini", "settings.json"), { mcpServers: { argent } });
     writeFile(
@@ -171,6 +217,51 @@ describe("rules and agents", () => {
     expect(find(checks, /^Agents missing/)[0]?.fix).toMatch(
       /^mkdir -p ~\/proj\/\.claude\/agents && cp /
     );
+  });
+
+  it("quotes a path with a space in the copy command", () => {
+    const spaced = path.join(home, "my proj");
+    fs.mkdirSync(path.join(spaced, ".git"), { recursive: true });
+    writeJson(path.join(home, ".claude.json"), {
+      projects: { [spaced]: { mcpServers: { argent } } },
+    });
+    const fix = find(checksOf(ctx({ projectRoot: spaced, cwd: spaced })), /^Rules missing/)[0]?.fix;
+    expect(fix).toBe(
+      `mkdir -p '${spaced}/.claude/rules' && cp ${RULES_DIR.replace(home, "~")}/*.md '${spaced}/.claude/rules'/`
+    );
+  });
+
+  it("reads Codex rules from the package config that holds the entry", () => {
+    const app = path.join(projectRoot, "packages", "app");
+    writeFile(
+      path.join(app, ".codex", "config.toml"),
+      'developer_instructions = """\n# --- argent rules (managed by argent init — do not edit) ---\nrules\n"""\n\n' +
+        '[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n'
+    );
+    const checks = checksOf(ctx({ projectRoot: app, cwd: app, gitRoot: projectRoot }));
+    expect(find(checks, /developer_instructions/)).toEqual([
+      {
+        status: "ok",
+        label: "Rules present in ~/proj/packages/app/.codex/config.toml (developer_instructions)",
+      },
+    ]);
+  });
+
+  it("points argent update at the git root for Codex rules missing there", () => {
+    const pkg = path.join(projectRoot, "pkg");
+    writeFile(
+      path.join(projectRoot, ".codex", "config.toml"),
+      '[mcp_servers.argent]\ncommand = "argent"\nargs = ["mcp"]\n'
+    );
+    projectClaude(pkg);
+    writeJson(path.join(pkg, "package.json"), {});
+    const checks = checksOf(
+      ctx({ projectRoot: pkg, cwd: pkg, gitRoot: projectRoot, claudeRoot: projectRoot })
+    );
+    expect(find(checks, /developer_instructions/)[0]).toMatchObject({
+      status: "warn",
+      fix: "argent update --project-root ~/proj",
+    });
   });
 
   it("points argent update at the monorepo root that holds the entry", () => {
