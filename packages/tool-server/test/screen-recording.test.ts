@@ -280,6 +280,41 @@ describe("screen-recording session blueprint", () => {
     expect(instance.api.pendingChild).toBeNull();
   });
 
+  it.each(["light", "debug"] as const)(
+    "rejects %s readiness that resolves after disposal without restarting capture",
+    async (mode) => {
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      const stream = fakeStream();
+      const child = fakeChild();
+      const starting = startCapture(instance.api, {
+        streamUrl: STREAM_URL,
+        timeLimitSeconds: 30,
+        watermark: false,
+        trimStatic: false,
+        mode,
+      });
+      const rejected = expect(starting).rejects.toThrow("torn down");
+      await vi.waitFor(() => expect(instance.api.pendingChild).not.toBeNull());
+      await instance.dispose();
+      expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+      await vi.advanceTimersByTimeAsync(READY_GRACE_MS);
+      await rejected;
+      child.exit(null, "SIGKILL");
+      expect(stream.close).toHaveBeenCalled();
+      expect(stream.subscribe).not.toHaveBeenCalled();
+      expect(getActiveScreenRecordings()).toHaveLength(0);
+      expect(instance.api.captureProcess).toBeNull();
+      expect(instance.api.debugCapture).toBeNull();
+      const error = await stopCapture(await makeSession(iosDevice)).catch((err: unknown) => err);
+      expect(getFailureSignal(error)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+      expect(await fs.readdir(scratch)).toEqual([]);
+    }
+  );
+
   it("rejects platforms that cannot record", async () => {
     try {
       await screenRecordingSessionBlueprint.factory({}, iosDevice, {
@@ -1751,7 +1786,9 @@ describe("debug finalization safeguards", () => {
       name.startsWith("argent-recording-frames-")
     )!;
     const disposing = instance.dispose();
+    expect(getActiveScreenRecordings()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(5_000);
+    expect(getActiveScreenRecordings()).toHaveLength(0);
     expect(child.kill).not.toHaveBeenCalled();
     child.exit(exitCode);
     await disposing;

@@ -236,6 +236,7 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
         // Before any await, so a start suspended at a pre-spawn await aborts
         // instead of spawning an orphan the teardown below can no longer reap.
         state.disposed = true;
+        clearActiveScreenRecording(state.deviceId);
         // Decided BEFORE the teardown below clears the flags it reads: a
         // capture still encoding, a start mid-flight and one waiting to be
         // handed over all owe the caller a video.

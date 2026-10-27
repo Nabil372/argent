@@ -535,6 +535,7 @@ async function startCaptureLocked(
 
   try {
     await waitForEncoderReady(child, stderrRef);
+    assertNotDisposed(api, "screen_recording_start");
   } catch (err) {
     stream.close();
     if (frameDirectory)
