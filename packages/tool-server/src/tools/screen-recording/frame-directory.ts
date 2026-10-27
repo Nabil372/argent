@@ -9,17 +9,12 @@ export async function cleanupAbandonedFrames(): Promise<void> {
     if (!entry.isDirectory() || !entry.name.startsWith(PREFIX)) continue;
     const directory = path.join(os.tmpdir(), entry.name);
     const owner = /^(\d+)-/.exec(entry.name.slice(PREFIX.length));
-    if (owner) {
-      try {
-        process.kill(Number(owner[1]), 0);
-        continue;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue;
-      }
-    } else {
-      // Older recordings did not name an owner; never sweep a recent one.
-      const stat = await fs.stat(directory).catch(() => null);
-      if (!stat || Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1_000) continue;
+    if (!owner) continue;
+    try {
+      process.kill(Number(owner[1]), 0);
+      continue;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue;
     }
     await fs.rm(directory, { recursive: true, force: true }).catch((err: unknown) => {
       process.stderr.write(

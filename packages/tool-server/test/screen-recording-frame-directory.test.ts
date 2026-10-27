@@ -36,15 +36,23 @@ it("reaps dead owners and leaves every live process's spools alone", async () =>
   await expect(fs.access(live)).resolves.toBeUndefined();
 });
 
-it("reaps only old directories from recordings without an owner", async () => {
-  const old = path.join(root, "argent-recording-frames-legacy");
-  const recent = path.join(root, "argent-recording-frames-recent");
-  await fs.mkdir(old);
-  await fs.mkdir(recent);
-  await fs.utimes(old, new Date(0), new Date(0));
+it("leaves ownerless, malformed and unrelated directories alone regardless of age", async () => {
+  const names = [
+    "argent-recording-frames-ownerless",
+    "argent-recording-frames-0",
+    "x".repeat("argent-recording-frames-".length) + "999999-unrelated",
+  ];
+  for (const name of names) {
+    const directory = path.join(root, name);
+    await fs.mkdir(directory);
+    await fs.utimes(directory, new Date(0), new Date(0));
+  }
+  const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+    throw Object.assign(new Error("gone"), { code: "ESRCH" });
+  });
   await cleanupAbandonedFrames();
-  await expect(fs.access(old)).rejects.toThrow();
-  await expect(fs.access(recent)).resolves.toBeUndefined();
+  expect(kill).not.toHaveBeenCalled();
+  expect((await fs.readdir(root)).sort()).toEqual(names.sort());
 });
 
 it("reports an undeletable spool and still cleans the next one and creates a new capture", async () => {
