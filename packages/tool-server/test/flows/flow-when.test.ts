@@ -11,14 +11,13 @@ import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/co
 // degraded — an empty tree + hint is a blind read the guard must not trust.
 let currentTree: () => DescribeNode;
 let currentHint: string | undefined;
-vi.mock("../../src/tools/flows/flow-tree", () => ({
-  fetchFlowTree: vi.fn(
-    async (): Promise<DescribeTreeData> => ({
-      tree: currentTree(),
-      source: "native-devtools",
-      ...(currentHint !== undefined ? { hint: currentHint } : {}),
-    })
-  ),
+vi.mock("../../src/tools/flows/flow-tree", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/tools/flows/flow-tree")>()),
+  fetchFlowTree: vi.fn(async (): Promise<DescribeTreeData> => ({
+    tree: currentTree(),
+    source: "native-devtools",
+    ...(currentHint !== undefined ? { hint: currentHint } : {}),
+  })),
 }));
 
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";

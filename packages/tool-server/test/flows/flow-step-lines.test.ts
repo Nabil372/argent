@@ -5,9 +5,10 @@ import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/co
 
 let currentTree: () => DescribeNode;
 vi.mock("../../src/tools/flows/flow-tree", () => ({
-  fetchFlowTree: vi.fn(
-    async (): Promise<DescribeTreeData> => ({ tree: currentTree(), source: "native-devtools" })
-  ),
+  fetchFlowTree: vi.fn(async (): Promise<DescribeTreeData> => ({
+    tree: currentTree(),
+    source: "native-devtools",
+  })),
 }));
 
 // Replaces the runner's line lookup when set: every parsed step has a line, so
@@ -429,8 +430,10 @@ describe("where a run reports each step is written", () => {
       )
     );
     const registry = {
-      invokeTool: vi.fn(async (id: string, args: Record<string, unknown>) =>
-        id === "flow-execute" ? runFlow.execute({}, args as never) : { ok: true }
+      // The options become the nested run's context, as the registry passes
+      // them: the nested run's `run:` chain starts with the outer run's.
+      invokeTool: vi.fn(async (id: string, args: Record<string, unknown>, options?: unknown) =>
+        id === "flow-execute" ? runFlow.execute({}, args as never, options as never) : { ok: true }
       ),
       // `device` is a bind key, so the nested run drives the outer run's device.
       getTool: vi.fn(() => ({ inputSchema: { properties: { name: {}, device: {} } } })),

@@ -349,17 +349,41 @@ describe("flowRunToMcpContent", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("names the same-named test a run's test hides, under the header", async () => {
+    const warning =
+      "/p/.argent/flows/f.yaml is not used: /p/.argent/e2e/f.yaml has the same name and is read first.";
+    const blocks = await flowRunToMcpContent({ flow: "f", steps: [], warning });
+
+    expect(blocks.slice(0, 2)).toEqual([
+      { type: "text", text: 'Running e2e test "f" (0 steps)' },
+      { type: "text", text: `⚠ ${warning}` },
+    ]);
+  });
+
+  it("names each baseline a run over a link returned but could not write", async () => {
+    const blocks = await flowRunToMcpContent({
+      flow: "f",
+      steps: [],
+      baselineWrites: ["/p/a.png", { path: "/p/b.png", error: "EACCES: permission denied" }],
+    });
+
+    expect(blocks).toContainEqual({
+      type: "text",
+      text: "✗ baseline not written: /p/b.png: EACCES: permission denied",
+    });
+  });
+
   it("produces header and footer text blocks", async () => {
     const input: FlowExecuteResult = { flow: "test", steps: [] };
     const blocks = await flowRunToMcpContent(input);
 
     expect(blocks[0]).toEqual({
       type: "text",
-      text: 'Running flow "test" (0 steps)',
+      text: 'Running e2e test "test" (0 steps)',
     });
     expect(blocks[blocks.length - 1]).toEqual({
       type: "text",
-      text: 'Flow "test" complete.',
+      text: 'E2E test "test" complete.',
     });
   });
 
@@ -561,7 +585,7 @@ describe("flowRunToMcpContent", () => {
     });
 
     expect(blocks).toEqual([
-      { type: "text", text: 'Running flow "checkout" (2 steps)' },
+      { type: "text", text: 'Running e2e test "checkout" (2 steps)' },
       { type: "text", text: '[1] ✗ assert text "Total" — text did not match' },
       {
         type: "text",
@@ -572,7 +596,7 @@ describe("flowRunToMcpContent", () => {
         ].join("\n"),
       },
       { type: "text", text: '[2] · tap "Pay"' },
-      { type: "text", text: 'Flow "checkout" complete.' },
+      { type: "text", text: 'E2E test "checkout" complete.' },
     ]);
   });
 
@@ -608,7 +632,7 @@ describe("flowRunToMcpContent", () => {
         ].join("\n"),
       },
       { type: "text", text: "    diff: /tmp/d.png" },
-      { type: "text", text: 'Flow "f" complete.' },
+      { type: "text", text: 'E2E test "f" complete.' },
     ]);
   });
 
@@ -627,9 +651,9 @@ describe("flowRunToMcpContent", () => {
       ],
     });
     expect(hostile).toEqual([
-      { type: "text", text: 'Running flow "f" (1 steps)' },
+      { type: "text", text: 'Running e2e test "f" (1 steps)' },
       { type: "text", text: "[1] ✗ assert" },
-      { type: "text", text: 'Flow "f" complete.' },
+      { type: "text", text: 'E2E test "f" complete.' },
     ]);
   });
 
@@ -672,7 +696,7 @@ describe("flowRunToMcpContent", () => {
     });
 
     expect(blocks).toEqual([
-      { type: "text", text: 'Running flow "outer" (1 steps)' },
+      { type: "text", text: 'Running e2e test "outer" (1 steps)' },
       {
         type: "text",
         text: '[1] ✗ flow-execute — flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome")',
@@ -686,7 +710,7 @@ describe("flowRunToMcpContent", () => {
         ].join("\n"),
       },
       { type: "text", text: JSON.stringify(inner, null, 2) },
-      { type: "text", text: 'Flow "outer" complete.' },
+      { type: "text", text: 'E2E test "outer" complete.' },
     ]);
   });
 
@@ -697,7 +721,7 @@ describe("flowRunToMcpContent", () => {
     const blocks = await flowRunToMcpContent(JSON.parse(wire) as FlowExecuteResult);
 
     expect(blocks).toEqual([
-      { type: "text", text: 'Running flow "l2_g1" on chromium-cdp-9391 (1 steps)' },
+      { type: "text", text: 'Running e2e test "l2_g1" on chromium-cdp-9391 (1 steps)' },
       {
         type: "text",
         text: '[1] ✗ assert id=g1 equals "Nope" (1.0s) — element matched id="g1" but its text did not equal "Nope"',
@@ -735,7 +759,7 @@ describe("flowRunToMcpContent", () => {
       .filter((b): b is { type: "text"; text: string } => b.type === "text")
       .map((b) => b.text);
 
-    expect(texts[0]).toBe('Running flow "checkout" on SIM (4 steps)');
+    expect(texts[0]).toBe('Running e2e test "checkout" on SIM (4 steps)');
     expect(texts[1]).toBe("[1] ✓ tap");
     expect(texts[2]).toBe("[2] ✓ assert");
     expect(texts[3]).toBe("[3] ✗ snapshot — diff 3.10% > 0.5% (home)");
@@ -1046,7 +1070,7 @@ describe("flowRunToMcpContent", () => {
       .filter((b): b is { type: "text"; text: string } => b.type === "text")
       .map((b) => b.text);
 
-    expect(texts[0]).toContain("Running flow");
+    expect(texts[0]).toContain("Running e2e test");
     expect(texts[1]).toBe("[1] Start");
     expect(texts[2]).toBe("[2] gesture-tap");
     // [3] is JSON result

@@ -15,7 +15,7 @@ import {
   summarizeFailure,
   type FlowReport,
   type StepReport,
-} from "../src/flow.js";
+} from "../src/e2e.js";
 
 function mkReport(steps: StepReport[], overrides: Partial<FlowReport> = {}): FlowReport {
   // Mirror the runner's summarize(): echo narration is not a counted step.
@@ -57,7 +57,7 @@ describe("flow report rendering", () => {
     const out = renderReport(mkReport(STEPS));
     expect(out).toBe(
       [
-        'Flow "checkout" on UDID-1',
+        'E2E test "checkout" on UDID-1',
         "  › starting",
         "  ✓  1 launch",
         '  ✓  2 tap "Login" [login]',
@@ -341,7 +341,7 @@ describe("flow report rendering", () => {
     );
     expect(out).toBe(
       [
-        'Flow "checkout" on UDID-1',
+        'E2E test "checkout" on UDID-1',
         "  ✓  1 launch",
         '  ✗  2 assert text "Total" — text did not match',
         '       expected: "$12.00"',
@@ -519,17 +519,17 @@ describe("flow report rendering", () => {
 
   it("renderBatchSummary mirrors the step summary's verdict shape", () => {
     expect(renderBatchSummary({ total: 3, passed: 2, failed: 1, skipped: 0 })).toBe(
-      "FAIL — 3 flows: 2 passed, 1 failed, 0 skipped"
+      "FAIL — 3 e2e tests: 2 passed, 1 failed, 0 skipped"
     );
     expect(renderBatchSummary({ total: 1, passed: 1, failed: 0, skipped: 0 })).toBe(
-      "PASS — 1 flow: 1 passed, 0 failed, 0 skipped"
+      "PASS — 1 e2e test: 1 passed, 0 failed, 0 skipped"
     );
     // Skips only ever follow a failure, so they never turn the verdict alone.
     expect(renderBatchSummary({ total: 2, passed: 1, failed: 0, skipped: 1 })).toBe(
-      "PASS — 2 flows: 1 passed, 0 failed, 1 skipped"
+      "PASS — 2 e2e tests: 1 passed, 0 failed, 1 skipped"
     );
     expect(renderBatchSummary({ total: 2, passed: 1, failed: 1, skipped: 0 }, 92_400)).toBe(
-      "FAIL — 2 flows: 1 passed, 1 failed, 0 skipped (1m 32s)"
+      "FAIL — 2 e2e tests: 1 passed, 1 failed, 0 skipped (1m 32s)"
     );
   });
 });
@@ -603,35 +603,35 @@ describe("failure recap", () => {
           path: "a-login.yaml",
           headline: 'step 2 assert visible "Home"',
           detail: 'no element matched selector text="Home"',
-          rerun: "argent flow run flows/a-login.yaml --platform ios",
+          rerun: "argent e2e run flows/a-login.yaml --platform ios",
         },
         {
           path: "sub/c-search.yaml",
-          headline: "not run (invalid flow)",
+          headline: "not run (invalid e2e test)",
           detail: "flow file is not valid YAML\n\n  at line 4",
-          rerun: "argent flow run flows/sub/c-search.yaml --platform ios",
+          rerun: "argent e2e run flows/sub/c-search.yaml --platform ios",
         },
         {
           path: "b-checkout.yaml",
           headline: "failed with no failing step",
-          rerun: "argent flow run flows/b-checkout.yaml --platform ios",
+          rerun: "argent e2e run flows/b-checkout.yaml --platform ios",
         },
       ])
     ).toEqual([
       "",
-      "Failed flows (3)",
+      "Failed e2e tests (3)",
       "",
       '  ✗ a-login.yaml › step 2 assert visible "Home"',
       '    no element matched selector text="Home"',
-      "    re-run: argent flow run flows/a-login.yaml --platform ios",
+      "    re-run: argent e2e run flows/a-login.yaml --platform ios",
       "",
-      "  ✗ sub/c-search.yaml › not run (invalid flow)",
+      "  ✗ sub/c-search.yaml › not run (invalid e2e test)",
       "    flow file is not valid YAML",
       "      at line 4",
-      "    re-run: argent flow run flows/sub/c-search.yaml --platform ios",
+      "    re-run: argent e2e run flows/sub/c-search.yaml --platform ios",
       "",
       "  ✗ b-checkout.yaml › failed with no failing step",
-      "    re-run: argent flow run flows/b-checkout.yaml --platform ios",
+      "    re-run: argent e2e run flows/b-checkout.yaml --platform ios",
     ]);
   });
 
@@ -815,7 +815,7 @@ describe("failure source frame", () => {
     expect(renderSingleFailure(report, source)).toEqual(["", ...recap]);
     expect(renderReport(report, source)).toBe(
       [
-        'Flow "checkout" on UDID-1',
+        'E2E test "checkout" on UDID-1',
         "  ✓  1 launch",
         '  ✗  2 assert visible "Home" — no element matched selector text="Home"',
         "       hint: the login may still be loading",
@@ -848,18 +848,18 @@ describe("failure source frame", () => {
           headline: 'step 2 assert visible "Home"',
           detail: 'no element matched selector text="Home"',
           source: renderSourceFrame("flows/a-login.yaml", 4, LOGIN),
-          rerun: "argent flow run flows/a-login.yaml --platform ios",
+          rerun: "argent e2e run flows/a-login.yaml --platform ios",
         },
         {
           path: "b-checkout.yaml",
           headline: "step 1 tap",
           source: ["at flows/b-checkout.yaml:9"],
-          rerun: "argent flow run flows/b-checkout.yaml --platform ios",
+          rerun: "argent e2e run flows/b-checkout.yaml --platform ios",
         },
       ])
     ).toEqual([
       "",
-      "Failed flows (2)",
+      "Failed e2e tests (2)",
       "",
       '  ✗ a-login.yaml › step 2 assert visible "Home"',
       '    no element matched selector text="Home"',
@@ -867,11 +867,11 @@ describe("failure source frame", () => {
       "      3 |   - launch: com.acme.shop",
       "    > 4 |   - assert: { visible: { text: Home } }",
       "      5 |   - tap: { text: Profile }",
-      "    re-run: argent flow run flows/a-login.yaml --platform ios",
+      "    re-run: argent e2e run flows/a-login.yaml --platform ios",
       "",
       "  ✗ b-checkout.yaml › step 1 tap",
       "    at flows/b-checkout.yaml:9",
-      "    re-run: argent flow run flows/b-checkout.yaml --platform ios",
+      "    re-run: argent e2e run flows/b-checkout.yaml --platform ios",
     ]);
   });
 });

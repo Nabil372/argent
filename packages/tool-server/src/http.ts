@@ -8,6 +8,8 @@ import { isFlagEnabled } from "@argent/configuration-core";
 import { randomUUID, createHash } from "node:crypto";
 import {
   FAILURE_CODES,
+  E2E_DIR_CLIENT_HEADER,
+  LINKED_CALL_HEADER,
   describeParamIssues,
   getFailureSignal,
   type FailureSignal,
@@ -63,6 +65,7 @@ import {
 } from "./chromium-server/http-api";
 import { resolveDevice as resolveDeviceForWs } from "./utils/device-info";
 import { RESULT_NOTE_KEY } from "./tools/screenshot/dropped-geometry";
+import { renderFlagGated } from "./utils/flag-gated-text";
 
 const AUTO_SUPPRESS_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -190,6 +193,8 @@ type InvocationMeta = {
 // never stored or forwarded; invalid_params carries schema-declared parameter
 // NAMES only (see deriveInvalidParams), never values or user-typed keys.
 type HttpFailureMeta = {
+  /** The call named the tool by a former id; `toolId` is the current one. */
+  alias_used?: boolean;
   device_provider?: string;
   platform?: TelemetryPlatform;
   device_kind?: TelemetryDeviceKind;
@@ -266,6 +271,10 @@ export function deviceAttributionFromArgs(data: unknown): DeviceAttribution | nu
   // `device_id` calls refine an Android TV AVD once the cache is warm.
   if (typeof (data as Record<string, unknown>).avdName === "string") {
     return { platform: "android" };
+  }
+  // HarmonyOS twin: an instance is named, not addressed.
+  if (typeof (data as Record<string, unknown>).harmonyInstance === "string") {
+    return { platform: "harmony" };
   }
   return null;
 }
@@ -665,7 +674,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     const tools = snapshot.tools
       .map((id) => registry.getTool(id))
       .filter((def): def is NonNullable<typeof def> => isToolExposed(def))
-      .map((def) => {
+      .flatMap((def) => {
         const entry: {
           name: string;
           description: string;
@@ -675,17 +684,33 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           alwaysLoad?: boolean;
           searchHint?: string;
           longRunning?: boolean;
+          hideFromMcp?: boolean;
+          readOnly?: boolean;
+          aliasOf?: string;
         } = {
           name: def.id,
-          description: def.description ?? "",
-          inputSchema: def.inputSchema ?? { type: "object", properties: {} },
+          description: renderFlagGated(def.description ?? "", isFlagEnabled),
+          inputSchema: renderFlagGated(
+            def.inputSchema ?? { type: "object", properties: {} },
+            isFlagEnabled
+          ),
         };
-        if (def.outputHint) entry.outputHint = def.outputHint;
+        if (def.outputHint) entry.outputHint = renderFlagGated(def.outputHint, isFlagEnabled);
         if (def.fileInputs && def.fileInputs.length > 0) entry.fileInputs = def.fileInputs;
         if (def.alwaysLoad) entry.alwaysLoad = true;
-        if (def.searchHint) entry.searchHint = def.searchHint;
+        if (def.searchHint) entry.searchHint = renderFlagGated(def.searchHint, isFlagEnabled);
         if (def.longRunning) entry.longRunning = true;
-        return entry;
+        if (def.hideFromMcp) entry.hideFromMcp = true;
+        if (def.readOnly) entry.readOnly = true;
+        // A former id is listed too, so a client that calls by it finds the
+        // tool's file inputs. Hidden from MCP, so agents see one name.
+        const aliases = (def.aliases ?? []).map((alias) => ({
+          ...entry,
+          name: alias,
+          hideFromMcp: true,
+          aliasOf: def.id,
+        }));
+        return [entry, ...aliases];
       });
     res.json({ tools });
   });
@@ -700,6 +725,13 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       const name = req.params.name as string;
       const requestStartedAt = performance.now();
       const aiMeta = extractAiTelemetryMeta(req);
+      // "close" fires once. A caller that hangs up during the awaits below
+      // (file inputs, the device grant, the dependency preflight) is gone
+      // before the listeners further down exist, so it is noted from here.
+      let callerGone = false;
+      res.once("close", () => {
+        if (!res.writableFinished) callerGone = true;
+      });
 
       const emitHttpFailure = (
         signal: FailureSignal,
@@ -710,9 +742,11 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         const failedDeviceArg = extractDeviceArg(parsedDataForMeta);
         const provider = failedDeviceArg ? externalProviderLabel(failedDeviceArg) : undefined;
         const attribution = inferDeviceAttribution(failedDeviceArg);
+        const toolId = registry.getTool(name)?.id ?? name;
         options.recordFailure(
-          name,
+          toolId,
           {
+            ...(toolId !== name ? { alias_used: true } : {}),
             ...(provider ? { device_provider: provider } : {}),
             ...attribution,
             ...(extraMeta?.invalid_params?.length
@@ -761,7 +795,8 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         derivedTargets = resolved.derivedTargets;
         // Materialized uploads are call-scoped: remove them once the response
         // settles, however it ends.
-        res.once("close", () => void resolved.cleanup());
+        if (callerGone) void resolved.cleanup();
+        else res.once("close", () => void resolved.cleanup());
       } catch (err) {
         if (err instanceof FileInputError) {
           res.status(422).json({ error: err.message });
@@ -912,6 +947,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         }
       }
 
+      // Nobody is left to read the result.
+      if (callerGone) return;
+
       const controller = new AbortController();
       res.on("close", () => {
         if (!res.writableFinished) controller.abort();
@@ -934,8 +972,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // through the registry inherit the same ai_client / platform instead of being
       // recorded as anonymous.
       let recordChildInvocation:
-        | ((childInvocationId: string, childArgs?: unknown) => () => void)
-        | undefined;
+        ((childInvocationId: string, childArgs?: unknown) => () => void) | undefined;
       const recordInvocation = options?.recordInvocation;
       if (recordInvocation) {
         const invocationMeta = extractInvocationMeta(Boolean(def.capability), parsedData, aiMeta);
@@ -958,9 +995,14 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         res.write(`${JSON.stringify(payload)}\n`);
       };
       if (wantsStream) {
+        // Every line must reach the client as soon as it is written.
+        // `no-transform` asks intermediaries not to compress the stream, and
+        // `X-Accel-Buffering: no` makes nginx pass each chunk through instead
+        // of holding it in its buffers.
         res.writeHead(200, {
           "Content-Type": "application/x-ndjson",
-          "Cache-Control": "no-cache",
+          "Cache-Control": "no-cache, no-transform",
+          "X-Accel-Buffering": "no",
         });
       }
 
@@ -968,6 +1010,15 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         const data = await registry.invokeTool(name, parsedData, {
           signal: controller.signal,
           ...(resolvedFileInputs ? { fileInputs: resolvedFileInputs } : {}),
+          // The argent client marks every call it sends over a link. A false
+          // mark makes the recorder stricter for that caller and keeps its
+          // recording in memory, sent back in client-file directives.
+          ...(firstHeader(req.headers[LINKED_CALL_HEADER]) === "1" ? { linked: true } : {}),
+          // A client released before the rename writes client files only under
+          // `.argent/flows/`, so the recorder keeps its recordings there.
+          ...(firstHeader(req.headers[E2E_DIR_CLIENT_HEADER]) === "1"
+            ? {}
+            : { legacyE2eDir: true }),
           toolInvocationId,
           ...(recordChildInvocation ? { recordChildInvocation } : {}),
           ...(wantsStream
