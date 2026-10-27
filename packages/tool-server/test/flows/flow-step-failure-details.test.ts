@@ -548,6 +548,39 @@ describe("refused tree read", () => {
 describe("a wait that could not judge its condition", () => {
   // The flag and the hint of such a step come from its last read attempt, not
   // from any earlier read in the window.
+
+  /** A read refused because a step left the app: a `validation` failure. */
+  function systemApp(): never {
+    throw new FailureError("com.apple.Preferences is an Apple system app", {
+      error_code: FAILURE_CODES.NATIVE_DEVTOOLS_NOT_INJECTABLE,
+      failure_stage: "flow_tree_pinned_target",
+      failure_area: "tool_server",
+      error_kind: "validation",
+    });
+  }
+
+  it("flags a wait whose first read was refused when the reads after it came back blind", async () => {
+    // The reads after the refusal arrived, so the refusal does not decide the
+    // step: a re-run can give another verdict.
+    currentSource = "vega-automation";
+    let reads = 0;
+    currentTree = () => {
+      if (reads++ === 0) systemApp();
+      currentFlags = { hint: VEGA_HINT };
+      return screen([]);
+    };
+    await writeFlow("refused-then-blind", {
+      executionPrerequisite: "",
+      steps: [{ kind: "await", condition: "visible", selector: { text: "Home" }, timeout: 500 }],
+    });
+
+    const [step] = (await run("refused-then-blind")).steps;
+
+    expect(reads).toBeGreaterThan(1);
+    expect(step).toMatchObject({ status: "fail", indeterminate: true, hint: VEGA_HINT });
+    expect(step.reason).toMatch(/every read of the UI tree was empty or degraded/);
+  });
+
   it("gives a device error after a blind read the shared hint, not the blind read's repair", async () => {
     // The toolkit's repair is for the blind read that sent it. The reads that
     // throw after it send none, so the step gets the shared hint.
