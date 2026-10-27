@@ -128,6 +128,30 @@ describe.skipIf(process.platform === "win32")("resolveGlobalCommandMode", () => 
     expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
   });
 
+  it("accepts a prerelease node that meets the engines range (nightly, rc)", () => {
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({
+        name: "@swmansion/argent",
+        version: "0.30.0",
+        bin: { argent: "dist/cli.js" },
+        engines: { node: ">=20.12.0" },
+      })
+    );
+    const node = path.join(prefix, "bin", "node");
+    fs.writeFileSync(node, "#!/bin/sh\necho 24.0.0-nightly20250301abcdef\n", { mode: 0o755 });
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
+  });
+
+  it("never pins a node found through a relative PATH entry", () => {
+    const node = linkPathNode();
+    const relativeDir = path.join(tmp, "repo", "bin");
+    fs.mkdirSync(relativeDir, { recursive: true });
+    fs.symlinkSync(process.execPath, path.join(relativeDir, "node"));
+    prependPath(path.relative(process.cwd(), relativeDir));
+    expect(resolveGlobalCommandMode()).toEqual({ kind: "global-node", node, cli });
+  });
+
   it("writes bare argent for an install older than 0.27.0", () => {
     linkPrefixNode();
     fs.writeFileSync(

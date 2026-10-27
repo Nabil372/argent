@@ -70,7 +70,6 @@ function resolveCliEntry(mode: InstallMode, projectRoot: string): string | null 
     return relative ? path.resolve(projectRoot, relative) : null;
   }
 
-  // Shared with the global-scope MCP entry, so both name the same cli.js.
   return cliEntryOf(getGloballyInstalledPackageRoot());
 }
 

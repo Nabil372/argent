@@ -32,8 +32,11 @@ function isTempRunnerPath(binaryPath: string): boolean {
 // isGloballyInstalled, because yarn v1 links its global bin into a `.bin` dir.
 const UNPINNABLE_MARKERS = ["node_modules/.bin", "node_modules\\.bin", "/xfs-", "\\xfs-"];
 
+// `which -a` echoes a relative PATH entry (`.`, `bin`) as-is, which names
+// whatever the cwd of this run holds; never pin from one.
 function isPinnablePath(binaryPath: string): boolean {
   return (
+    path.isAbsolute(binaryPath) &&
     !isTempRunnerPath(binaryPath) &&
     !UNPINNABLE_MARKERS.some((marker) => binaryPath.includes(marker))
   );
@@ -99,8 +102,8 @@ function packageRootOfBinary(binaryPath: string | null): string | null {
 
 /**
  * `<root>/<bin>` (`dist/cli.js`) of an argent package root, when that CLI
- * entrypoint exists. The one resolution both the cli.json record and the
- * global-scope MCP entry use.
+ * entrypoint exists. Callers pick the root: the cli.json record and the
+ * global-scope MCP entry each resolve their own.
  */
 export function cliEntryOf(packageRoot: string | null): string | null {
   if (!packageRoot) return null;
@@ -135,10 +138,8 @@ export function getGloballyInstalledLaunchPaths(): { cli: string; node: string |
   const manifest = readLaunchManifest(packageRoot);
   const version = semver.valid(manifest.version ?? null);
   if (!version || semver.lt(version, MIN_PINNABLE_VERSION)) return null;
-  // `which -a` echoes relative PATH entries as-is; the editor would resolve a
-  // relative `node` against its own cwd, so anchor them to this one.
   const binDirs = [binaryPath, ...whichAll("node").filter(isPinnablePath)].map((bin) =>
-    path.dirname(path.resolve(bin))
+    path.dirname(bin)
   );
   const node = binDirs
     .map(nodeBeside)
@@ -196,7 +197,7 @@ function runsEngines(node: string, range: string | undefined): boolean {
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 10_000,
     }).trim();
-    return semver.satisfies(version, range);
+    return semver.satisfies(version, range, { includePrerelease: true });
   } catch {
     return false;
   }
