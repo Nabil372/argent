@@ -240,12 +240,15 @@ describe("a provider that lends its native-devtools agent", () => {
     const { nativeNetworkLogsTool } =
       await import("../src/tools/native-devtools/native-network-logs");
 
-    await expect(
-      nativeNetworkLogsTool.execute(
+    const err = await nativeNetworkLogsTool
+      .execute(
         { nativeDevtools: instance.api },
         { bundleId: "com.example.gone", clear: false, limit: 50, udid: DEVICE_ID }
       )
-    ).rejects.toThrow(/not connected/);
+      .catch((e: Error) => e);
+    expect((err as Error).message).toMatch(/not connected/);
+    expect((err as Error).message).toMatch(/describe or screenshot/);
+    expect((err as Error).message).not.toMatch(/call again in a few seconds/);
 
     await instance.dispose();
     await agent.close();

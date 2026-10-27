@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { FAILURE_CODES, FailureError, type ToolDefinition } from "@argent/registry";
 import {
+  buildAppStateMessage,
   nativeDevtoolsRef,
   precheckNativeDevtools,
   type NativeDevtoolsApi,
@@ -41,7 +42,7 @@ Use when you need to inspect native-level HTTP traffic that is invisible to the 
 Returns { status, count, events } where each event contains URL, method, status code, headers, and timing.
 Capture for an app starts on the first call for it, and stays on across relaunches (except on a device whose devtools agent argent attached to, where a relaunch ends it). So the first ok answer after capture started for an app that was already running carries a note that requests made before that, including the app's launch, were not recorded, so count 0 there does not mean the app made no requests. To capture the launch, restart-app and call again, unless the note says the launch cannot be recorded on that device.
 If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help. Restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If the same status comes back after that restart, stop restarting: follow the message, which names the terminal fallback. If status is connect_pending: the app is injected and still connecting. Do not restart it, wait a few seconds and retry. If status is init_failed: the simulator's native-devtools environment could not be initialised. Follow the message (re-boot the simulator) rather than retrying this tool.
-A not-running app comes back as one of those statuses rather than a failure. An app that is not connected does too, except on a device whose devtools agent argent attached to rather than armed itself: there it fails with \`NATIVE_DEVTOOLS_NOT_CONNECTED\`, since no restart of ours can complete a handshake we do not own. That call still arms capture, which starts once the app connects, so wait a few seconds and call again rather than giving up. Failures are separate: an Apple system app is rejected outright (terminal: never retry it), while a missing host dependency or a udid that is not an Apple device is not.`,
+A not-running app comes back as one of those statuses rather than a failure. An app that is not connected does too, except on a device whose devtools agent argent attached to rather than armed itself: there it fails with \`NATIVE_DEVTOOLS_NOT_CONNECTED\`, since no restart of ours can complete a handshake we do not own. That device serves only the one app its provider lends, so retry only if that app has just started; for any other app, read the screen with describe or screenshot instead. Failures are separate: an Apple system app is rejected outright (terminal: never retry it), while a missing host dependency or a udid that is not an Apple device is not.`,
   zodSchema,
   services: (params) => ({
     nativeDevtools: nativeDevtoolsRef(resolveDevice(params.udid)),
@@ -61,10 +62,12 @@ A not-running app comes back as one of those statuses rather than a failure. An 
      * truth is "nothing is capturing them", as the hierarchy tools do.
      */
     if (!api.isConnected(params.bundleId)) {
+      const remedy = api.armsEnv
+        ? `Network capture for it is armed and starts once it connects, so call again in a few seconds. ` +
+          `Requests made before then are not recorded.`
+        : buildAppStateMessage(params.bundleId, "provider_attached");
       throw new FailureError(
-        `Native devtools not connected for bundleId: ${params.bundleId}. ` +
-          `Network capture for it is armed and starts once it connects, so call again in a few seconds. ` +
-          `Requests made before then are not recorded.`,
+        `Native devtools not connected for bundleId: ${params.bundleId}. ${remedy}`,
         {
           error_code: FAILURE_CODES.NATIVE_DEVTOOLS_NOT_CONNECTED,
           error_kind: "not_found",

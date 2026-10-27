@@ -80,7 +80,7 @@ describe("native-network-logs before the app is instrumented", () => {
     const { precheckNativeDevtools } = await import("../src/blueprints/native-devtools");
     vi.mocked(precheckNativeDevtools).mockResolvedValueOnce(null);
     const activateNetworkInspection = vi.fn();
-    const api = { activateNetworkInspection, isConnected: () => false } as any;
+    const api = { activateNetworkInspection, isConnected: () => false, armsEnv: true } as any;
     const { nativeNetworkLogsTool } =
       await import("../src/tools/native-devtools/native-network-logs");
 
