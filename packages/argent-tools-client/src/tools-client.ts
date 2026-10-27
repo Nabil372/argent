@@ -1,6 +1,15 @@
+import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 
 import {
+  encodeClientSecrets,
+  isFeatureEnabled,
+  lookupPlaceholderSecret,
+  placeholderNames,
+  secretSources,
+} from "@argent/configuration-core";
+import {
+  CLIENT_SECRETS_HEADER,
   E2E_DIR_CLIENT_HEADER,
   LEGACY_E2E_DIRS,
   LINKED_CALL_HEADER,
@@ -325,6 +334,50 @@ function carriesUpload(args: unknown): boolean {
   return carriesMembers(args) || wiresOf(args).some((wire) => typeof wire.uploadId === "string");
 }
 
+/**
+ * With `forward-secrets` on, the value on this machine of each secret a
+ * placeholder in `args` names, the e2e tests a call sends included; undefined
+ * when there is none. A name this machine lacks is left to the tool-server.
+ */
+async function forwardedSecrets(args: unknown): Promise<Map<string, string> | undefined> {
+  if (!isFeatureEnabled("forward-secrets")) return undefined;
+  const names = new Set<string>();
+  const scan = (text: string): void => {
+    for (const name of placeholderNames(text)) names.add(name);
+  };
+  const visit = async (value: unknown): Promise<void> => {
+    if (typeof value === "string") return scan(value);
+    if (typeof value !== "object" || value === null) return;
+    const wire = value as Partial<FileInputWire>;
+    if (wire[FILE_INPUT_MARKER] !== true) {
+      for (const nested of Object.values(value)) await visit(nested);
+      return;
+    }
+    const yaml = [
+      ...(/\.ya?ml$/i.test(wire.path ?? "") ? [wire] : []),
+      ...(wire.members ?? []).filter((member) => member.role === "flow"),
+    ];
+    for (const file of yaml) {
+      if (typeof file.content === "string") {
+        scan(Buffer.from(file.content, "base64").toString("utf8"));
+      } else if (file.uploadId !== undefined && file.canonical !== undefined) {
+        // Sent through `POST /upload`, so read where it was sent from. Gone
+        // since then, it leaves its names to the tool-server.
+        scan(await readFile(file.canonical, "utf8").catch(() => ""));
+      }
+    }
+  };
+  await visit(args);
+  if (names.size === 0) return undefined;
+  const sources = secretSources();
+  const values = new Map<string, string>();
+  for (const rawName of names) {
+    const { name, value } = lookupPlaceholderSecret(rawName, sources);
+    if (value !== undefined) values.set(name, value);
+  }
+  return values.size > 0 ? values : undefined;
+}
+
 export function createToolsClient(options: CreateToolsClientOptions = {}): ToolsClient {
   let cached: ToolsServerHandle | null = null;
   const doFetch = options.fetchImpl ?? ((url, init) => fetch(url, init));
@@ -456,6 +509,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     // progress lines keep the connection busy through a proxy's idle timeout.
     const stream = opts?.onProgress !== undefined || carriesMembers(finalArgs);
     const sentOnce = carriesUpload(finalArgs);
+    const clientSecrets = remote ? await forwardedSecrets(finalArgs) : undefined;
     const res = await doFetch(
       `${url}/tools/${encodeURIComponent(meta?.name ?? name)}`,
       {
@@ -468,6 +522,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
           // Tells the tool-server this client writes recordings under
           // `.argent/e2e/`; an older client writes only `.argent/flows/`.
           [E2E_DIR_CLIENT_HEADER]: "1",
+          ...(clientSecrets ? { [CLIENT_SECRETS_HEADER]: encodeClientSecrets(clientSecrets) } : {}),
           // A proxy that compresses the stream holds each line until its buffer
           // fills. `identity` keeps the stream uncompressed end to end.
           ...(stream ? { "Accept": "application/x-ndjson", "Accept-Encoding": "identity" } : {}),

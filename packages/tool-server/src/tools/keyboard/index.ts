@@ -206,7 +206,9 @@ One call does one action: pass text OR key, never both. To type and then press a
       // see only the placeholder) and before the dispatch, so run-sequence and
       // flow `type` steps are covered for free.
       if (params.text === undefined) return dispatch(services, params, options);
-      const { text, secrets } = resolveSecretPlaceholders(params.text);
+      const { text, secrets } = resolveSecretPlaceholders(params.text, {
+        clientSecrets: options?.clientSecrets,
+      });
       if (secrets.length === 0) return dispatch(services, params, options);
       try {
         const result = await dispatch(services, { ...params, text }, options);

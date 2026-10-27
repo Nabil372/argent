@@ -5,7 +5,12 @@
 
 import pc from "picocolors";
 import { getResolvedToolsUrl } from "@argent/tools-client";
-import { secretSources, secretNames, SECRET_ENV_PREFIX } from "@argent/configuration-core";
+import {
+  isFeatureEnabled,
+  secretSources,
+  secretNames,
+  SECRET_ENV_PREFIX,
+} from "@argent/configuration-core";
 
 export async function secrets(argv: string[]): Promise<void> {
   const [sub, ...rest] = argv;
@@ -95,13 +100,18 @@ async function cmdList(argv: string[]): Promise<void> {
   );
 
   // Resolution happens wherever the tool-server runs, so a link to another machine
-  // makes this listing describe the wrong host.
+  // makes this listing describe the wrong host unless calls forward these secrets.
   const routed = await getResolvedToolsUrl().catch(() => ({ url: null }));
   if (routed.url) {
     console.log(
       pc.yellow(
-        `\nNote: a remote tool-server is linked (${routed.url}). Placeholders resolve there, ` +
-          `against that machine's environment and secrets files — not the ones listed above.`
+        isFeatureEnabled("forward-secrets")
+          ? `\nNote: a remote tool-server is linked (${routed.url}). A call sends it the value ` +
+              `listed above for each placeholder the call names; that machine's own sources ` +
+              `resolve the rest.`
+          : `\nNote: a remote tool-server is linked (${routed.url}). Placeholders resolve there, ` +
+              `against that machine's environment and secrets files — not the ones listed above. ` +
+              `Run \`argent enable forward-secrets\` to send the ones listed above with each call.`
       )
     );
   }

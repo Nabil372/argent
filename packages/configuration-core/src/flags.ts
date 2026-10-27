@@ -68,6 +68,11 @@ export const FLAG_REGISTRY: readonly FlagDefinition[] = [
       "HarmonyOS support: list, boot and drive HarmonyOS phones and DevEco Studio emulators over `hdc`. Off by default while the platform is experimental.",
   },
   {
+    name: "forward-secrets",
+    description:
+      "Over `argent link` or ARGENT_TOOLS_URL, resolve each `{{secret:NAME}}` a call names on this machine and send the value with the call, so a remote tool-server can type a secret it does not hold. Off by default.",
+  },
+  {
     name: "video-watermark",
     description:
       "Overlay the argent corner watermark on recorded screen videos. On by default; turn it off with `argent disable video-watermark`.",

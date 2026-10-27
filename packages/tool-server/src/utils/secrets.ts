@@ -1,11 +1,13 @@
 import { FAILURE_CODES } from "@argent/registry";
 import { InvalidToolInputError } from "./capability";
 import {
+  clientSecretSource,
   describeSecretSources,
-  lookupSecret,
+  lookupPlaceholderSecret,
   secretNames,
   secretPlacementAdvice,
   secretSources,
+  SECRET_PLACEHOLDER_RE,
   type SecretSource,
   type SecretSourceOptions,
 } from "@argent/configuration-core";
@@ -28,8 +30,6 @@ export type { SecretSourceOptions };
 /** Copied in packages/argent-mcp/src/auto-capture.ts, which cannot depend on this package. */
 export const SECRET_PLACEHOLDER_MARKER = "{{secret:";
 
-const PLACEHOLDER_RE = /\{\{secret:([A-Za-z_][A-Za-z0-9_]*)\}\}/g;
-
 /** Names (never values) of all secrets currently exposed to argent. */
 export function availableSecretNames(options: SecretSourceOptions = {}): string[] {
   return secretNames(secretSources(options));
@@ -43,41 +43,33 @@ interface ResolvedSecretText {
 }
 
 /**
- * A placeholder name redundantly repeating the env prefix in any casing —
- * `{{secret:ARGENT_SECRET_APP_PASSWORD}}` for `{{secret:APP_PASSWORD}}` —
- * accepted as a fallback because agents paste the full variable name. The
- * exact name is tried first, which keeps a literal
- * `ARGENT_SECRET_ARGENT_SECRET_X` var reachable.
- */
-const REDUNDANT_PREFIX_RE = /^argent_secret_/i;
-
-/**
  * Replace every `{{secret:NAME}}` in `text` with its value. An unknown name
  * rejects with the *names* of available secrets and the sources consulted —
  * never a value — so an agent can self-correct.
  *
  * The source chain is built lazily and once per call: text with no placeholder
  * never touches the filesystem, and several placeholders resolve against one
- * snapshot.
+ * snapshot. `clientSecrets` (a tool's `ctx.clientSecrets`) lead the chain.
  */
 export function resolveSecretPlaceholders(
   text: string,
-  options: SecretSourceOptions = {}
+  options: SecretSourceOptions & { clientSecrets?: ReadonlyMap<string, string> } = {}
 ): ResolvedSecretText {
   const secrets: Array<{ name: string; value: string }> = [];
   let sources: SecretSource[] | undefined;
-  const resolved = text.replace(PLACEHOLDER_RE, (_placeholder, rawName: string) => {
-    sources ??= secretSources(options);
-    let name = rawName;
-    let value = lookupSecret(name, sources);
-    if (value === undefined && REDUNDANT_PREFIX_RE.test(name)) {
-      name = name.replace(REDUNDANT_PREFIX_RE, "");
-      value = lookupSecret(name, sources);
-    }
+  const resolved = text.replace(SECRET_PLACEHOLDER_RE, (_placeholder, rawName: string) => {
+    sources ??= [
+      ...(options.clientSecrets ? [clientSecretSource(options.clientSecrets)] : []),
+      ...secretSources(options),
+    ];
+    const { name, value } = lookupPlaceholderSecret(rawName, sources);
     if (value === undefined) {
       const names = secretNames(sources);
+      const where = options.clientSecrets
+        ? "neither the argent client nor any source on the machine running the tool-server defines"
+        : "no source on the machine running the tool-server defines";
       throw new InvalidToolInputError(
-        `Unknown secret "${rawName}" — no source on the machine running the tool-server defines ` +
+        `Unknown secret "${rawName}" — ${where} ` +
           `${name}. Available secrets: ${names.length ? names.join(", ") : "(none)"}.\n` +
           `Sources consulted, first match wins:\n${describeSecretSources(sources)}\n` +
           secretPlacementAdvice(name, options),
