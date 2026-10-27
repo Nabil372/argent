@@ -148,7 +148,7 @@ export interface ScreenIdleWait {
   stopOnReadError?: boolean;
   /** Two equal empty trees count as still, instead of a screen yet to render. */
   emptyTreeIsStable?: boolean;
-  /** Fail the read when the Android helper is unavailable instead of running `uiautomator dump`. */
+  /** Read through the Android helper (installing and starting it if needed), never `uiautomator dump`. */
   androidHelperOnly?: boolean;
   /** Resolved here for a Chromium target when absent. */
   chromium?: ChromiumCdpApi;
@@ -177,7 +177,8 @@ export async function waitForScreenIdle(
   // Resolve tvOS / Android-TV once. Physical devices skip the tvOS probe. They are never tvOS simulators.
   const isTvOs =
     device.platform === "ios" && device.kind !== "device" && (await isTvOsSimulator(device.id));
-  const androidIsTv = device.platform === "android" && (await isAndroidTv(device.id));
+  const androidIsTv =
+    device.platform === "android" && !wait.androidHelperOnly && (await isAndroidTv(device.id));
   const chromium = wait.chromium ?? (await resolveChromium(registry, device));
   const { minStableMs } = wait;
 

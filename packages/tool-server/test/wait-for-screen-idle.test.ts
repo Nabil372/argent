@@ -8,6 +8,7 @@ import {
   describeAndroidWithHelper,
 } from "../src/tools/describe/platforms/android";
 import { resolveDevice } from "../src/utils/device-info";
+import { isAndroidTv } from "../src/utils/adb";
 import { __primeDepCacheForTests, __resetDepCacheForTests } from "../src/utils/check-deps";
 
 vi.mock("../src/tools/describe/platforms/chromium", () => ({ describeChromium: vi.fn() }));
@@ -18,7 +19,7 @@ vi.mock("../src/tools/describe/platforms/android", async (importOriginal) => ({
 }));
 vi.mock("../src/utils/adb", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/utils/adb")>()),
-  isAndroidTv: async () => false,
+  isAndroidTv: vi.fn(async () => false),
 }));
 
 const CHROMIUM = resolveDevice("chromium-cdp-9222");
@@ -49,6 +50,7 @@ beforeEach(() => {
   chromiumRead.mockReset().mockResolvedValue(content);
   vi.mocked(describeAndroid).mockReset().mockResolvedValue(content);
   vi.mocked(describeAndroidWithHelper).mockReset().mockResolvedValue(content);
+  vi.mocked(isAndroidTv).mockClear();
 });
 
 describe("waitForScreenIdle", () => {
@@ -109,5 +111,13 @@ describe("waitForScreenIdle", () => {
 
     expect(describeAndroidWithHelper).toHaveBeenCalled();
     expect(describeAndroid).not.toHaveBeenCalled();
+  });
+
+  it("skips the Android TV probe with androidHelperOnly, whose read takes no TV hint", async () => {
+    await waitForScreenIdle(registry(), ANDROID, { ...WAIT, androidHelperOnly: true });
+    expect(isAndroidTv).not.toHaveBeenCalled();
+
+    await waitForScreenIdle(registry(), ANDROID, WAIT);
+    expect(isAndroidTv).toHaveBeenCalledWith(ANDROID.id);
   });
 });
