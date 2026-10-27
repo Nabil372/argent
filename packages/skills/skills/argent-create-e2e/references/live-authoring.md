@@ -294,7 +294,7 @@ A failed step can show these lines under its reason:
 - `indeterminate:` shows that the step did not do its check, because Argent could not read the UI tree.
 - `hint:` shows a thing to try first, or a fact that helps you find the cause.
 
-Many failed steps have no `hint:` line. An `assert` or `await` with `exists`, `visible` or `hidden` that read the screen has none. `launch:`, `script:`, `run:` and most `tool:` steps have none. A `tool: e2e-execute` step shows the lines of the step that failed in the composed e2e test. Before you use a hint, look at the screen. A hint is only one possible cause.
+Many failed steps have no `hint:` line. An `assert` or `await` with `exists`, `visible` or `hidden` that read the screen has none. `launch:`, `script:`, `run:` and most `tool:` steps have none. A `tool: e2e-execute` step shows the lines of the step that failed in the composed e2e test, with two exceptions. If the failed step is a `snapshot:` step, the reason of the `tool: e2e-execute` step holds its `expected:` and `actual:` values. If the failed step has no `indeterminate:` line, the reason of the `tool: e2e-execute` step holds its hint. Before you use a hint, look at the screen. A hint is only one possible cause.
 
 Manual rescue invalidates the pass. These steps did not do their check:
 
