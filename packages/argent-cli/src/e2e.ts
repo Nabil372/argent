@@ -152,7 +152,7 @@ A directory run prints only the steps that need attention (each failure, each
 warning, and each script step's output), then its outcome. After the last test
 it lists every failed test: its reason, its expected/actual/indeterminate/hint
 lines, its "at <path>:<line>" location with the lines around it, and a command
-that re-runs that test alone. Then it prints a final summary; --recursive walks
+that re-runs that test alone. Then it prints a final summary. --recursive walks
 subdirectories too (dot-directories and node_modules are skipped). A test that
 fails its steps keeps the batch running, as does one the server rejects up
 front — an invalid file, or a device it cannot resolve. A transport failure, a
