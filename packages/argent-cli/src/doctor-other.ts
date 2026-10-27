@@ -26,7 +26,7 @@ const UPDATE_CHECK_DEADLINE_MS = 15_000;
  * Doctor must change nothing, but `pnpm config get` through corepack downloads
  * the project's pinned pnpm, and npm writes a debug log and its notifier stamp.
  */
-const READ_ONLY_PM_ENV = {
+export const READ_ONLY_PM_ENV = {
   COREPACK_ENABLE_NETWORK: "0",
   COREPACK_ENABLE_AUTO_PIN: "0",
   npm_config_update_notifier: "false",

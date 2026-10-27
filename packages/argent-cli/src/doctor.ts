@@ -37,7 +37,7 @@ import { claudeProjectKey, editorsSection, gitToplevel } from "./doctor-editors.
 import { skillsSection } from "./doctor-skills.js";
 import { entryRemoteChecks, toolServerSection } from "./doctor-tool-server.js";
 import { platformsSection } from "./doctor-platforms.js";
-import { otherSection } from "./doctor-other.js";
+import { READ_ONLY_PM_ENV, otherSection } from "./doctor-other.js";
 import { exitAfterFlush } from "./e2e.js";
 
 const execFileAsync = promisify(execFile);
@@ -113,6 +113,7 @@ async function launchdPath(): Promise<string | null> {
 async function npmGlobalHasArgent(): Promise<boolean | null> {
   try {
     const { stdout } = await execFileAsync("npm", ["prefix", "-g"], {
+      env: { ...process.env, ...READ_ONLY_PM_ENV },
       timeout: 5_000,
       shell: process.platform === "win32",
     });
