@@ -982,12 +982,12 @@ describe("formatDescribeTree: Expo dev Tools button reach on iOS", () => {
     // Icon centre 36 pt from the right edge, 88 pt from the top.
     const noted = describeIos(
       gear(366, 88),
-      button("above in", 366, 38),
-      button("above out", 366, 24),
-      button("below in", 366, 138),
-      button("below out", 366, 152),
-      button("beside in", 326, 88),
-      button("beside out", 314, 88)
+      button("above in", 366, 33),
+      button("above out", 366, 28),
+      button("below in", 366, 143),
+      button("below out", 366, 148),
+      button("beside in", 322, 88),
+      button("beside out", 317, 88)
     );
     expect(noted.sort()).toEqual(["above in", "below in", "beside in"]);
   });
@@ -996,12 +996,54 @@ describe("formatDescribeTree: Expo dev Tools button reach on iOS", () => {
     const noted = describeIos(
       gear(366, 88),
       at("AXStaticText", 366, 110, 30, 12, { label: "Tools" }),
-      button("above in", 366, 50),
-      button("above out", 366, 40),
-      button("below in", 366, 154),
-      button("below out", 366, 166)
+      button("above in", 366, 46),
+      button("above out", 366, 41),
+      button("below in", 366, 158),
+      button("below out", 366, 162)
     );
     expect(noted.sort()).toEqual(["above in", "below in"]);
+  });
+
+  it("takes the caption above the icon in an upside-down portrait UI", () => {
+    // iPad in PortraitUpsideDown keeps portrait-native frames, so the UI's
+    // bottom is the frame top.
+    const noted = describeIos(
+      gear(366, 800),
+      at("AXStaticText", 366, 778, 30, 12, { label: "Tools" }),
+      button("UI below in", 366, 732),
+      button("UI above out", 366, 846)
+    );
+    expect(noted).toEqual(["UI below in"]);
+  });
+
+  it("keeps the side-edge reading when short texts outnumber the lines", () => {
+    const shortTexts = ["3", "12", "7"].map((label, i) =>
+      at("AXStaticText", 100 + i * 30, 500, 17, 20, { label })
+    );
+    const line = at("AXStaticText", 201, 300, 60, 17, { label: "TAPLOG" });
+    expect(
+      describeIos(
+        ...shortTexts,
+        line,
+        gear(366, 88),
+        button("above", 366, 40),
+        button("beside", 314, 88)
+      )
+    ).toEqual(["above"]);
+    expect(describeIos(...shortTexts, line, gear(366, 176), button("dragged", 366, 200))).toEqual([
+      "dragged",
+    ]);
+  });
+
+  it("marks controls under every snapped gear", () => {
+    const appGear = gear(362, 400);
+    const noted = describeIos(
+      appGear,
+      button("NearAppGear", 362, 430),
+      gear(366, 88),
+      button("Edit", 366, 100)
+    );
+    expect(noted.sort()).toEqual(["Edit", "NearAppGear"]);
   });
 
   it("marks app text under the button that is not its caption", () => {
@@ -1063,6 +1105,31 @@ describe("formatDescribeTree: Expo dev Tools button reach on iOS", () => {
       );
       expect(noted).toEqual(["Near"]);
     });
+
+    it("reaches further towards the caption, the UI's bottom", () => {
+      const toPlusX = describeIos(
+        ...text,
+        gear(200, 88),
+        at("AXStaticText", 222, 88, 12, 30, { label: "Tools" }),
+        button("UI above", 140, 88),
+        button("UI below", 260, 88)
+      );
+      expect(toPlusX).toEqual(["UI below"]);
+      const toMinusX = describeIos(
+        ...text,
+        gear(200, 88),
+        at("AXStaticText", 178, 88, 12, 30, { label: "Tools" }),
+        button("UI above", 260, 88),
+        button("UI below", 140, 88)
+      );
+      expect(toMinusX).toEqual(["UI below"]);
+    });
+
+    it("snaps 68 to 90 pt from the UI's side edge in a notched landscape UI", () => {
+      // iPhone 14: 47 pt safe area, so the icon centre is 73 pt in.
+      expect(describeIos(...text, gear(200, 73), button("Near", 240, 73))).toEqual(["Near"]);
+      expect(describeIos(...text, gear(200, 95), button("Near", 240, 95))).toEqual([]);
+    });
   });
 });
 
@@ -1084,12 +1151,12 @@ describe("formatDescribeTree: Expo dev Tools button reach on Android", () => {
     const noted = describeAndroid(
       icon(cx, 66),
       caption(cx, 92),
-      button("above in", cx, 46),
-      button("above out", cx, 36),
-      button("beside in", cx - 22, 66),
-      button("beside out", cx - 30, 66),
-      button("below in", cx, 130),
-      button("below out", cx, 138)
+      button("above in", cx, 42),
+      button("above out", cx, 38),
+      button("beside in", cx - 24, 66),
+      button("beside out", cx - 28, 66),
+      button("below in", cx, 132),
+      button("below out", cx, 136)
     );
     expect(noted.sort()).toEqual(["above in", "below in", "beside in"]);
   });
@@ -1097,19 +1164,21 @@ describe("formatDescribeTree: Expo dev Tools button reach on Android", () => {
   it("reaches 26 dp below once the caption has gone", () => {
     const noted = describeAndroid(
       icon(cx, 66),
-      button("below in", cx, 88),
-      button("below out", cx, 96)
+      button("below in", cx, 90),
+      button("below out", cx, 94)
     );
     expect(noted).toEqual(["below in"]);
   });
 
   it("takes only the text under the icon as its caption", () => {
-    // An app's "Tools" heading elsewhere does not stretch the area, and its
-    // own "Tools" text beside the icon still gets the note.
+    // App "Tools" texts above the icon or far down its column do not stretch
+    // the area, and one beside the icon still gets the note.
     const noted = describeAndroid(
       icon(cx, 66),
-      at("TextView", width / 2, 860, 60, 20, { label: "Tools" }),
+      at("TextView", cx, 860, 60, 20, { label: "Tools" }),
+      at("TextView", cx, 20, 30, 12, { label: "Tools" }),
       at("TextView", cx - 20, 70, 30, 12, { label: "Tools" }),
+      button("above out", cx, 30),
       button("below out", cx, 110)
     );
     expect(noted).toEqual(["Tools"]);

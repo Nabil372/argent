@@ -294,7 +294,7 @@ function toExpoFab(
   axis: ExpoFabAcrossAxis
 ): ExpoFab {
   const caption = all.find((n) => isCaptionOf(n, icon.frame, model, axis));
-  return { icon, caption, area: expoFabArea(icon.frame, model, axis, caption !== undefined) };
+  return { icon, caption, area: expoFabArea(icon.frame, model, axis, caption) };
 }
 
 function hasIconSize(f: DescribeFrame): boolean {
@@ -306,12 +306,16 @@ function hasIconSize(f: DescribeFrame): boolean {
   );
 }
 
+// A text at least this many times longer than it is tall reads as a line.
+const EXPO_TEXT_LINE_RATIO = 2;
+
 /**
  * The axes a snapped icon may sit across, most likely first. A landscape UI
  * on the iOS simulator keeps portrait-native frames, where the UI's side edge
  * is the top or bottom of the frame space. The tree does not report the
  * orientation, so it is read from the text: a line of text runs across the
- * UI, which is down the frame space when the UI is rotated.
+ * UI, which is down the frame space when the UI is rotated. Short texts such
+ * as "12" or a badge are about as tall as they are wide and do not vote.
  */
 function expoFabAxesToTry(
   all: DescribeNode[],
@@ -327,8 +331,8 @@ function expoFabAxesToTry(
     if (!n.label || !/text/i.test(n.role)) continue;
     const w = n.frame.width / unitX;
     const h = n.frame.height / unitY;
-    if (w > h) wide++;
-    else if (h > w) tall++;
+    if (w >= h * EXPO_TEXT_LINE_RATIO) wide++;
+    else if (h >= w * EXPO_TEXT_LINE_RATIO) tall++;
   }
   if (wide > tall) return ["x"];
   if (tall > wide) return ["y"];
@@ -355,7 +359,8 @@ function offsetFromIcon(n: DescribeNode, iconFrame: DescribeFrame, axis: ExpoFab
 
 /**
  * The "Tools" caption sits centred under the icon, inside the button. With
- * portrait-native frames the UI's "under" may be either way along the edge.
+ * portrait-native frames (a rotated or upside-down UI) the UI's "under" may be
+ * either way along the edge.
  */
 function isCaptionOf(
   n: DescribeNode,
@@ -365,7 +370,7 @@ function isCaptionOf(
 ): boolean {
   if (n.label !== "Tools" || !/text/i.test(n.role)) return false;
   const { across, along } = offsetFromIcon(n, iconFrame, axis);
-  const below = axis === "x" ? along : Math.abs(along);
+  const below = model.portraitNativeFrames ? Math.abs(along) : along;
   return Math.abs(across) <= EXPO_FAB_ICON / 2 && below > 0 && below <= model.withCaption.after;
 }
 
@@ -373,26 +378,28 @@ function expoFabArea(
   f: DescribeFrame,
   model: ExpoFabModel,
   axis: ExpoFabAcrossAxis,
-  hasCaption: boolean
+  caption: DescribeNode | undefined
 ): ExpoFab["area"] {
   const unitX = f.width / EXPO_FAB_ICON;
   const unitY = f.height / EXPO_FAB_ICON;
   const c = centreOf(f);
-  const reach = hasCaption ? model.withCaption : model.withoutCaption;
+  const reach = caption ? model.withCaption : model.withoutCaption;
+  // The caption marks the UI's bottom. Without it the reach is the same both ways.
+  const uiBottomIsBackwards = caption !== undefined && offsetFromIcon(caption, f, axis).along < 0;
+  const [back, forward] = uiBottomIsBackwards
+    ? [reach.after, reach.before]
+    : [reach.before, reach.after];
   if (axis === "x") {
     return {
       x0: c.x - model.halfAcross * unitX,
       x1: c.x + model.halfAcross * unitX,
-      y0: c.y - reach.before * unitY,
-      y1: c.y + reach.after * unitY,
+      y0: c.y - back * unitY,
+      y1: c.y + forward * unitY,
     };
   }
-  // Which way the UI's top lies along the frame's x axis depends on the
-  // landscape rotation, which the tree does not report.
-  const along = Math.max(reach.before, reach.after);
   return {
-    x0: c.x - along * unitX,
-    x1: c.x + along * unitX,
+    x0: c.x - back * unitX,
+    x1: c.x + forward * unitX,
     y0: c.y - model.halfAcross * unitY,
     y1: c.y + model.halfAcross * unitY,
   };
