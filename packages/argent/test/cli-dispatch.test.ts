@@ -78,12 +78,14 @@ interface RunResult {
 function runCli(
   args: string[],
   markerPath: string,
-  env: Record<string, string> = {},
-  node = process.execPath
+  env: Record<string, string | undefined> = {},
+  node = process.execPath,
+  argv0?: string
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(node, [cliEntry, ...args], {
       cwd: stageRoot,
+      argv0,
       // stdin is /dev/null: a real interactive uninstall prompt would read EOF
       // here, so a regression can't silently hang the suite.
       stdio: ["ignore", "pipe", "pipe"],
@@ -219,6 +221,31 @@ describe("cli dispatcher: installer-help guard", () => {
       expect(recorded).not.toContain(path.dirname(fs.realpathSync(process.execPath)));
     }
   );
+
+  function recordedMcpPath(marker: string): string[] {
+    return fs.readFileSync(marker, "utf8").slice("startMcpServer:".length).split(path.delimiter);
+  }
+
+  it.skipIf(process.platform === "win32")(
+    "`mcp` keeps the OS default search path when it starts with no PATH",
+    async () => {
+      for (const PATH of [undefined, ""]) {
+        const marker = freshMarker();
+        await runCli(["mcp"], marker, { PATH });
+        const recorded = recordedMcpPath(marker);
+        expect(recorded.slice(0, 2)).toEqual(["/usr/bin", "/bin"]);
+        expect(recorded).toContain(path.dirname(process.execPath));
+        expect(recorded).not.toContain("");
+      }
+    }
+  );
+
+  it("`mcp` started through `#!/usr/bin/env node` (argv0 `node`) uses execPath's dir", async () => {
+    const marker = freshMarker();
+    const full = ["/usr/bin", path.dirname(process.execPath)].join(path.delimiter);
+    await runCli(["mcp"], marker, { PATH: full }, process.execPath, "node");
+    expect(fs.readFileSync(marker, "utf8")).toBe(`startMcpServer:${full}`);
+  });
 
   it("`mcp` leaves a PATH that already has its node alone", async () => {
     const marker = freshMarker();

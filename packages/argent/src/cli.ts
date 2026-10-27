@@ -108,7 +108,8 @@ const FALLBACK_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin"];
  * is shared with later sessions. Appending never shadows the editor's own PATH.
  */
 function putLaunchDirsOnPath(): void {
-  const PATH = process.env.PATH ?? "";
+  // An unset or empty PATH means the OS default search path to execvp.
+  const PATH = process.env.PATH || (process.platform === "win32" ? "" : "/usr/bin:/bin");
   const entries = PATH.split(path.delimiter);
   const nodeBin = path.isAbsolute(process.argv0) ? process.argv0 : process.execPath;
   const nodeDir = path.dirname(nodeBin);
