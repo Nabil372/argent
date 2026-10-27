@@ -183,6 +183,36 @@ describe("editor and skill sections", () => {
     expect(checks.find((c) => c.label.startsWith("Claude Code"))?.status).toBe("error");
   });
 
+  describe("cwd an editor resolves differently", () => {
+    const rel = "node_modules/@swmansion/argent/dist/cli.js";
+    const nodeEntry = (cwd: string) => ({ command: "node", args: [rel, "mcp"], cwd });
+
+    beforeEach(() => {
+      fs.mkdirSync(path.dirname(path.join(projectRoot, "apps", "mobile", rel)), {
+        recursive: true,
+      });
+      fs.writeFileSync(path.join(projectRoot, "apps", "mobile", rel), "");
+    });
+
+    it("leaves ${workspaceFolder} in a Gemini cwd unexpanded", () => {
+      writeJson(path.join(projectRoot, ".gemini", "settings.json"), {
+        mcpServers: { argent: nodeEntry("${workspaceFolder}/apps/mobile") },
+      });
+      const checks = editorsSection(doctorCtx()).checks;
+      expect(checks.find((c) => c.label.startsWith("Gemini: node"))?.status).toBe("info");
+    });
+
+    it("does not resolve a relative Kiro cwd against the project", () => {
+      writeJson(path.join(projectRoot, ".kiro", "settings", "mcp.json"), {
+        mcpServers: { argent: nodeEntry("apps/mobile") },
+      });
+      const checks = editorsSection(doctorCtx()).checks;
+      expect(checks.find((c) => c.label.startsWith("Kiro"))?.label).toMatch(
+        /relative to the editor's own directory/
+      );
+    });
+  });
+
   it("flags a .mcp.json Claude Code cannot parse", () => {
     fs.writeFileSync(
       path.join(projectRoot, ".mcp.json"),
