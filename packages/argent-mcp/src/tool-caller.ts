@@ -68,7 +68,7 @@ interface ToolCaller {
   callTool(
     name: string,
     args: unknown
-  ): Promise<{ result: unknown; outputHint?: string; note?: string }>;
+  ): Promise<{ result: unknown; outputHint?: string; note?: string; profiling?: boolean }>;
   /**
    * Starts an iOS simulator's accessibility reader. One attempt, no reconnect:
    * the agent did not ask for it, so it must not be resent beside the agent's
@@ -150,8 +150,8 @@ export function createToolCaller(deps: ToolCallerDeps): ToolCaller {
   return {
     fetchTools: client.fetchTools,
     async callTool(name, args) {
-      const { data, note, outputHint } = await client.callTool(name, args);
-      return { result: data, outputHint, note };
+      const { data, note, outputHint, profiling } = await client.callTool(name, args);
+      return { result: data, outputHint, note, ...(profiling ? { profiling } : {}) };
     },
     warmScreenReader,
   };
