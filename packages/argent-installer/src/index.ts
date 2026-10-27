@@ -31,7 +31,6 @@ export {
   detectAdapters,
   findConfiguredAdapterScopes,
   getManagedContentTargets,
-  hasCustomizingEnv,
   isArgentDisabledInClaudeProject,
   isSwitchedOffInEditor,
   hasCodexRules,
