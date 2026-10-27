@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { z } from "zod";
@@ -96,21 +96,42 @@ function findDeclaringProjectRoot(startDir: string): string | null {
 
 // Package root of the first `argent` on PATH: the install `argent update
 // --global` resolves as its target. Null when there is none or it is not a
-// symlink into an argent package (Windows wrappers, shims).
+// symlink into an argent package (Windows wrappers, Volta / pnpm shims).
 function pathGlobalInstallRoot(): string | null {
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-    if (!dir) continue;
-    try {
-      const root = path.dirname(path.dirname(fs.realpathSync(path.join(dir, "argent"))));
-      const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
-        name?: string;
-      };
-      return pkg.name === PACKAGE_NAME ? root : null;
-    } catch {
-      // no argent in this dir, keep looking
-    }
+  const dir = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .find((entry) => entry !== "" && fs.existsSync(path.join(entry, "argent")));
+  if (!dir) return null;
+  try {
+    const root = path.dirname(path.dirname(fs.realpathSync(path.join(dir, "argent"))));
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")) as {
+      name?: string;
+    };
+    return pkg.name === PACKAGE_NAME ? root : null;
+  } catch {
+    return null;
   }
-  return null;
+}
+
+// Whether the `npm` the spawned updater runs installs global packages into
+// `root`. An editor can put its own Node runtime first on PATH (JetBrains'
+// ACP agents), whose npm has a prefix of its own. Unknown counts as yes.
+function npmInstallsGloballyInto(root: string): boolean {
+  let npmRoot: string;
+  try {
+    npmRoot = execFileSync("npm", ["root", "-g"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 10_000,
+    }).trim();
+  } catch {
+    return true;
+  }
+  try {
+    return fs.realpathSync(path.join(npmRoot, PACKAGE_NAME)) === root;
+  } catch {
+    return false;
+  }
 }
 
 const ARGENT_BIN_NAMES =
@@ -250,6 +271,15 @@ export const updateArgentTool: ToolDefinition<{
             `${pathRoot}, which is the one an update would change. Ask the user to run ` +
             "`argent update` in a terminal and then restart the editor, which reconnects it to the " +
             "updated install.",
+        };
+      }
+      if (pathRoot && !npmInstallsGloballyInto(pathRoot)) {
+        return {
+          message:
+            `The \`npm\` on this tool server's PATH installs global packages outside ${pathRoot}, ` +
+            "so an update would land in another Node installation (the editor likely put its own " +
+            "Node runtime first on PATH). Ask the user to run `argent update` in a terminal and " +
+            "then restart the editor.",
         };
       }
     }
