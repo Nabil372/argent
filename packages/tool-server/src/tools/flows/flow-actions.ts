@@ -1,5 +1,5 @@
 import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
-import { getFailureSignal, printCapped } from "@argent/registry";
+import { getFailureSignal } from "@argent/registry";
 import {
   getDescribeTapPoint,
   type DescribeFrame,
@@ -2592,10 +2592,10 @@ function assertReason(
         actual: shown,
         ...(own !== "" &&
           own !== shown && {
-            // JSON-quoted and cut like the `actual:` line, so a quote or a
-            // backslash in the device text cannot end the quoted value early.
-            // A step's `actual` keeps the whole text; only this prose is cut.
-            hint: `the element's own text is ${printCapped(own, JSON.stringify)}; the check accepts the subtree text or the own text`,
+            // JSON-quoted like the `actual:` line, so a quote or a backslash in
+            // the device text cannot end the quoted value early. Never cut: no
+            // other field of the report holds the own text.
+            hint: `the element's own text is ${JSON.stringify(own)}; the check accepts the subtree text or the own text`,
           }),
       };
     }

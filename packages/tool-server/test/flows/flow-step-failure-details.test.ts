@@ -263,17 +263,34 @@ describe("text check failures", () => {
     );
   });
 
-  it("cuts a long own text in the hint at 300 characters and counts the rest outside the quotes", async () => {
-    const own = "Total ".repeat(80);
-    currentTree = () => screen([label(own, { identifier: "total", subtreeText: `${own} $41.50` })]);
-    await writeFlow("own-text-long", { executionPrerequisite: "", steps: [assertTotalEquals42] });
+  it("keeps the whole of a long own text in the report", async () => {
+    // The hint is the only field of the report that holds the own text, and
+    // the check accepts the own text. A difference after character 300 must
+    // stay in the report.
+    const own =
+      "Terms of Service, " +
+      "lorem ipsum dolor sit amet ".repeat(13) +
+      "and more, version 2.1 effective 2026";
+    currentTree = () =>
+      screen([label(own, { identifier: "terms", subtreeText: "Terms of Service Accept" })]);
+    await writeFlow("own-text-whole", {
+      executionPrerequisite: "",
+      steps: [
+        {
+          kind: "assert",
+          condition: "text",
+          selector: { identifier: "terms" },
+          expectedText: own.replace("2.1", "2.0"),
+          textMatch: "equals",
+        },
+      ],
+    });
 
-    const [step] = (await run("own-text-long")).steps;
+    const report = await run("own-text-whole");
 
-    expect(step.hint).toBe(
-      `the element's own text is "${own.slice(0, 300)}" … (180 more characters); the check ` +
-        "accepts the subtree text or the own text"
-    );
+    expect(report.steps[0].status).toBe("fail");
+    expect(own).toHaveLength(405);
+    expect(JSON.stringify(report)).toContain(own);
   });
 
   it("keeps the own-text hint when the final poll fails, and closes the reason with the note", async () => {
