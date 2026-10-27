@@ -560,7 +560,8 @@ export function evaluateCondition(
   expectedText: string | undefined,
   matches: DescribeNode[],
   textMatch: TextMatchMode = "contains",
-  orientation?: UiOrientation
+  orientation?: UiOrientation,
+  textFieldsShowText = false
 ): boolean {
   switch (condition) {
     case "exists":
@@ -578,10 +579,12 @@ export function evaluateCondition(
       // negative lookahead can check an empty field. Selector matching still
       // skips empty text, or `.*` would select every unlabeled view. Not an
       // iOS text field: the simulator's view tree carries no typed text, so a
-      // filled field reads "" there (an empty one reads its placeholder).
+      // filled field reads "" there (an empty one reads its placeholder). A Mac
+      // app's fields report their text (`textFieldsShowText`), except a
+      // password field, whose text argent never reads.
       if (
         textMatch === "matches" &&
-        first.role !== "AXTextField" &&
+        (textFieldsShowText ? !first.password : first.role !== "AXTextField") &&
         !assertText(first) &&
         !nodeText(first)
       ) {

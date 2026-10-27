@@ -22,9 +22,10 @@ import { describeAndroid, androidRequires } from "../describe/platforms/android"
 import { describeChromium } from "../describe/platforms/chromium";
 import { describeVega, vegaRequires } from "../describe/platforms/vega";
 import { pollHarmonyTree, harmonyRequires } from "../describe/platforms/harmony";
+import { describeMacosForJudging } from "../flows/flow-macos-tree";
 import {
   selectorSchema,
-  nodeText,
+  assertText,
   findAll,
   isVisible,
   firstInReadingOrder,
@@ -99,7 +100,7 @@ const zodSchema = z
       .string()
       .min(1)
       .describe(
-        "Target device id from `list-devices` (iOS UDID, Android serial, <flag:harmonyos>HarmonyOS id, </flag:harmonyos>or Chromium id)."
+        "Target device id from `list-devices` (iOS UDID, Android serial, <flag:harmonyos>HarmonyOS id, </flag:harmonyos><flag:macos-apps>Mac app id, </flag:macos-apps>or Chromium id)."
       ),
     condition: z
       .enum(["exists", "visible", "hidden", "text"])
@@ -257,13 +258,21 @@ const capability: ToolCapability = {
   chromium: { app: true },
   vega: { vvd: true },
   harmony: { device: true },
+  macos: { app: true },
 };
 
 // The matching engine lives in utils/ui-tree-match so the flow directives and
 // recorder reuse the exact selector semantics; `evaluateMatches` is a
 // params-shaped wrapper for this tool and its tests.
 export function evaluateMatches(params: Params, matches: DescribeNode[]): boolean {
-  return evaluateCondition(params.condition, params.expectedText, matches, params.textMatch);
+  return evaluateCondition(
+    params.condition,
+    params.expectedText,
+    matches,
+    params.textMatch,
+    undefined,
+    params.udid !== undefined && resolveDevice(params.udid).platform === "macos"
+  );
 }
 
 // Fold the read's hint / restart prompt into the timeout note so the agent sees
@@ -292,11 +301,12 @@ function timeoutNote(
   switch (params.condition) {
     case "text": {
       // Visible-first, mirroring evaluateCondition, so the note quotes the
-      // element the check read.
+      // element the check read, and the text it read (a Mac app's container
+      // is checked against its subtree text).
       const first = firstInReadingOrder(matches.filter(isVisible)) ?? firstInReadingOrder(matches);
       const wanted = params.textMatch === "equals" ? "equal" : "contain";
       base = first
-        ? `element matched but its text was "${nodeText(first)}" (wanted to ${wanted} "${params.expectedText}")`
+        ? `element matched but its text was "${assertText(first)}" (wanted to ${wanted} "${params.expectedText}")`
         : "no element matched the selector before timeout";
       break;
     }
@@ -349,6 +359,12 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     if (device.platform === "harmony") {
       return pollHarmonyTree(harmonyConnectKey(device.id), budgetMs);
     }
+    if (device.platform === "macos") {
+      // A read known to miss content (a web view, an element that did not
+      // answer) cannot judge `hidden`: the failed fetch is retried, and
+      // reported as unreadable at the deadline.
+      return describeMacosForJudging(registry, device, AWAIT_UI_ELEMENT_TOOL_ID);
+    }
     return describeChromium(services.chromium as ChromiumCdpApi);
   }
 
@@ -378,7 +394,7 @@ case-insensitive substrings of the element's label/value and role; identifier ma
 also accepting the unqualified Android resource-id name ('submit' matches 'com.example.app:id/submit').
 It polls the same accessibility / DOM tree as \`describe\`
 (iOS simulator AXRuntime, physical-iOS runner snapshot, Android uiautomator, Chromium CDP,
-Vega automation toolkit<flag:harmonyos>, HarmonyOS \`uitest dumpLayout\`</flag:harmonyos>) every pollIntervalMs
+Vega automation toolkit<flag:harmonyos>, HarmonyOS \`uitest dumpLayout\`</flag:harmonyos><flag:macos-apps>, the in-app library of a Mac app</flag:macos-apps>) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
 
 Returns { success: boolean, elapsed: number, note?, cause? }. success=false means the wait ended without the

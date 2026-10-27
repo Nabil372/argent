@@ -61,6 +61,8 @@ import { stepAnchor, summarizeStep } from "./flow-step-definitions";
 import { invokeSubTool, describeNestedParamError } from "../../utils/sub-invoke";
 import { isNativeDevtoolsBlockResult } from "../../blueprints/native-devtools";
 import { resolveDevice } from "../../utils/device-info";
+import { assertSupported } from "../../utils/capability";
+import { MACOS_DESCRIBE_LIMITS, MACOS_JUDGING_LIMITS } from "../describe/platforms/macos";
 import { settleWithin } from "../../utils/timing";
 import { stripDeviceKeys } from "./flow-device";
 import { fetchFlowTree, supportsFlowTree } from "./flow-tree";
@@ -106,10 +108,13 @@ const zodSchema = z.object({
 // Replay gates on the platform's full-hierarchy source (`treeSourceGate` in
 // flow-run.ts) and refuses to degrade to the fallback tree, so a selector
 // derived from the fallback deserves a caveat even when it derives cleanly.
-// Chromium/Vega have a single source — no caveat.
+// Chromium/Vega have a single source — no caveat. A Mac app reads a different
+// tree while the Mac is locked ("macos-fallback"), so a step recorded on a
+// locked Mac gets the caveat.
 const REPLAY_TREE_SOURCES: Record<string, DescribeSource> = {
   ios: "native-devtools",
   android: "android-devtools",
+  macos: "macos-devtools",
 };
 
 /**
@@ -131,6 +136,10 @@ function fallbackSourceWarning(source: DescribeSource, platform: string): string
   // hierarchy a local one does, so it earns the same caveat.
   const expected = REPLAY_TREE_SOURCES[authoringPlatform(platform)];
   if (!expected || source === expected) return undefined;
+  if (platform === "macos") {
+    // The Mac source follows the screen lock, not an outage.
+    return `selector captured while the Mac was locked (the ${source} tree, not ${expected}): a replay on an unlocked Mac reads the ${expected} tree, which may not match it`;
+  }
   return `selector captured from the fallback ${source} tree (${expected} unavailable) — replay resolves against the full hierarchy, which may not match it`;
 }
 
@@ -150,7 +159,8 @@ function hasRunnerTree(udid: unknown): boolean {
 /**
  * Fallback for a platform the clauses below do not name. Unreachable today: a
  * determinate verdict needs `fetchFlowTree`, which answers only on ios,
- * ios-remote, android, chromium and vega, and the clauses read ios-remote as ios.
+ * ios-remote, android, chromium, vega and macos, and the clauses read ios-remote
+ * as ios.
  */
 const UNSUPPORTED_PLATFORM = {
   divergence: "The recorder and the runner read different projections of the screen.",
@@ -178,8 +188,8 @@ function retargetRemedy(idKind: string, condition: WaitCondition): string {
 }
 
 /**
- * How to read the tree the runner resolves against — or, on iOS, Android and
- * Chromium, that no read-only tool reports it. `describe` and the native
+ * How to read the tree the runner resolves against — or, on iOS, Android,
+ * Chromium and macOS, that no read-only tool reports it. `describe` and the native
  * readers each show a different projection, so naming one of them would point
  * the author at the wrong tree.
  *
@@ -238,6 +248,29 @@ function runnerSideReadClause(udid: unknown, condition: WaitCondition): string {
       "so only an `id`/`role` selector can match it"
     );
   }
+  if (platform === "macos") {
+    const settle =
+      "No read-only tool reports the runner's flat list on macOS: `describe` prints the nested " +
+      "tree, with the windows, scroll bars and unlabelled containers the runner drops, and it " +
+      `stops at ${MACOS_DESCRIBE_LIMITS.maxNodes} elements where the runner reads ` +
+      `${MACOS_JUDGING_LIMITS.maxNodes}. Settle it by running the conversion: put the ` +
+      "directive in an e2e test and `e2e-execute` it. ";
+    if (condition === "hidden") {
+      return (
+        settle +
+        "This verdict says that tree still HAS the element, so a switch to an `id`/`role` " +
+        "selector or a `scroll-to` before the check only makes the directive match more surely. " +
+        "Narrow the selector until it matches only what you expect to leave, or gate on " +
+        "something that does leave; or keep the step raw"
+      );
+    }
+    return (
+      settle +
+      "An element without an id, a label, a value, a clickable role or focus is not in the " +
+      "runner's list: retarget at an element that carries one; a password field reaches the " +
+      "runner under the name `[password]`, so only an `id`/`role` selector can match it"
+    );
+  }
   if (platform === "vega") {
     return (
       "`describe` reads the same source the runner does, so re-run the wait rather than " +
@@ -289,6 +322,30 @@ function treeDivergenceFor(udid: unknown, condition: WaitCondition): string {
       "5000-node walk limit is not what went wrong. The runner tree keeps only addressable nodes " +
       "(id, label, value, clickable or focused) whose frame the walker did not clamp to zero " +
       "area for being off-viewport, and it redacts a password field's name to `[password]`." +
+      SCREEN_MAY_HAVE_MOVED
+    );
+  }
+  if (platform === "macos") {
+    // Both sides take one read of the same elements; the flow tree then keeps
+    // a subset of the nodes, renamed only for a password. The condition says
+    // which side lost the element, as on Chromium.
+    if (condition === "hidden") {
+      return (
+        `Both read the same elements with the same limits (${MACOS_JUDGING_LIMITS.maxNodes} ` +
+        `elements, ${MACOS_JUDGING_LIMITS.maxItems} items per web view), both refuse an ` +
+        "incomplete read, and the runner's flat list only DROPS nodes from that read. Here it is " +
+        "the RECORDER that never saw the element: the live wait passed on absence, and this " +
+        "verdict says the runner's tree holds it, so nothing the runner tree drops can be the " +
+        "cause. What is left: the runner names a password field `[password]`, so a selector on " +
+        "that name matches only there." +
+        SCREEN_MAY_HAVE_MOVED
+      );
+    }
+    return (
+      "Both read the same elements, and here it is the RUNNER's side to check: the live wait " +
+      "passed, so the recorder's tree did hold a matching element. The runner tree keeps only " +
+      "addressable leaves (id, label, value, a clickable role or focus), never a window, scroll " +
+      "bar or value indicator, and it redacts a password field's name to `[password]`." +
       SCREEN_MAY_HAVE_MOVED
     );
   }
@@ -845,7 +902,8 @@ export function directiveCommandHint(command: string): string | undefined {
   if (command === "swipe") {
     return (
       `"swipe" is an e2e test directive, not a tool. Record the movement by calling \`gesture-swipe\` ` +
-      `(\`gesture-drag\` on chromium, where gesture-swipe is not supported) through e2e-add-step. ` +
+      `(\`gesture-drag\` on chromium and macOS, where gesture-swipe is not supported) through ` +
+      `e2e-add-step. ` +
       `It is stored as the raw \`tool:\` step for whichever one you called; converting it to ` +
       `\`swipe:\` is part of the polish pass.`
     );
@@ -878,7 +936,7 @@ export function directiveCommandHint(command: string): string | undefined {
     return (
       `"scroll-to" is an e2e test directive, not a tool, and no tool records one — it SEARCHES, ` +
       `scrolling until the target is visible, which no single recorded gesture reproduces. ` +
-      `Record the movement with \`gesture-swipe\` (\`gesture-scroll\` on chromium) if the path ` +
+      `Record the movement with \`gesture-swipe\` (\`gesture-scroll\` on chromium and macOS) if the path ` +
       `needs it, then add the \`scroll-to:\` step by hand during polish and prove it with the ` +
       `replay.`
     );
@@ -1443,6 +1501,12 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
       let prepared: PreparedToolStep | undefined;
       let toolResult: unknown;
       try {
+        // Refused as the runner refuses a raw `tool:` step: a sub-invocation
+        // skips the HTTP capability gate.
+        const device = typeof args.udid === "string" ? resolveDevice(args.udid) : undefined;
+        if (device?.platform === "macos") {
+          assertSupported(params.command, registry.getTool(params.command)?.capability, device);
+        }
         prepared = await prepareToolStepInputs(registry, project, params.command, args);
         const nestedFromClient =
           command === RUN_TARGET_COMMAND && prepared.fileInputs !== undefined;
@@ -1593,16 +1657,25 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
         isTap && typeof cc === "number" && Number.isInteger(cc) && cc >= 2 && cc <= 10
           ? { times: cc }
           : {};
+      // A right-click must survive it as `button`, or replay would left-click.
+      // Left is the default (absent).
+      const tapButton = isTap && args.button === "right" ? { button: "right" as const } : {};
 
       let step: FlowStep;
       let warning: string | undefined;
       if (captured?.selector) {
-        step = { kind: "tap", selector: captured.selector, ...tapTimes };
+        step = { kind: "tap", selector: captured.selector, ...tapTimes, ...tapButton };
         warning = captured.warning;
       } else if (isTap) {
         // No stable selector — keep a coordinate tap, but still as a `tap:`
         // directive so every tap reads uniformly.
-        step = { kind: "tap", x: args.x as number, y: args.y as number, ...tapTimes };
+        step = {
+          kind: "tap",
+          x: args.x as number,
+          y: args.y as number,
+          ...tapTimes,
+          ...tapButton,
+        };
         warning = captured?.warning;
       } else if (isLaunch) {
         const bundleId = strippedArgs.bundleId as string;

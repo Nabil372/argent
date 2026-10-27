@@ -52,6 +52,13 @@ interface MouseEventArgs {
   clickCount?: number;
 }
 
+const MOUSE_BUTTON_BITS: Record<NonNullable<MouseEventArgs["button"]>, number> = {
+  none: 0,
+  left: 1,
+  right: 2,
+  middle: 4,
+};
+
 interface KeyEventArgs {
   type: "keyDown" | "keyUp" | "rawKeyDown" | "char";
   /** Browser-style key value, e.g. "a", "Enter", "ArrowLeft". */
@@ -194,7 +201,8 @@ export const chromiumCdpBlueprint: ServiceBlueprint<ChromiumCdpApi, DeviceInfo> 
           );
         }
         const button = event.button ?? (event.type === "mouseMoved" ? "none" : "left");
-        const buttons = button === "none" ? 0 : 1;
+        // The DOM `buttons` bitmask: a right press is 2, not the left button's 1.
+        const buttons = MOUSE_BUTTON_BITS[button];
         const payload: Record<string, unknown> = {
           type: event.type,
           x: event.x,

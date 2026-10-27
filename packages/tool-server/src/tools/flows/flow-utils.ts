@@ -631,9 +631,9 @@ type IosLaunch = string | { app: string; args?: string[] };
  * The app a `launch` step starts from scratch. A bare string applies to every
  * platform; the map targets a specific id per platform (chromium takes a path —
  * see {@link ChromiumLaunch}), and `ios` may carry launch args ({@link IosLaunch}).
- * `native` is a shared id for the installed-app platforms (ios/android/vega),
- * overridden by a specific `ios`/`android`/`vega` key. A flow that BEGINS with a `launch` step is standalone; one that doesn't
- * is a fragment.
+ * `native` is a shared id for the installed-app platforms (ios/android/vega/macos),
+ * overridden by a specific `ios`/`android`/`vega`/`macos` key. A flow that BEGINS
+ * with a `launch` step is standalone; one that doesn't is a fragment.
  */
 export type Launch =
   | string
@@ -642,6 +642,8 @@ export type Launch =
       ios?: IosLaunch;
       android?: string;
       vega?: string;
+      /** A Mac app's bundle id. */
+      macos?: string;
       chromium?: ChromiumLaunch;
     };
 
@@ -742,7 +744,16 @@ export type FlowStep =
   // `flow` is the as-written YAML path, resolved against the containing file's directory.
   | { kind: "run"; flow: string }
   | { kind: "when"; condition: WhenCondition; steps: FlowStep[] }
-  | { kind: "tap"; selector?: FlowSelector; x?: number; y?: number; times?: number }
+  | {
+      kind: "tap";
+      selector?: FlowSelector;
+      x?: number;
+      y?: number;
+      times?: number;
+      // Only the non-default right button is ever stored: absent is the left
+      // one, so parse/serialize stay exact inverses (as `times: 1` is absent).
+      button?: "right";
+    }
   | { kind: "long-press"; selector?: FlowSelector; x?: number; y?: number; duration?: number }
   | {
       kind: "swipe";
@@ -882,7 +893,7 @@ function isE2eFlow(flow: FlowFile): boolean {
 
 /**
  * Resolve the launch app id for a platform, or null when none is declared. For
- * ios/android/vega a specific key wins, else the shared `native` id. For
+ * ios/android/vega/macos a specific key wins, else the shared `native` id. For
  * chromium this returns the app *path* (never `native`) — chromium booters want
  * {@link chromiumLaunchSpec}, which also carries the CLI args.
  *
@@ -982,9 +993,10 @@ type YamlTarget = YamlSelector | { x: number; y: number };
 /**
  * A tap targets an element or a raw point. The options form nests the target
  * under `on` so option keys never mix with target fields:
- * `{ on: <target>, times: 2 }` is a double-tap.
+ * `{ on: <target>, times: 2 }` is a double-tap, `{ on: <target>, button: right }`
+ * a right-click.
  */
-type TapBody = YamlTarget | { on: YamlTarget; times?: number };
+type TapBody = YamlTarget | { on: YamlTarget; times?: number; button?: "right" };
 
 /**
  * A `swipe` body: a bare direction (`swipe: left`) or the options form. The
@@ -1561,10 +1573,17 @@ function toYamlStep(step: FlowStep): YamlStep {
     }
     case "tap": {
       // The options form appears only when an option is present (`times` is
-      // never stored as 1 — see parseTapTimes), so a plain tap round-trips to
-      // the plain selector/point body.
+      // never stored as 1, `button` never as left - see parseTapTimes and
+      // parseTapButton), so a plain tap round-trips to the plain selector/point body.
       const target = targetToYaml(step);
-      return { tap: step.times !== undefined ? { on: target, times: step.times } : target };
+      if (step.times === undefined && step.button === undefined) return { tap: target };
+      return {
+        tap: {
+          on: target,
+          ...(step.times !== undefined ? { times: step.times } : {}),
+          ...(step.button !== undefined ? { button: step.button } : {}),
+        },
+      };
     }
     case "long-press": {
       const target = targetToYaml(step);
@@ -2309,7 +2328,7 @@ function isIdleCondition(raw: unknown, kind: "await" | "assert"): boolean {
  * The platforms an AUTHOR can name in a flow file: launch-map keys and
  * `when: { platform }` guards ({@link WhenPlatform}).
  */
-const LAUNCH_PLATFORMS = ["ios", "android", "chromium", "vega"] as const;
+const LAUNCH_PLATFORMS = ["ios", "android", "chromium", "vega", "macos"] as const;
 
 /**
  * The platforms a RUN can be pointed at — flow-device's `FlowPlatform` and
@@ -2407,6 +2426,7 @@ function parseLaunch(raw: unknown): Launch {
         ios?: IosLaunch;
         android?: string;
         vega?: string;
+        macos?: string;
         chromium?: ChromiumLaunch;
       } = {};
       let valid = true;
@@ -2545,6 +2565,17 @@ function parseTapTimes(raw: unknown, entry: unknown): number | undefined {
 }
 
 /**
+ * Parse `button` on a tap body: `right` is a right-click, which the runner sends
+ * only to a Mac app or a Chromium app. `left` is the default and normalizes to
+ * absent, keeping parse/serialize exact inverses.
+ */
+function parseTapButton(raw: unknown, entry: unknown): "right" | undefined {
+  if (raw === undefined || raw === "left") return undefined;
+  if (raw !== "right") badEntry(entry, "tap.button must be left or right");
+  return "right";
+}
+
+/**
  * Does this map carry any selector key (the `any` marker and the relational
  * scopes included)? Tells a selector map apart from the point/option forms in
  * the gesture-body checks below, so a scoped selector mixed with coordinates or
@@ -2606,7 +2637,7 @@ function parseTarget(raw: unknown, where: string): GestureTarget {
 function parseTap(body: unknown, entry: unknown): FlowStep {
   const obj = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
 
-  if (obj.on !== undefined || obj.times !== undefined) {
+  if (obj.on !== undefined || obj.times !== undefined || obj.button !== undefined) {
     if (hasSelectorField(obj)) {
       badEntry(
         entry,
@@ -2619,15 +2650,20 @@ function parseTap(body: unknown, entry: unknown): FlowStep {
         "the tap options form takes a nested point — e.g. tap: { on: { x: 0.5, y: 0.5 }, times: 2 }"
       );
     }
-    if (!Object.keys(obj).every((k) => k === "on" || k === "times")) {
-      badEntry(entry, "the tap options form accepts only { on, times }");
+    if (!Object.keys(obj).every((k) => k === "on" || k === "times" || k === "button")) {
+      badEntry(entry, "the tap options form accepts only { on, times, button }");
     }
     if (obj.on === undefined) {
-      badEntry(entry, 'tap with times needs a target — e.g. tap: { on: "Photo", times: 2 }');
+      badEntry(
+        entry,
+        'tap with times or button needs a target - e.g. tap: { on: "Photo", times: 2 }'
+      );
     }
     const step: FlowStep = { kind: "tap", ...parseTarget(obj.on, "tap.on") };
     const times = parseTapTimes(obj.times, entry);
     if (times !== undefined) step.times = times;
+    const button = parseTapButton(obj.button, entry);
+    if (button !== undefined) step.button = button;
     return step;
   }
 
@@ -3211,14 +3247,15 @@ function* argFields(
  * and `long-press` take both, and the parsed step keeps no record of which was
  * written — `duration` is optional in long-press's options form and `times: 1`
  * normalizes to `undefined`, so a step carrying neither could have been spelled
- * either way. Naming one spelling there would name a path that is not in the
- * author's file, so `alt` carries the other and the refusal offers both.
+ * either way (`button: left` normalizes away too). Naming one spelling there
+ * would name a path that is not in the author's file, so `alt` carries the
+ * other and the refusal offers both.
  */
 function gestureTargetPath(
   step: Extract<FlowStep, { kind: "tap" | "long-press" | "pinch" | "rotate" }>
 ): { path: string; alt?: string } {
   if (step.kind === "pinch" || step.kind === "rotate") return { path: `${step.kind}.on` };
-  const option = step.kind === "tap" ? step.times : step.duration;
+  const option = step.kind === "tap" ? (step.times ?? step.button) : step.duration;
   if (option !== undefined) return { path: `${step.kind}.on` };
   return { path: step.kind, alt: `${step.kind}.on` };
 }

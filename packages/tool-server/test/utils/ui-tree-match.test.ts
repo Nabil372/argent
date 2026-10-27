@@ -234,6 +234,11 @@ describe("ui-tree-match", () => {
 
     expect(evaluateCondition("text", "^$", [field], "matches")).toBe(false);
     expect(evaluateCondition("text", "^(?!.*Rex)", [field], "matches")).toBe(false);
+    // A Mac app's fields report their text, so there an empty field reads as empty,
+    // but a password field never does: argent never reads its text.
+    expect(evaluateCondition("text", "^$", [field], "matches", undefined, true)).toBe(true);
+    const secret = { ...field, password: true };
+    expect(evaluateCondition("text", "^$", [secret], "matches", undefined, true)).toBe(false);
   });
 
   it("a regex text condition does not read a container with hoisted text as empty", () => {

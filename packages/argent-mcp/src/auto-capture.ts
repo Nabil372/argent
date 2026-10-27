@@ -26,6 +26,8 @@ export const AUTO_SCREENSHOT_TOOLS = new Set([
   "run-sequence",
   // A wait is almost always followed by a look at the screen it waited for.
   "await-ui-element",
+  "file-panel",
+  "menu-bar",
 ]);
 
 /**
@@ -90,6 +92,8 @@ export const AUTO_DESCRIBE_TOOLS = new Set([
   "open-url",
   "run-sequence",
   "await-ui-element",
+  "file-panel",
+  "menu-bar",
 ]);
 
 // Opt-out only: the `disable-auto-describe` flag is off by default.

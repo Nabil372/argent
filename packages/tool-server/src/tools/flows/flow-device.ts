@@ -1,6 +1,8 @@
 import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
 import { FAILURE_CODES, FailureError } from "@argent/registry";
 import { resolveDevice } from "../../utils/device-info";
+import { MACOS_APPS_FLAG_OFF_REASON } from "../../utils/capability";
+import { isMacosAppsEnabled } from "../../utils/macos-apps";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { blockSteps, type FlowStep, type SelectablePlatform } from "./flow-utils";
 
@@ -73,7 +75,8 @@ function deviceEntryId(d: RawDevice): string | undefined {
   if (d.platform === "ios" || d.platform === "ios-remote" || d.platform === "harmony") {
     return d.udid;
   }
-  if (d.platform === "chromium") return d.id;
+  // A Mac app row carries its `macos-app-<bundle id>` id, as a Chromium row does.
+  if (d.platform === "chromium" || d.platform === "macos") return d.id;
   return d.serial; // android, vega
 }
 
@@ -97,6 +100,10 @@ function isBooted(d: RawDevice): boolean {
       return d.state === "running" || d.state === "device";
     case "chromium":
       return true; // a discovered chromium device is, by definition, reachable
+    case "macos":
+      // list-devices lists only the Mac apps argent started and that still
+      // run, so a listed app is reachable, as a Chromium app is.
+      return true;
     default:
       return false;
   }
@@ -120,13 +127,24 @@ function connectedIosDeviceHint(devices: RawDevice[], platform?: FlowPlatform): 
   );
 }
 
+/**
+ * Why `--platform macos` found nothing, when the reason is the flag: with it
+ * off, list-devices adds no Mac app at all, so the plain "no device" message
+ * would send the caller looking for an app that is running.
+ */
+function macosFlagHint(platform?: FlowPlatform): string {
+  if (platform !== "macos" || isMacosAppsEnabled()) return "";
+  return " The macos-apps flag is off, so no Mac app is listed. Run: argent enable macos-apps.";
+}
+
 function describeDevice(d: RawDevice): string {
   return `${deviceEntryId(d) ?? "?"} (${d.platform}${d.state ? `, ${d.state}` : ""})`;
 }
 
-function deviceResolutionError(message: string, all: RawDevice[]): FailureError {
-  const list = all.length ? all.map(describeDevice).join(", ") : "none";
-  return new FailureError(`${message} Available devices: ${list}.`, {
+/** With `all`, the message lists the available devices. */
+export function deviceResolutionError(message: string, all?: RawDevice[]): FailureError {
+  const list = all ? ` Available devices: ${all.map(describeDevice).join(", ") || "none"}.` : "";
+  return new FailureError(message + list, {
     error_code: FAILURE_CODES.FLOW_DEVICE_RESOLUTION,
     failure_stage: "flow_device_resolution",
     failure_area: "tool_server",
@@ -139,13 +157,24 @@ function deviceResolutionError(message: string, all: RawDevice[]): FailureError 
  * single booted device of `platform` → the single booted device overall →
  * throw, enumerating what is available. A physical iPhone is reachable only
  * through the explicit id; see {@link isBooted}.
+ *
+ * An explicit Mac app id is refused while the macos-apps flag is off. The id
+ * classifies by its shape alone and skips the device list, which is where the
+ * flag hides Mac apps, so without this check a flow would read the app's tree
+ * and drive it with the flag off.
  */
 export async function resolveFlowDevice(
   registry: Registry,
   ctx: ToolContext | undefined,
   opts: { device?: string; platform?: FlowPlatform }
 ): Promise<DeviceInfo> {
-  if (opts.device) return resolveDevice(opts.device);
+  if (opts.device) {
+    const device = resolveDevice(opts.device);
+    if (device.platform === "macos" && !isMacosAppsEnabled()) {
+      throw deviceResolutionError(`Cannot run on ${device.id}: ${MACOS_APPS_FLAG_OFF_REASON}`);
+    }
+    return device;
+  }
 
   const { devices } = (await invokeSubTool(registry, ctx, "list-devices", {})) as {
     devices: RawDevice[];
@@ -162,7 +191,7 @@ export async function resolveFlowDevice(
       ? `No booted ${opts.platform} device found.`
       : "No booted device found.";
     throw deviceResolutionError(
-      `${what} Pass a device id or platform explicitly.${connectedIosDeviceHint(devices, opts.platform)}`,
+      `${what} Pass a device id or platform explicitly.${connectedIosDeviceHint(devices, opts.platform)}${macosFlagHint(opts.platform)}`,
       devices
     );
   }

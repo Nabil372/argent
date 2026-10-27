@@ -19,7 +19,8 @@ export interface DescribeNode {
   // Descendant text hoisted onto container leaves by the flow adapters'
   // flatten (`flow-tree-flatten`): the flat shape drops the child that renders
   // the text, so a flow `text` condition reads this for a testID container.
-  // The describe path leaves it unset.
+  // The describe tool leaves it unset; the tree the await tools judge on a Mac
+  // app carries the flow tree's value.
   subtreeText?: string;
   clickable?: boolean;
   longClickable?: boolean;
@@ -77,7 +78,11 @@ export type DescribeSource =
   | "harmony-uitest"
   | "tv-focus"
   // Physical iOS: the XCUITest runner accessibility snapshot.
-  | "xcuitest-runner";
+  | "xcuitest-runner"
+  // A native Mac app: the in-app library's tree, and the one it reads while the
+  // Mac is locked.
+  | "macos-devtools"
+  | "macos-fallback";
 
 // Adapter-internal: `tree` is rendered by `format-tree.ts` and then dropped —
 // callers get `DescribeResult` below, i.e. only the rendered text.

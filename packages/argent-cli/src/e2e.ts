@@ -174,8 +174,9 @@ Subcommands:
 
 Options (run):
   --device <id>          Device id to run against (auto-detected when omitted)
-  --platform <p>         ios | android | chromium | vega | ios-remote — narrow
-                         auto-detection (ios never picks a remote simulator)
+  --platform <p>         ios | android | chromium | vega | macos | ios-remote —
+                         narrow auto-detection (ios never picks a remote
+                         simulator)
   --update-baselines     Write/refresh screenshot baselines instead of diffing,
                          also those of tests that tool: e2e-execute steps run,
                          unless such a step sets updateBaselines
