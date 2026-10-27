@@ -357,6 +357,24 @@ describe("screenshot and screenshot-diff on a Mac app", () => {
     expect(result).not.toHaveProperty(RESULT_NOTE_KEY);
   });
 
+  it.each([
+    ["no scale: a larger window is downscaled to a 768 px long side", {}, undefined, [768, 192], 1],
+    ["ARGENT_SCREENSHOT_SCALE: the library scales", {}, "0.5", [1600, 400], 0.5],
+    ["an explicit scale: the library scales", { scale: 0.8 }, undefined, [1600, 400], 0.8],
+  ] as const)("screenshot with %s", async (_label, args, envScale, size, libraryScale) => {
+    if (envScale) vi.stubEnv("ARGENT_SCREENSHOT_SCALE", envScale);
+    const { invoke, calls } = harness({
+      "Screenshot.capture": () => ({ base64: pngBytes(1600, 400).toString("base64") }),
+    });
+    const result = (await invoke("screenshot", args)) as { image: { filename: string } };
+    const written = path.join(os.tmpdir(), result.image.filename);
+    const png = PNG.sync.read(fs.readFileSync(written));
+    fs.rmSync(written);
+    vi.unstubAllEnvs();
+    expect([png.width, png.height]).toEqual(size);
+    expect(calls.map((c) => c.params)).toEqual([{ scale: libraryScale }]);
+  });
+
   it("screenshot passes the scale and notes a rotation it cannot apply", async () => {
     const png = pngBytes(4, 4);
     const { invoke, calls } = harness({

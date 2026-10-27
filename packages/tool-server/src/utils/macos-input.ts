@@ -1,8 +1,10 @@
+import { PNG } from "pngjs";
 import { FAILURE_CODES } from "@argent/registry";
 import type { DeviceInfo, Registry, ServiceRef } from "@argent/registry";
 import { macosAppRef, type MacosAppApi } from "../blueprints/macos-app";
 import { InvalidToolInputError } from "./capability";
 import { assertMacosAppsEnabled, isMacosAppsEnabled } from "./macos-apps";
+import { scaleDecodedPng } from "./png-scale";
 
 // Requests to the in-app library of a Mac app, and the click and typing
 // sequences the tools compose from them. Coordinates are fractions of the app
@@ -146,6 +148,22 @@ export async function macosScreenshotPng(
     );
   }
   return bytes;
+}
+
+/**
+ * The long side of a screenshot taken with neither `scale` nor
+ * ARGENT_SCREENSHOT_SCALE, as a TV capture gets 576 px. Desktop text is small:
+ * up to about 1280 points wide a window keeps 0.6 pixels per point, where its
+ * smallest text still reads.
+ */
+const MACOS_DEFAULT_LONG_SIDE = 768;
+
+/** `png` downscaled to {@link MACOS_DEFAULT_LONG_SIDE} when it is larger, never upscaled. */
+export function fitMacosDefaultSize(png: Buffer): Buffer {
+  // The width and height in the IHDR chunk: decode only a capture that needs the resample.
+  const longSide = Math.max(png.readUInt32BE(16), png.readUInt32BE(20));
+  if (longSide <= MACOS_DEFAULT_LONG_SIDE) return png;
+  return PNG.sync.write(scaleDecodedPng(PNG.sync.read(png), MACOS_DEFAULT_LONG_SIDE / longSide));
 }
 
 // ── Keyboard ────────────────────────────────────────────────────────────────
