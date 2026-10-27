@@ -4,7 +4,7 @@
  * spelling of each value.
  */
 
-import { printCapped } from "@argent/registry";
+import { escapeInvisible, printCapped } from "@argent/registry";
 
 /**
  * What a step that did not pass found, wanted and advises, set by the
@@ -22,32 +22,6 @@ export interface FlowStepDetails {
   expectedKind?: "pattern";
   /** Set by the tool-server when the step could not read the UI tree to do its check. */
   indeterminate?: true;
-}
-
-/**
- * Characters that print as nothing, or as a plain space: control characters
- * (C0, DEL, C1), format characters (zero-width, bidi), line and paragraph
- * separators, and each space that is not U+0020 (for example NBSP, or the
- * U+202F in iOS's `10:30 AM`). A value that differs from another only by one of
- * these must not print as its twin.
- */
-const INVISIBLE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|(?! )\p{Zs}/gu;
-
-/**
- * Escape only the invisible characters of a value, each in its JSON spelling
- * (`\n`, `\t`, `\u0007`, `\u00a0`). Everything else — a backslash above all —
- * stays as the device reported it.
- */
-function escapeInvisible(v: string): string {
-  return v.replace(INVISIBLE, (c) => {
-    const json = JSON.stringify(c).slice(1, -1);
-    if (json !== c) return json;
-    let escaped = "";
-    for (let i = 0; i < c.length; i++) {
-      escaped += `\\u${c.charCodeAt(i).toString(16).padStart(4, "0")}`;
-    }
-    return escaped;
-  });
 }
 
 /**

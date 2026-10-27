@@ -55,7 +55,7 @@ export type {
   ClientFileDirective,
   ToolStepFile,
 } from "./file-inputs";
-export { printCapped } from "./flow-report";
+export { escapeInvisible, printCapped } from "./flow-report";
 export {
   baselineKeyFor,
   canonicalFlowPath,
