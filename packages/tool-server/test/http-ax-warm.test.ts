@@ -68,6 +68,8 @@ describe("POST /ax-service/:udid/warm", () => {
     ["an Android emulator", "emulator-5554"],
     ["a physical iPhone", "00008110-000978540290401E"],
     ["a Vega device", "amazon-abc123"],
+    ["an attached simulator", `ext:prov:${SIM}`],
+    ["a remote simulator", `remote:${SIM}`],
   ])("refuses %s", async (_label, udid) => {
     const res = await warm(udid);
 
