@@ -2505,6 +2505,7 @@ describe("argent e2e run", () => {
       "filename (minus .yaml) names the run's report and artifacts"
     );
     expect(logs.join("\n")).toContain('contain only letters, numbers, "_", or "-"');
+    expect(logs.join("\n")).toContain('its "at <path>:<line>" location with the lines around it');
     expect(logs.join("\n")).toContain("the one that `argent link` or ARGENT_TOOLS_URL names");
     expect(logs.join("\n")).toContain("--json-stream");
     expect(getResolvedToolsUrlMock).not.toHaveBeenCalled();
