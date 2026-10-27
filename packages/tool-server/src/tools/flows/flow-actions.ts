@@ -1969,12 +1969,14 @@ async function waitForCondition(
   //    clean report. `hidden` is held to a stricter bar: there "condition false"
   //    means the element was VISIBLE, and the element leaving is the transition
   //    itself — so ANY untrusted final read leaves gone-ness unconfirmable.
-  // 3. Dark tail within the tolerance — a genuine last-poll blip: the trusted
-  //    reads still describe the window, so a transient error on the trailing
-  //    poll must not flip a clean skip into a hard error. The determinate
-  //    verdict stands. A final read that threw is reported as a note; one that
-  //    came back empty or degraded has no error to report, so the verdict
-  //    stands without one.
+  // 3. Dark tail within the tolerance — a genuine last-poll blip: a transient
+  //    error on the trailing poll must not flip a clean skip into a hard error,
+  //    so the verdict is determinate. It comes from `lastMatches`, which every
+  //    read that arrives overwrites, blind or not. A final read that threw
+  //    leaves the matches of the last read that arrived, and its error is
+  //    reported as a note. A final read that came back empty or degraded
+  //    overwrites them with no match and adds no note, so a check whose element
+  //    matched on every trusted read reports that no element matched.
   //
   // Every indeterminate return goes through this, so none drops the refusal or
   // the reader's repair.
