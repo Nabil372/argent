@@ -687,7 +687,8 @@ describe("flowRunToMcpContent", () => {
 
   it("puts a failed tool step's detail block between its line and its result", async () => {
     // A composed flow-execute that failed carries its inner step's values up
-    // onto the tool step, beside the inner report as its result.
+    // onto the tool step, beside the inner report as its result. The inner
+    // step's hint stays in the reason: it advises on the inner step.
     const inner = {
       flow: "login",
       ok: false,
@@ -714,10 +715,9 @@ describe("flowRunToMcpContent", () => {
           tool: "flow-execute",
           status: "fail",
           reason:
-            'flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome")',
+            'flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome"; hint: the login may not have finished)',
           expected: "Welcome",
           actual: "Sign in",
-          hint: "the login may not have finished",
           result: inner,
         },
       ],
@@ -727,15 +727,11 @@ describe("flowRunToMcpContent", () => {
       { type: "text", text: 'Running e2e test "outer" (1 steps)' },
       {
         type: "text",
-        text: '[1] ✗ flow-execute — flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome")',
+        text: '[1] ✗ flow-execute — flow "login" failed: 0 passed, 1 failed, 0 errored (assert: element matched id="title" but its text did not equal "Welcome"; hint: the login may not have finished)',
       },
       {
         type: "text",
-        text: [
-          '  expected: "Welcome"',
-          '  actual:   "Sign in"',
-          "  hint: the login may not have finished",
-        ].join("\n"),
+        text: ['  expected: "Welcome"', '  actual:   "Sign in"'].join("\n"),
       },
       { type: "text", text: JSON.stringify(inner, null, 2) },
       { type: "text", text: 'E2E test "outer" complete.' },

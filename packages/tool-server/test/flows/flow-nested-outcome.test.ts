@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { Registry } from "@argent/registry";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
 import { nestedOrchestratorOutcome } from "../../src/tools/flows/flow-nested-outcome";
+import { selectorMiss } from "../../src/tools/flows/flow-actions";
 
 /**
  * Issue #606: a step that runs a nested orchestrator reported `pass` whatever
@@ -151,10 +152,9 @@ describe("a nested flow-execute reports its own verdict", () => {
     expect(result.ok).toBe(false);
   });
 
-  it("carries the failed inner step's expected, actual and hint", async () => {
-    // A failed check keeps the found text and the advice BESIDE its reason, so
-    // a step built from the inner reason alone says "did not equal" with no
-    // found text. Nothing else in a composed run prints the inner step.
+  it("carries the failed inner step's expected and actual, and keeps its hint in the reason", async () => {
+    // A failed check keeps the found text BESIDE its reason, so a step built
+    // from the inner reason alone says "did not equal" with no found text.
     const { result } = await run("flow-execute", {
       ...FAILED_SUBFLOW,
       steps: [TEXT_MISMATCH_STEP],
@@ -163,9 +163,36 @@ describe("a nested flow-execute reports its own verdict", () => {
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].expected).toBe("$42.00");
     expect(result.steps[0].actual).toBe("Total $41.50");
-    expect(result.steps[0].hint).toBe(TEXT_MISMATCH_STEP.hint);
+    expect(result.steps[0].reason).toContain(
+      `(assert: ${TEXT_MISMATCH_STEP.reason}; hint: ${TEXT_MISMATCH_STEP.hint})`
+    );
+    expect(result.steps[0].hint).toBeUndefined();
     // A check that read the screen is a verdict on the app.
     expect(result.steps[0].indeterminate).toBeUndefined();
+  });
+
+  it("keeps an inner tap's advice in the reason, not as the outer step's own hint", async () => {
+    // The advice names a place in the composed e2e test. As the outer step's
+    // own hint, it asks for a scroll-to before the `tool: flow-execute` step,
+    // which runs before the composed test's own steps.
+    const { result } = await run("flow-execute", {
+      ...FAILED_SUBFLOW,
+      steps: [
+        {
+          index: 0,
+          kind: "tap",
+          status: "fail",
+          ...selectorMiss({ unresolved: { text: "Buy" }, matched: 0 }),
+        },
+      ],
+    });
+
+    expect(result.steps[0].status).toBe("fail");
+    expect(result.steps[0].reason).toBe(
+      'e2e test "sub" failed: 0 passed, 1 failed, 0 errored (tap: no element matched selector ' +
+        'text="Buy"; hint: if it is off-screen, add a scroll-to step before this one)'
+    );
+    expect(result.steps[0].hint).toBeUndefined();
   });
 
   it("carries the indeterminate flag and hint of an inner step that could not read the tree", async () => {
@@ -188,8 +215,10 @@ describe("a nested flow-execute reports its own verdict", () => {
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toContain("could not read the UI tree");
     expect(result.steps[0].indeterminate).toBe(true);
-    // The inner step's own hint, not a generic one put in its place.
+    // The inner step's own hint, not a generic one put in its place. It holds
+    // for the outer step too, so it prints once, as the outer step's hint.
     expect(result.steps[0].hint).toBe(hint);
+    expect(result.steps[0].reason).not.toContain(hint);
     // Nothing was read, so there is no found text to carry.
     expect(result.steps[0].expected).toBeUndefined();
     expect(result.steps[0].actual).toBeUndefined();
@@ -211,13 +240,41 @@ describe("a nested flow-execute reports its own verdict", () => {
     expect(result.steps[0].reason).toContain("did not equal");
     expect(result.steps[0].expected).toBe("$42.00");
     expect(result.steps[0].actual).toBe("Total $41.50");
-    expect(result.steps[0].hint).toBe(TEXT_MISMATCH_STEP.hint);
+    // The innermost label keeps the hint, and the middle step has none of its
+    // own to add, so the reason holds it once.
+    expect(result.steps[0].reason).toContain(`; hint: ${TEXT_MISMATCH_STEP.hint}))`);
+    expect(result.steps[0].reason?.split("; hint: ")).toHaveLength(2);
+    expect(result.steps[0].hint).toBeUndefined();
     expect(result.steps[0].indeterminate).toBeUndefined();
+  });
+
+  it("carries the hint of an inner step that could not read the tree through two levels", async () => {
+    const hint = "relaunch the foreground app";
+    const { result: middle } = await run("flow-execute", {
+      ...FAILED_SUBFLOW,
+      steps: [
+        {
+          index: 0,
+          kind: "assert",
+          status: "fail",
+          reason: "could not read the UI tree: native devtools disconnected",
+          indeterminate: true,
+          hint,
+        },
+      ],
+    });
+
+    const { result } = await run("flow-execute", middle);
+
+    expect(result.steps[0].indeterminate).toBe(true);
+    expect(result.steps[0].hint).toBe(hint);
+    expect(result.steps[0].reason).not.toContain(hint);
   });
 
   it("keeps a snapshot's values out of expected and actual two levels up", async () => {
     // The middle level already drops them; the outer level copies the middle
-    // `tool` step as it is, so they stay dropped and the hint still arrives.
+    // `tool` step as it is, so they stay dropped and the hint stays in the
+    // reason.
     const { result: middle } = await run("flow-execute", {
       ...FAILED_SUBFLOW,
       steps: [SNAPSHOT_SIZE_STEP],
@@ -227,9 +284,10 @@ describe("a nested flow-execute reports its own verdict", () => {
 
     expect(result.steps[0].status).toBe("fail");
     expect(result.steps[0].reason).toContain("(snapshot: baseline is 50x60 but the cropOn region");
+    expect(result.steps[0].reason).toContain(`; hint: ${SNAPSHOT_SIZE_STEP.hint}))`);
     expect(result.steps[0].expected).toBeUndefined();
     expect(result.steps[0].actual).toBeUndefined();
-    expect(result.steps[0].hint).toBe(SNAPSHOT_SIZE_STEP.hint);
+    expect(result.steps[0].hint).toBeUndefined();
   });
 
   it("carries the pattern marker so the outer step prints the pattern as one", async () => {
@@ -256,16 +314,19 @@ describe("a nested flow-execute reports its own verdict", () => {
 
   it("keeps an inner snapshot's values in the label, not in quoted expected and actual", async () => {
     // A snapshot's values print unquoted only on a `snapshot` step. On the outer
-    // `tool` step they would print as quoted device text, "50x60".
+    // `tool` step they would print as quoted device text, "50x60". Its hint
+    // advises on the snapshot step, so it stays in the label too.
     const { result } = await run("flow-execute", {
       ...FAILED_SUBFLOW,
       steps: [SNAPSHOT_SIZE_STEP],
     });
 
-    expect(result.steps[0].reason).toContain("(snapshot: baseline is 50x60 but the cropOn region");
+    expect(result.steps[0].reason).toContain(
+      `(snapshot: ${SNAPSHOT_SIZE_STEP.reason}; hint: ${SNAPSHOT_SIZE_STEP.hint})`
+    );
     expect(result.steps[0].expected).toBeUndefined();
     expect(result.steps[0].actual).toBeUndefined();
-    expect(result.steps[0].hint).toBe(SNAPSHOT_SIZE_STEP.hint);
+    expect(result.steps[0].hint).toBeUndefined();
   });
 
   it("carries no detail fields when the failed inner step has none", async () => {
