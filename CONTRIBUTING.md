@@ -17,7 +17,7 @@ Thank you for your interest in contributing to Argent! This guide covers everyth
 
 ## Requirements
 
-- **macOS** with Xcode installed for iOS simulator work (`xcrun simctl`). On other hosts `npm run dev` skips the iOS dylibs.
+- **macOS** with Xcode installed for iOS simulator work (`xcrun simctl`). On Linux `npm run dev` skips the iOS dylibs.
 - **Node.js 20.19+** (the lint toolchain's floor; the published package needs 20.12+)
 - The [GitHub CLI](https://cli.github.com/) (`gh`), logged in with `gh auth login`, to download the prebuilt native binaries
 
@@ -38,11 +38,12 @@ Thank you for your interest in contributing to Argent! This guide covers everyth
    npm install
    ```
 
-3. **Download the prebuilt native binaries** (simulator-server, ax-service and the native devtools dylibs, all gitignored):
+3. **Download the prebuilt native binaries** (simulator-server, ax-service, the native devtools dylibs and the Perfetto trace-processor, all gitignored):
 
    ```bash
    npm run download:simulator-server
    npm run download:native-binaries
+   npm run download:trace-processor
    ```
 
 4. **Build the workspace packages** once, so the dev script can resolve them:
