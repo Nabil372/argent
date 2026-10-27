@@ -504,7 +504,7 @@ A usage error prints no help text and gives exit code 2. The warnings of `--outp
 These steps can hold `indeterminate: true`:
 
 - `await`, `assert`, `idle` and a `when` guard. Each read of the UI tree failed or was empty, or the reads stopped at the end of the wait.
-- A step that must find an element: `tap`, `long-press`, `type`, `swipe`, `pinch`, `rotate`, or a `snapshot` with `cropOn`. Each read of the UI tree was empty, and the tree source marked the read as bad. This occurs only on Vega, when the automation toolkit is not attached. When the tree source fails with an error, such a step gets the status `error` and no flag.
+- A `snapshot` with `cropOn`. Each read of the UI tree was empty, and the tree source marked the read as bad. This occurs only on Vega, when the automation toolkit is not attached. When the tree source fails with an error, the snapshot gets the status `error` and no flag. The touch directives, such as `tap`, do not get the flag. On Vega, they fail before Argent reads the UI tree.
 
 For a step with the flag, the app can be the cause: a crash, or a screen that the app made empty. The device or the tree source can also be the cause. Look at the app first. Then run the e2e test again before you change it.
 

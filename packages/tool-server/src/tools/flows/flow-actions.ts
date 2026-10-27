@@ -200,8 +200,11 @@ export interface DirectiveOutcome extends StepDetails {
    * re-probe keeps the step and warns that the conversion is UNKNOWN, not
    * known-bad.
    *
-   * A step that resolves a frame (the tap family, `cropOn`) sets it too, when
-   * every settled read in its window was blind (see {@link selectorMiss}).
+   * `snapshot: { cropOn }` sets it too, when every settled read in its frame
+   * wait was blind (see {@link selectorMiss}). The tap family shares that wait
+   * but never gets the flag: only Vega's tree source flags an empty read as
+   * degraded, and `runDirective` refuses a touch directive on Vega before any
+   * tree read.
    */
   indeterminate?: boolean;
   /**
@@ -1843,7 +1846,7 @@ async function waitForCondition(
   // Assigned on every pass, like `lastReadTrusted`.
   let fetchRefused: boolean;
   // The reader's own repair, when the last read came back blind with one.
-  // `tap` and `idle` pass it on the same way.
+  // `snapshot: { cropOn }` and `idle` pass it on the same way.
   let blindHint: string | undefined;
   let everMatched = false;
   // Date.now() of the most recent TRUSTED read — undefined until one lands.
