@@ -4,7 +4,8 @@ import * as path from "node:path";
 import type { DescribeNode, DescribeTreeData } from "../../src/tools/describe/contract";
 
 let currentTree: () => DescribeNode;
-vi.mock("../../src/tools/flows/flow-tree", () => ({
+vi.mock("../../src/tools/flows/flow-tree", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/tools/flows/flow-tree")>()),
   fetchFlowTree: vi.fn(async (): Promise<DescribeTreeData> => ({
     tree: currentTree(),
     source: "native-devtools",
@@ -22,6 +23,22 @@ vi.mock("../../src/tools/flows/flow-utils", async (importOriginal) => {
   };
 });
 
+// When set, the run resolves as device-free and only a step of a listed kind
+// acts on a device. No real flow reaches the runner's device-free error: the
+// resolution reads every step except a fragment's, and a `run:` step needs a
+// device itself.
+let deviceKinds: Array<FlowStep["kind"]> | undefined;
+vi.mock("../../src/tools/flows/flow-device", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/tools/flows/flow-device")>();
+  return {
+    ...actual,
+    flowRequiresDevice: (registry: Registry, steps: FlowStep[]) =>
+      deviceKinds ? false : actual.flowRequiresDevice(registry, steps),
+    stepRequiresDevice: (registry: Registry, step: FlowStep) =>
+      deviceKinds ? deviceKinds.includes(step.kind) : actual.stepRequiresDevice(registry, step),
+  };
+});
+
 import type { Registry } from "@argent/registry";
 import { createFlowTestHarness, label, screen } from "./harness";
 import { createRunFlowTool, type FlowRunResult } from "../../src/tools/flows/flow-run";
@@ -34,13 +51,35 @@ import {
   type FlowStep,
 } from "../../src/tools/flows/flow-utils";
 
-const { run, writeFlowYaml } = createFlowTestHarness({
+const { run, writeFlowYaml, root } = createFlowTestHarness({
   tempDirectoryPrefix: "flow-step-lines-",
   reset: () => {
     currentTree = () => screen([label("Sign in")]);
     lineLookup = undefined;
+    deviceKinds = undefined;
   },
 });
+
+const IOS_DEVICE = "00000000-0000-0000-0000-0000000000ab";
+
+/**
+ * Run `name` like the harness's `run`, with what `run` does not take: a
+ * cancellation signal, or no device.
+ */
+async function runWith(
+  name: string,
+  options: { device?: string; signal?: AbortSignal }
+): Promise<FlowRunResult> {
+  const registry = {
+    invokeTool: vi.fn(async (id: string) => (id === "list-devices" ? { devices: [] } : {})),
+    getTool: vi.fn(() => ({ inputSchema: { properties: { udid: {} } } })),
+  } as unknown as Registry;
+  return (await createRunFlowTool(registry).execute(
+    {},
+    { name, project_root: root(), device: options.device },
+    { signal: options.signal } as never
+  )) as FlowRunResult;
+}
 
 /** A flow file's text, one argument per line, so argument N is line N. */
 function yaml(...lines: string[]): string {
@@ -558,6 +597,159 @@ describe("where a run reports each step is written", () => {
       { kind: "when", status: "skip", line: 4, file: undefined },
       { kind: "tap", status: "skip", line: 6, file: undefined },
       { kind: "run", status: "skip", line: 7, file: undefined },
+    ]);
+  });
+
+  it("reports a when: guard that cannot be evaluated at its line", async () => {
+    // The guard is the run's first failing step, so its line is the one the
+    // CLI recap shows.
+    currentTree = () => {
+      throw new Error("native devtools disconnected");
+    };
+    await writeFlowYaml(
+      "blind.yaml",
+      yaml(
+        "steps:",
+        "  - echo: start",
+        "  - when: { visible: Dialog }",
+        "    steps:",
+        "      - tap: Close",
+        "  - echo: never"
+      )
+    );
+
+    const result = await run("blind");
+
+    expect(where(result)).toEqual([
+      { kind: "echo", status: "pass", line: 2, file: undefined },
+      { kind: "when", status: "error", line: 3, file: undefined },
+      { kind: "tap", status: "skip", line: 5, file: undefined },
+      { kind: "echo", status: "skip", line: 6, file: undefined },
+    ]);
+  });
+
+  it("reports a when: guard in a fragment that cannot be evaluated in the fragment's file", async () => {
+    currentTree = () => {
+      throw new Error("native devtools disconnected");
+    };
+    await writeFlowYaml(
+      "main.yaml",
+      yaml("steps:", "  - run: shared/dismiss.yaml", "  - echo: never")
+    );
+    const dismiss = await writeFlowYaml(
+      "shared/dismiss.yaml",
+      yaml(
+        "# Closes the dialog when it shows.",
+        "steps:",
+        "  - echo: dismissing",
+        "  - when: { visible: Dialog }",
+        "    steps:",
+        "      - tap: Close",
+        "  - echo: dismissed"
+      )
+    );
+
+    const result = await run("main");
+
+    expect(where(result)).toEqual([
+      { kind: "run", status: "pass", line: 2, file: undefined },
+      { kind: "echo", status: "pass", line: 3, file: dismiss },
+      { kind: "when", status: "error", line: 4, file: dismiss },
+      { kind: "tap", status: "skip", line: 6, file: dismiss },
+      { kind: "echo", status: "skip", line: 7, file: dismiss },
+      { kind: "echo", status: "skip", line: 3, file: undefined },
+    ]);
+  });
+
+  it("reports each step of a skipped when: block in a fragment in the fragment's file", async () => {
+    await writeFlowYaml("main.yaml", yaml("steps:", "  - run: shared/back.yaml"));
+    const back = await writeFlowYaml(
+      "shared/back.yaml",
+      yaml(
+        "steps:",
+        "  - when: { platform: android }",
+        "    steps:",
+        "      - tap: Back",
+        "      - when: { visible: Dialog }",
+        "        steps:",
+        "          - tap: Close",
+        "  - echo: after"
+      )
+    );
+
+    const result = await run("main");
+
+    expect(where(result)).toEqual([
+      { kind: "run", status: "pass", line: 2, file: undefined },
+      { kind: "when", status: "skip", line: 2, file: back },
+      { kind: "tap", status: "skip", line: 4, file: back },
+      { kind: "when", status: "skip", line: 5, file: back },
+      { kind: "tap", status: "skip", line: 7, file: back },
+      { kind: "echo", status: "pass", line: 8, file: back },
+    ]);
+  });
+
+  it("reports the steps a cancelled run skips in a fragment in the fragment's file", async () => {
+    // The run is cancelled during the guard's first tree read. The guard and
+    // its steps skip as cancelled, the next block skips before it starts, and
+    // the steps after it skip on the hard stop that follows.
+    const controller = new AbortController();
+    currentTree = () => {
+      controller.abort();
+      return screen([label("Sign in")]);
+    };
+    await writeFlowYaml("main.yaml", yaml("steps:", "  - run: shared/dismiss.yaml"));
+    const dismiss = await writeFlowYaml(
+      "shared/dismiss.yaml",
+      yaml(
+        "steps:",
+        "  - when: { visible: Dialog }",
+        "    steps:",
+        "      - tap: Close",
+        "  - when: { platform: ios }",
+        "    steps:",
+        "      - echo: inside",
+        "  - echo: never"
+      )
+    );
+
+    const result = await runWith("main", { device: IOS_DEVICE, signal: controller.signal });
+
+    expect(result.aborted).toBe(true);
+    expect(where(result)).toEqual([
+      { kind: "run", status: "pass", line: 2, file: undefined },
+      { kind: "when", status: "skip", line: 2, file: dismiss },
+      { kind: "tap", status: "skip", line: 4, file: dismiss },
+      { kind: "when", status: "skip", line: 5, file: dismiss },
+      { kind: "echo", status: "skip", line: 7, file: dismiss },
+      { kind: "echo", status: "skip", line: 8, file: dismiss },
+    ]);
+  });
+
+  it("reports a step that needs a device in a device-free run in the fragment's file", async () => {
+    deviceKinds = ["when", "tap"];
+    await writeFlowYaml("main.yaml", yaml("steps:", "  - run: shared/dismiss.yaml"));
+    const dismiss = await writeFlowYaml(
+      "shared/dismiss.yaml",
+      yaml(
+        "steps:",
+        "  - echo: dismissing",
+        "  - when: { visible: Dialog }",
+        "    steps:",
+        "      - tap: Close",
+        "  - echo: never"
+      )
+    );
+
+    const result = await runWith("main", {});
+
+    expect(result.steps[2].reason).toMatch(/step needs a device/);
+    expect(where(result)).toEqual([
+      { kind: "run", status: "pass", line: 2, file: undefined },
+      { kind: "echo", status: "pass", line: 2, file: dismiss },
+      { kind: "when", status: "error", line: 3, file: dismiss },
+      { kind: "tap", status: "skip", line: 5, file: dismiss },
+      { kind: "echo", status: "skip", line: 6, file: dismiss },
     ]);
   });
 });
