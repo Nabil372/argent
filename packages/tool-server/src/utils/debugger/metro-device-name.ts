@@ -15,6 +15,7 @@ import { simctlListDevices } from "../sim-remote";
 const execFileAsync = promisify(execFile);
 
 const LOOKUP_TIMEOUT_MS = 3000;
+const LOOKUP_DEADLINE_MS = 5000;
 
 /**
  * How Metro's inspector-proxy lists an iOS simulator, so a UDID can be matched
@@ -57,7 +58,8 @@ export function noteHostedSimulatorOnMetro(port: number): void {
 
 /**
  * The simulator's names, or undefined when `deviceId` is not a local simulator
- * or any lookup fails, including a listing that could hide a same-named twin.
+ * or any lookup fails or outlasts `LOOKUP_DEADLINE_MS`, including a listing
+ * that could hide a same-named twin.
  */
 export async function metroDeviceNamesFor(
   deviceId: string,
@@ -65,9 +67,21 @@ export async function metroDeviceNamesFor(
 ): Promise<MetroDeviceNames | undefined> {
   if (classifyDevice(deviceId) !== "ios") return undefined;
   try {
-    return await iosSimulatorNames(deviceId, port);
+    return await withDeadline(iosSimulatorNames(deviceId, port), LOOKUP_DEADLINE_MS);
   } catch {
     return undefined;
+  }
+}
+
+async function withDeadline<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`lookup exceeded ${ms} ms`)), ms);
+  });
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -14,6 +14,8 @@ let failingSets: string[] = [];
 let hostedDevices: Devices = {};
 let hostedFails = false;
 let providerDevices: Array<{ platform: "ios" | "android"; deviceSet?: string }> = [];
+/** A wedged simctl behind the device-set probe, which has its own longer timeout. */
+let deviceSetProbeHangs = false;
 
 vi.mock("node:child_process", async () => {
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -52,7 +54,7 @@ vi.mock("../../src/utils/ios-device-sets", async () => {
   );
   return {
     ...actual,
-    deviceSetForUdid: async () => ownSet,
+    deviceSetForUdid: () => (deviceSetProbeHangs ? new Promise(() => {}) : Promise.resolve(ownSet)),
     configuredAdditionalDeviceSets: () => additionalSets,
   };
 });
@@ -92,6 +94,7 @@ beforeEach(() => {
   hostedDevices = {};
   hostedFails = false;
   providerDevices = [];
+  deviceSetProbeHangs = false;
   simctlDevices = {
     "com.apple.CoreSimulator.SimRuntime.iOS-18-5": [
       { udid: UDID_A, name: "iPhone 16 Pro", state: "Booted" },
@@ -209,6 +212,18 @@ describe("metroDeviceNamesFor", () => {
     expect((await metroDeviceNamesFor(UDID_A))?.bootedTwins).toBe(0);
     hostedFails = true;
     await expect(namesOnPort(UDID_A, HOSTED_PORT)).resolves.toBeUndefined();
+  });
+
+  it("gives no hint once the whole lookup outlasts its deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      deviceSetProbeHangs = true;
+      const hint = metroDeviceNamesFor(UDID_A);
+      await vi.advanceTimersByTimeAsync(5000);
+      await expect(hint).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("gives no hint when simctl fails, so connect falls back to the id-only rules", async () => {
