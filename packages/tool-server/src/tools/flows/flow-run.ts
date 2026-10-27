@@ -301,13 +301,15 @@ export interface StepReport extends StepDetails {
   durationMs?: number;
   /**
    * The 1-based line the step starts on in the flow file it is written in:
-   * the flow the report is for, or the fragment in `file`.
+   * the file in `file` when set, else the flow the report is for.
    */
   line?: number;
   /**
    * Set beside `line` when the step is written in a fragment a `run:` step
    * loaded: that file's resolved absolute path. A `run:` step itself is
-   * written in the file that composes the fragment.
+   * written in the file that composes the fragment. In the report of a nested
+   * run (the `result` of a `tool: e2e-execute` step), set on the steps of its
+   * own flow too: that flow's path. Over a link, each path is on the client.
    */
   file?: string;
 }
@@ -2204,14 +2206,18 @@ function summarize(
  * single choke point for every report — a push site that bypasses it would
  * silently drop steps from the progress stream. Also stamps where `step` is
  * written, which `scope` knows: its `run:` chain ends at the file the step
- * was parsed from.
+ * was parsed from. A step of the run's own flow names no file, since the
+ * caller named that file, except in a nested run: its chain starts with the
+ * enclosing runs, and the report it gives the `tool:` step names only its
+ * flow.
  */
 function pushReport(state: ExecState, step: FlowStep, scope: StepScope, report: StepReport): void {
   const line = flowStepLine(step);
   if (line !== undefined) {
     report.line = line;
     const writtenIn = scope.runStack[scope.runStack.length - 1]!;
-    if (writtenIn !== state.rootFlow) report.file = writtenIn.canonical;
+    const nested = scope.runStack[0] !== state.rootFlow;
+    if (nested || writtenIn !== state.rootFlow) report.file = writtenIn.canonical;
   }
   state.reports.push(report);
   state.onStepReport?.(report);

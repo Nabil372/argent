@@ -529,9 +529,10 @@ describe("where a run reports each step is written", () => {
     expect(result.steps[2].reason).toMatch(/could not load fragment "broken\.yaml"/);
   });
 
-  it("keeps the nested run's lines and fragment files in a tool: flow-execute step's result", async () => {
+  it("keeps the nested run's lines and files in a tool: flow-execute step's result", async () => {
     // The step's result is the nested run's whole report, which MCP prints as
-    // JSON, so the nested steps carry their lines there too.
+    // JSON, so the nested steps carry their lines there too. The report names
+    // only the nested flow, so each of its steps also names its file.
     const inner = await writeFlowYaml(
       "inner.yaml",
       yaml("steps:", "  - echo: inner", "  - run: helpers/frag.yaml")
@@ -568,9 +569,62 @@ describe("where a run reports each step is written", () => {
       { kind: "tool", status: "pass", line: 3, file: undefined },
     ]);
     expect(where(result.steps[1].result as FlowRunResult)).toEqual([
-      { kind: "echo", status: "pass", line: 2, file: undefined },
-      { kind: "run", status: "pass", line: 3, file: undefined },
+      { kind: "echo", status: "pass", line: 2, file: inner },
+      { kind: "run", status: "pass", line: 3, file: inner },
       { kind: "echo", status: "pass", line: 3, file: frag },
+    ]);
+  });
+
+  it("names each nested run's file and line at every level of a tool: e2e-execute chain", async () => {
+    const inner2 = await writeFlowYaml(
+      "inner2.yaml",
+      yaml("steps:", "  - echo: inner2", "  - assert: { visible: Welcome }", "  - echo: never")
+    );
+    const projectRoot = path.dirname(path.dirname(path.dirname(inner2)));
+    const inner = await writeFlowYaml(
+      "inner.yaml",
+      yaml(
+        "steps:",
+        "",
+        "  - tool: e2e-execute",
+        `    args: { name: inner2, project_root: ${JSON.stringify(projectRoot)} }`
+      )
+    );
+    await writeFlowYaml(
+      "outer.yaml",
+      yaml(
+        "steps:",
+        "  - echo: outer",
+        "  - tool: flow-execute",
+        `    args: { name: inner, project_root: ${JSON.stringify(projectRoot)} }`
+      )
+    );
+    const registry = {
+      invokeTool: vi.fn(async (id: string, args: Record<string, unknown>, options?: unknown) =>
+        id === "flow-execute" || id === "e2e-execute"
+          ? runFlow.execute({}, args as never, options as never)
+          : { ok: true }
+      ),
+      getTool: vi.fn(() => ({ inputSchema: { properties: { name: {}, device: {} } } })),
+    } as unknown as Registry;
+    const runFlow = createRunFlowTool(registry);
+
+    const result = (await runFlow.execute(
+      {},
+      { name: "outer", project_root: projectRoot, device: "DEVICE" }
+    )) as FlowRunResult;
+
+    // The run's own flow is the file the caller named, so its steps name none.
+    expect(where(result)).toEqual([
+      { kind: "echo", status: "pass", line: 2, file: undefined },
+      { kind: "tool", status: "fail", line: 3, file: undefined },
+    ]);
+    const innerRun = result.steps[1].result as FlowRunResult;
+    expect(where(innerRun)).toEqual([{ kind: "tool", status: "fail", line: 3, file: inner }]);
+    expect(where(innerRun.steps[0].result as FlowRunResult)).toEqual([
+      { kind: "echo", status: "pass", line: 2, file: inner2 },
+      { kind: "assert", status: "fail", line: 3, file: inner2 },
+      { kind: "echo", status: "skip", line: 4, file: inner2 },
     ]);
   });
 

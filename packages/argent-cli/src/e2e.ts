@@ -7,6 +7,8 @@ import {
   E2E_DIRS,
   FAILURE_CODES,
   FLOW_NAME_PATTERN,
+  MAX_RUN_DEPTH,
+  canonicalToolId,
   e2eShadowWarning,
   printCapped,
   resolveE2eFile,
@@ -69,7 +71,10 @@ export interface StepReport extends FlowStepDetails {
   durationMs?: number;
   /** The line the step starts on in the flow file, or in `file` when set. */
   line?: number;
-  /** The absolute path of the fragment the step is written in, set beside `line`. */
+  /**
+   * The absolute path of the file the step is written in, set beside `line`
+   * for a step of a fragment, and for each step of a nested run.
+   */
   file?: string;
 }
 
@@ -455,7 +460,9 @@ interface FailedFlow {
 }
 
 /** A report's first failing step, and its number as renderFailedSteps numbers it. */
-function firstFailedStep(report: FlowReport): { step: StepReport; n: number } | undefined {
+function firstFailedStep(
+  report: Pick<FlowReport, "steps">
+): { step: StepReport; n: number } | undefined {
   let n = 0;
   for (const step of report.steps) {
     if (step.kind === "echo") continue;
@@ -508,28 +515,54 @@ export function renderSourceFrame(where: string, line: number, text: string | un
 }
 
 /**
+ * The steps of the run that a `tool: e2e-execute` step started, from the
+ * report the step carries as its result. The result is wire data, so only an
+ * object with a `steps` array counts, and only the objects in that array.
+ */
+function nestedRunSteps(step: StepReport): Pick<FlowReport, "steps"> | undefined {
+  if (typeof step.tool !== "string" || canonicalToolId(step.tool) !== "e2e-execute") {
+    return undefined;
+  }
+  const result: unknown = step.result;
+  if (typeof result !== "object" || result === null) return undefined;
+  const steps: unknown = (result as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return undefined;
+  return {
+    steps: steps.filter((s): s is StepReport => typeof s === "object" && s !== null),
+  };
+}
+
+/**
  * Where a report's failed step is written, read from the file now: the flow
- * at `flowPath`, or the fragment the step names. Undefined when the step
- * carries no line, which a tool-server older than this field sends. The
- * fragment path is wire data, so only an absolute path is read. Its name need
- * not end in `.yaml`: the tool-server names a fragment reached through a
- * symlink by the file the link points to.
+ * at `flowPath`, or the file the step names. When that step is a `tool:
+ * e2e-execute` step, then also where the step that failed in the run it
+ * started is written, and so on down the chain, outermost first. A nested
+ * run's step names its file, so one without a usable `file` or `line` ends
+ * the chain. Undefined when the failed step carries no line, which a
+ * tool-server older than this field sends. The paths are wire data, so only
+ * an absolute path is read. A name need not end in `.yaml`: the tool-server
+ * names a file reached through a symlink by the file the link points to. No
+ * chain of runs is longer than MAX_RUN_DEPTH, so the frames stop there.
  */
 async function readFailureSource(
   report: FlowReport,
   flowPath: string,
   projectRoot: string
 ): Promise<string[] | undefined> {
-  const step = firstFailedStep(report)?.step;
-  if (!step || typeof step.line !== "number" || !Number.isInteger(step.line) || step.line < 1) {
-    return undefined;
+  const frames: string[] = [];
+  let step = firstFailedStep(report)?.step;
+  let file: unknown = step?.file === undefined ? flowPath : step.file;
+  for (let run = 0; step && run < MAX_RUN_DEPTH; run++) {
+    const line: unknown = step.line;
+    if (typeof line !== "number" || !Number.isInteger(line) || line < 1) break;
+    if (typeof file !== "string" || !path.isAbsolute(file)) break;
+    const text = await fsp.readFile(file, "utf8").catch(() => undefined);
+    frames.push(...renderSourceFrame(displayPath(file, projectRoot), line, text));
+    const nested = nestedRunSteps(step);
+    step = nested && firstFailedStep(nested)?.step;
+    file = step?.file;
   }
-  const file = step.file === undefined ? flowPath : step.file;
-  if (typeof file !== "string" || !path.isAbsolute(file)) {
-    return undefined;
-  }
-  const text = await fsp.readFile(file, "utf8").catch(() => undefined);
-  return renderSourceFrame(displayPath(file, projectRoot), step.line, text);
+  return frames.length > 0 ? frames : undefined;
 }
 
 function renderFailedFlow(f: FailedFlow): string[] {
