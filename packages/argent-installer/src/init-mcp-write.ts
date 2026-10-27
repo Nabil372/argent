@@ -19,8 +19,8 @@ interface McpWriteResult {
   adapters: McpConfigAdapter[];
   /** One summary line per adapter. */
   lines: string[];
-  /** Adapters whose entry the editor has switched off, left as they were. */
-  switchedOff: McpConfigAdapter[];
+  /** `adapters` minus those whose entry the editor has switched off, left as they were. */
+  configured: McpConfigAdapter[];
 }
 
 // Step 1c — write the MCP config files. Local mode points project-scope
@@ -168,5 +168,5 @@ export function writeMcpConfigs(args: {
     }
   }
 
-  return { adapters, lines, switchedOff };
+  return { adapters, lines, configured: adapters.filter((a) => !switchedOff.includes(a)) };
 }

@@ -115,7 +115,7 @@ describe("writeMcpConfigs — switched-off entries in fallback configs", () => {
 
     expect(fs.readFileSync(file, "utf8")).toBe(switchedOff);
     expect(result.lines.join("\n")).toContain("left a switched-off entry untouched");
-    expect(result.switchedOff).toEqual([windsurf]);
+    expect(result.configured).toEqual([]);
   });
 
   it("keeps a project-only editor's switched-off entry under global scope", () => {
@@ -133,7 +133,7 @@ describe("writeMcpConfigs — switched-off entries in fallback configs", () => {
     });
 
     expect(fs.readFileSync(file, "utf8")).toBe(switchedOff);
-    expect(result.switchedOff).toEqual([projectOnly]);
+    expect(result.configured).toEqual([]);
   });
 
   it("still tries the write when the existing entry can't be read", () => {
@@ -156,7 +156,7 @@ describe("writeMcpConfigs — switched-off entries in fallback configs", () => {
     });
 
     expect(result.lines.join("\n")).toMatch(/x.*Kiro: .*EACCES/);
-    expect(result.switchedOff).toEqual([]);
+    expect(result.configured).toEqual([unreadable]);
   });
 });
 

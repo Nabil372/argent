@@ -155,7 +155,7 @@ export async function init(args: string[]): Promise<void> {
     const {
       adapters: writtenAdapters,
       lines: mcpLines,
-      switchedOff,
+      configured: configuredAdapters,
     } = writeMcpConfigs({
       selectedAdapters,
       installMode: tel.installMode,
@@ -163,7 +163,6 @@ export async function init(args: string[]): Promise<void> {
       effectiveRoot,
       projectRoot,
     });
-    const configuredAdapters = writtenAdapters.filter((a) => !switchedOff.includes(a));
     tel.editorsConfiguredCount = configuredAdapters.length;
 
     track("installation:editors_select", {
