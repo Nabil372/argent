@@ -233,11 +233,12 @@ function noAnswer(timeout: number): FailureError {
   );
 }
 
-/** The expression ran, but the handle to its result went away before it was read. */
+/** The expression ran, but the runtime refused a request that reads its result. */
 function lostResult(cause: unknown): FailureError {
   return evaluateError(
-    "Lost the expression's result before it was read: the JS context was reloaded or " +
-      "replaced. The expression ran; do not run it again for its side effects.",
+    `The expression ran, but reading its result failed: ${(cause as Error).message}. ` +
+      "The JS context may have been reloaded, or the value may be nested too deeply to " +
+      "send. Do not run the expression again for its side effects.",
     FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR,
     "unknown",
     cause as Error
@@ -591,7 +592,9 @@ export class CDPClient {
    * The first request, given `timeout` to answer. Its own send timeout is
    * longer, because an answer that lands after the call gave up still puts
    * its result in `objectGroup`, which the call has already released. The
-   * group is released again when that answer arrives.
+   * group is released again when that answer arrives. An answer later than
+   * `LATE_ANSWER_WINDOW_MS` is dropped, and its result stays alive until the
+   * session closes.
    */
   private async evaluateRemote(
     expression: string,
@@ -784,7 +787,9 @@ export class CDPClient {
    * close over anything (see that module's header). The helpers catch their
    * own errors, so `exceptionDetails` here is a fault in the inspector, not
    * in the agent's expression, which has already run. A protocol error means
-   * `objectId` no longer resolves.
+   * `objectId` no longer resolves or the value could not be sent. Hermes does
+   * not answer a call on an `objectId` that no longer resolves, so there that
+   * case surfaces as a timeout.
    */
   private async callOn(
     objectId: string,

@@ -118,7 +118,7 @@ const UNSETTLED =
 const RESULT_LATE = /^The expression's result did not arrive within \d+ms\./;
 const NO_ANSWER = /^The runtime did not answer the expression within \d+ms, nor a check/;
 const PAUSE_HINT = "If another debugger has the runtime paused at a breakpoint, resume it there.";
-const LOST = /^Lost the expression's result before it was read/;
+const LOST = /^The expression ran, but reading its result failed: /;
 
 describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () => {
   it("returns a primitive in one round-trip once release support is known", async () => {
@@ -409,7 +409,7 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
       ref.session = session;
       const { err, signal } = await signalOf(() => client.evaluateAwaited("Promise.resolve(1)"));
       expect(err.message).toMatch(LOST);
-      expect(err.message).toMatch(/The expression ran; do not run it again/);
+      expect(err.message).toMatch(/Do not run the expression again for its side effects\./);
       expect(signal?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR);
     }
   });
@@ -479,6 +479,44 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
     }
   });
 
+  it("reports a result nested deeper than the runtime's serializer allows as unserializable", async () => {
+    const LIMIT = 6;
+    const stringify = JSON.stringify;
+    const depth = (v: unknown): number =>
+      v && typeof v === "object" ? 1 + Math.max(0, ...Object.values(v).map(depth)) : 0;
+    const nested = (n: number): unknown => (n === 0 ? 1 : { n: nested(n - 1) });
+    const chain = (n: number) => `(${stringify(nested(n))})`;
+    const { client } = hermesClient();
+    JSON.stringify = ((value: unknown, replacer?: never, space?: never) => {
+      if (depth(value) > LIMIT) throw new RangeError("Maximum nesting level exceeded");
+      return stringify(value, replacer, space);
+    }) as typeof JSON.stringify;
+    try {
+      expect(await client.evaluateAwaited(chain(LIMIT - 1))).toEqual(nested(LIMIT - 1));
+      for (const expr of [chain(LIMIT), `Promise.resolve(${chain(LIMIT)})`]) {
+        const { err } = await signalOf(() => client.evaluateAwaited(expr));
+        expect(err.message).toBe(
+          "The expression's result could not be serialized: RangeError: Maximum nesting level exceeded"
+        );
+      }
+    } finally {
+      JSON.stringify = stringify;
+    }
+  });
+
+  it("names the runtime's reason when a result is too deep to send by value", async () => {
+    const deep = "(()=>{let l=null;for(let i=0;i<1500;i++)l={v:i,next:l};return l})()";
+    for (const makeClientFor of [hermesClient, v8Client]) {
+      const { client } = makeClientFor();
+      for (const expr of [deep, `Promise.resolve(${deep})`]) {
+        const { err, signal } = await signalOf(() => client.evaluateAwaited(expr));
+        expect(err.message).toMatch(LOST);
+        expect(err.message).not.toMatch(/reading its result failed: \./);
+        expect(signal?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_PROTOCOL_ERROR);
+      }
+    }
+  });
+
   it("refuses a function result instead of returning null for it", async () => {
     const { client } = hermesClient();
     for (const expr of [
@@ -530,10 +568,13 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
   });
 
   it("releases the object group again when the first answer lands after the timeout", async () => {
+    const released: string[] = [];
     const { client, session } = hermesClient({
-      beforeSend: async (method, params) => {
-        if (method === "Runtime.evaluate" && params.expression !== "0")
-          await new Promise((r) => setTimeout(r, 300));
+      beforeSend: async (method, params, timeout) => {
+        if (method === "Runtime.releaseObjectGroup") released.push(params.objectGroup);
+        if (method === "Runtime.evaluate" && params.expression !== "0") {
+          await answerAfter(300, timeout);
+        }
       },
     });
     const { signal } = await signalOf(() =>
@@ -543,6 +584,7 @@ describe("CDPClient.evaluateAwaited on a runtime that ignores awaitPromise", () 
     );
     expect(signal?.error_code).toBe(FAILURE_CODES.DEBUGGER_CDP_REQUEST_TIMEOUT);
     await new Promise((r) => setTimeout(r, 400));
+    expect(released.filter((g) => g.startsWith("argent-await-"))).toHaveLength(2);
     expect(await collected(session)).toEqual([true]);
   });
 

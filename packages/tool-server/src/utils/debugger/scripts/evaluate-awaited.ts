@@ -7,10 +7,11 @@
  *
  * None of them throws, and none returns a value the runtime could fail to
  * serialize: a helper that threw would come back as `exceptionDetails`, which
- * the client could not tell from a fault in the inspector. A value is passed
- * through `JSON.stringify` here and returned as the parsed copy, so a cyclic or
- * BigInt value is reported in the verdict instead of failing inside Hermes's
- * own serializer, and the copy is encoded only once, by the protocol.
+ * the client could not tell from a fault in the inspector. A verdict is passed
+ * through `JSON.stringify` here and returned as the parsed copy, so a cyclic,
+ * BigInt or too deeply nested value is reported in the verdict instead of
+ * failing inside Hermes's own serializer, and the copy is encoded only once,
+ * by the protocol.
  */
 
 /** Where a thenable ended up; `state` moves off "pending" from its callbacks. */
@@ -60,8 +61,7 @@ export function watchIfThenable(this: unknown): SettleBox | undefined {
 export function readValue(this: unknown): RemoteVerdict {
   if (typeof this === "function") return { unserializable: "function" };
   try {
-    const json = JSON.stringify(this);
-    return json === undefined ? {} : { value: JSON.parse(json) };
+    return JSON.parse(JSON.stringify({ value: this })) as RemoteVerdict;
   } catch (error) {
     try {
       return { unreadable: String(error) };
@@ -79,8 +79,7 @@ export function readBoxValue(this: SettleBox): RemoteVerdict {
   // A bare NaN, Infinity or -0 result also comes back without a value.
   if (typeof value === "number" && (!isFinite(value) || Object.is(value, -0))) return {};
   try {
-    const json = JSON.stringify(value);
-    return json === undefined ? {} : { value: JSON.parse(json) };
+    return JSON.parse(JSON.stringify({ value })) as RemoteVerdict;
   } catch (error) {
     try {
       return { unreadable: String(error) };
