@@ -13,7 +13,7 @@ import {
 } from "@argent/registry";
 import { simulatorServerBinaryPath, simulatorServerRunDir } from "@argent/native-devtools-ios";
 import { getAndroidSdkRoot } from "@argent/configuration-core";
-import { clearAutomationEnabled } from "../utils/ax-prefs";
+import { clearAutomationEnabledOrWarn } from "../utils/ax-prefs";
 import { ensureDep } from "../utils/check-deps";
 import { isFoldableSimulator, isTvOsSimulator } from "../utils/ios-devices";
 import { deviceSetForUdid } from "../utils/ios-device-sets";
@@ -553,7 +553,7 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
             "presses, and `keyboard` to type (see the argent-tv-interact skill)"
         );
       }
-      await clearAutomationEnabled(device.id);
+      await clearAutomationEnabledOrWarn(device.id);
     } else if (device.platform === "android") {
       // Both the emulator and the physical-device controller talk to the target
       // through adb (gRPC bridge / screen-sharing agent respectively).
