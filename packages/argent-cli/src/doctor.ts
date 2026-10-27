@@ -1,4 +1,3 @@
-import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -31,6 +30,7 @@ import {
   globalBinDirOf,
   globalPackageManagerOf,
   installSection,
+  localReinstallCommand,
   runGlobalShim,
 } from "./doctor-install.js";
 import { claudeProjectKey, editorsSection, gitToplevel } from "./doctor-editors.js";
@@ -79,23 +79,6 @@ export function updateCommand(runningLocal: boolean, globalPm: PackageManager, a
 
 // `argent update` only installs when a newer version exists, so it can't
 // repair a broken copy of the current one: these reinstall it.
-
-/**
- * pnpm, bun and Yarn classic trust their install state and skip a package
- * dir that was deleted or damaged, so only their forced install restores it.
- */
-export function localReinstallCommand(
-  pm: PackageManager,
-  projectRoot: string,
-  packageRoot: string,
-  installCmd: string
-): string {
-  if (pm === "pnpm" || pm === "bun") return `${pm} install --force`;
-  if (pm === "yarn" && !fs.existsSync(path.join(projectRoot, ".yarnrc.yml"))) {
-    return "yarn install --force";
-  }
-  return `delete ${home(packageRoot)}, then ${installCmd}`;
-}
 
 /** bun skips a global package that is already at the requested version. */
 export function globalReinstallCommand(pm: PackageManager): string {

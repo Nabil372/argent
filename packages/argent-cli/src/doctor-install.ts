@@ -112,6 +112,23 @@ function globalBinCandidates(prefixDir: string): string[] {
 
 export type PackageManager = "npm" | "yarn" | "pnpm" | "bun";
 
+/**
+ * pnpm, bun and Yarn classic trust their install state and skip a package
+ * dir that was deleted or damaged, so only their forced install restores it.
+ */
+export function localReinstallCommand(
+  pm: PackageManager,
+  projectRoot: string,
+  packageRoot: string,
+  installCmd: string
+): string {
+  if (pm === "pnpm" || pm === "bun") return `${pm} install --force`;
+  if (pm === "yarn" && !fs.existsSync(path.join(projectRoot, ".yarnrc.yml"))) {
+    return "yarn install --force";
+  }
+  return `delete ${home(packageRoot)}, then ${installCmd}`;
+}
+
 /** The package manager that owns a global install, from where it lives. */
 export function globalPackageManagerOf(packageRoot: string): PackageManager {
   const p = packageRoot.replace(/\\/g, "/");

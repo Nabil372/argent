@@ -22,6 +22,7 @@ import {
   permissionFix,
   samePath,
 } from "./doctor-shared.js";
+import { projectToolServer } from "./doctor-platforms.js";
 
 // `argent doctor`: the Tool-server section.
 
@@ -226,7 +227,10 @@ export async function toolServerSection(
     return { title: "Tool-server", checks };
   }
 
-  const state = await readToolsServerState(paths.bundlePath);
+  // A local-mode project's entries start its own copy's server.
+  const serverPaths = projectToolServer(ctx, paths)?.paths ?? paths;
+  const expected = serverPaths.version ?? running;
+  const state = await readToolsServerState(serverPaths.bundlePath);
   const argentDir = path.join(homedir(), ".argent");
   const writable = isWritableDir(argentDir);
   if (!writable) {
@@ -253,10 +257,11 @@ export async function toolServerSection(
     const url = formatToolsServerUrl(host, state.port);
     const alive = isToolsServerProcessAlive(state.pid);
     const healthy = alive && (await isToolsServerHealthy(state.port, host, 2_000, state.token));
-    const stopCmd = stopCommand(ctx, paths);
-    const argentHost = process.env.ARGENT_HOST;
+    const stopCmd = stopCommand(ctx, serverPaths);
+    // The spawned server trims it and falls back to the default when it is blank.
+    const argentHost = process.env.ARGENT_HOST?.trim();
     if (healthy) {
-      const stale = state.version && state.version !== running;
+      const stale = state.version && state.version !== expected;
       checks.push(
         stale
           ? check("warn", `Running ${url} (pid ${state.pid}) from v${state.version}`, {
@@ -276,6 +281,14 @@ export async function toolServerSection(
           }
         )
       );
+    } else if (alive && state.managed !== "autospawn") {
+      checks.push(
+        check("warn", `Running ${url} (pid ${state.pid}) but not answering`, {
+          detail:
+            "started by argent server start, so the next tool call starts a second server and leaves this one running",
+          fix: `${stopCmd} server stop`,
+        })
+      );
     } else {
       checks.push(
         check("info", `Stale state file (pid ${state.pid} ${alive ? "unhealthy" : "gone"})`, {
@@ -290,7 +303,7 @@ export async function toolServerSection(
     (await readAllToolsServerStates())
       .filter(
         ({ state: s }) =>
-          s.bundlePath !== paths.bundlePath &&
+          s.bundlePath !== serverPaths.bundlePath &&
           isToolsServerProcessAlive(s.pid) &&
           couldBeOurToolServer(s.pid, s.bundlePath)
       )

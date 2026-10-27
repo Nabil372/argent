@@ -741,6 +741,14 @@ console.log(JSON.stringify({
         /^Reinstall argent: delete .*node_modules\/@swmansion\/argent, then npm install$/
       ),
     });
+    fs.writeFileSync(path.join(dir, "bun.lock"), "");
+    const bun = await platformsSection(
+      { ...ctx(), mode: "local" },
+      { ...global, installKind: "global" },
+      noLink,
+      "r"
+    );
+    expect(bun.checks[1]?.fix).toBe("Reinstall argent: bun install --force");
   });
 });
 

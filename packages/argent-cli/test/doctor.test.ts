@@ -10,11 +10,11 @@ import {
   doctor,
   doctorExitCode,
   globalReinstallCommand,
-  localReinstallCommand,
   renderDoctorReport,
   stripPackageBinDirs,
   updateCommand,
 } from "../src/doctor.js";
+import { localReinstallCommand } from "../src/doctor-install.js";
 import { type DoctorReport, permissionFix } from "../src/doctor-shared.js";
 
 vi.mock("@argent/installer", async (importOriginal) => ({

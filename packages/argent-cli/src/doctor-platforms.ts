@@ -4,7 +4,11 @@ import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { getConfigValueAtScope } from "@argent/configuration-core";
 import { type ToolsServerPaths } from "@argent/tools-client";
-import { formatShellCommand, probeLocalInstall } from "@argent/installer";
+import {
+  detectProjectPackageManager,
+  formatShellCommand,
+  probeLocalInstall,
+} from "@argent/installer";
 import {
   type DoctorCheck,
   type DoctorContext,
@@ -15,6 +19,7 @@ import {
   home,
   samePath,
 } from "./doctor-shared.js";
+import { localReinstallCommand } from "./doctor-install.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -352,12 +357,12 @@ export function sdkRootCheck(cwd: string, argentCmd: string): DoctorCheck | null
  * The tool-server the project's entries start. In a local-mode project they run
  * the project's copy, which a global argent running doctor would not check.
  */
-function projectToolServer(
+export function projectToolServer(
   ctx: DoctorContext,
   paths: ToolsServerPaths
 ): { paths: ToolsServerPaths; packageDir: string } | null {
   if (ctx.mode !== "local" || paths.installKind === "local") return null;
-  const { packageDir } = probeLocalInstall(ctx.projectRoot);
+  const { packageDir, version } = probeLocalInstall(ctx.projectRoot);
   if (!packageDir || samePath(packageDir, path.dirname(path.dirname(paths.bundlePath)))) {
     return null;
   }
@@ -365,6 +370,8 @@ function projectToolServer(
     packageDir,
     paths: {
       ...paths,
+      installKind: "local",
+      version: version ?? undefined,
       bundlePath: path.join(packageDir, "dist", "tool-server.cjs"),
       simulatorServerDir: path.join(packageDir, "bin"),
       nativeDevtoolsDir: path.join(packageDir, "dylibs"),
@@ -388,9 +395,12 @@ export async function platformsSection(
   const local = projectToolServer(ctx, paths);
   const checked = local?.paths ?? paths;
   const reinstallChecked = local
-    ? ctx.installCmd.startsWith("pnpm")
-      ? "Reinstall argent: pnpm install --force"
-      : `Reinstall argent: delete ${home(local.packageDir)}, then ${ctx.installCmd}`
+    ? `Reinstall argent: ${localReinstallCommand(
+        detectProjectPackageManager(ctx.projectRoot),
+        ctx.projectRoot,
+        local.packageDir,
+        ctx.installCmd
+      )}`
     : reinstall;
   const source = local
     ? [

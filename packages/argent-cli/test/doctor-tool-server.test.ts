@@ -10,6 +10,7 @@ import type { DoctorContext } from "../src/doctor-shared.js";
 const fake = vi.hoisted(() => ({
   home: "",
   state: null as Record<string, unknown> | null,
+  stateBundle: "" as string | undefined,
   alive: false,
   healthy: vi.fn(async (..._args: unknown[]) => false),
 }));
@@ -21,7 +22,10 @@ vi.mock("node:os", async (importOriginal) => {
 
 vi.mock("@argent/tools-client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@argent/tools-client")>()),
-  readToolsServerState: async () => fake.state,
+  readToolsServerState: async (bundlePath?: string) => {
+    fake.stateBundle = bundlePath;
+    return fake.state;
+  },
   readAllToolsServerStates: async () => [],
   isToolsServerProcessAlive: () => fake.alive,
   isToolsServerHealthy: (...args: unknown[]) => fake.healthy(...args),
@@ -217,6 +221,49 @@ describe("toolServerSection", () => {
     expect(await labels()).toEqual(["Stale state file (pid 999999 gone)"]);
     vi.stubEnv("ARGENT_HOST", "192.168.1.5");
     expect((await labels())[0]).toMatch(/while ARGENT_HOST=192.168.1.5 is set/);
+  });
+
+  it("trims ARGENT_HOST the way the spawned server does", async () => {
+    fake.state = { pid: 999999, port: 47391, host: "127.0.0.1" };
+    for (const value of ["127.0.0.1 ", " "]) {
+      vi.stubEnv("ARGENT_HOST", value);
+      expect(await labels()).toEqual(["Stale state file (pid 999999 gone)"]);
+    }
+  });
+
+  it("checks a local-mode project's own server when a global argent runs doctor", async () => {
+    const projectRoot = path.join(fake.home, "proj");
+    const pkg = path.join(projectRoot, "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, "package.json"), "{}");
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version: "0.27.0" })
+    );
+    fake.alive = true;
+    fake.healthy.mockResolvedValue(true);
+    fake.state = { pid: 4242, port: 47391, host: "127.0.0.1", version: "0.26.0" };
+    const localCtx = { ...ctx, projectRoot, mode: "local" } as DoctorContext;
+    const [running] = (await toolServerSection(localCtx, "0.30.0", paths, notLinked)).checks;
+    expect(fake.stateBundle).toBe(path.join(fs.realpathSync(pkg), "dist", "tool-server.cjs"));
+    expect(running).toMatchObject({
+      status: "warn",
+      label: expect.stringMatching(/from v0\.26\.0$/),
+      fix: expect.stringMatching(/^npx argent server stop/),
+    });
+    fake.state = { ...fake.state, version: "0.27.0" };
+    expect((await toolServerSection(localCtx, "0.30.0", paths, notLinked)).checks[0]?.status).toBe(
+      "ok"
+    );
+  });
+
+  it("points at server stop for a wedged server that tool calls won't replace", async () => {
+    fake.alive = true;
+    fake.state = { pid: 4242, port: 47391, host: "127.0.0.1", managed: "cli" };
+    const [wedged] = (await toolServerSection(ctx, "0.30.0", paths, notLinked)).checks;
+    expect(wedged).toMatchObject({ status: "warn", fix: "node /pkg/dist/cli.js server stop" });
+    fake.state = { ...fake.state, managed: "autospawn" };
+    expect(await labels()).toEqual(["Stale state file (pid 4242 unhealthy)"]);
   });
 
   it("notes that a link from this shell's env may not reach every editor", async () => {
