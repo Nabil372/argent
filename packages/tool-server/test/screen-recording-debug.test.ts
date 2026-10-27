@@ -131,6 +131,10 @@ const hasEncoder =
     "libx264"
   ) && spawnSync("ffprobe", ["-version"]).status === 0;
 
+if (process.env.CI && !hasEncoder) {
+  throw new Error("Recording tests require ffmpeg with libx264 and ffprobe in CI.");
+}
+
 function jpeg(rgb: number[], width = 33, height = 31): Buffer {
   const png = new PNG({ width, height });
   for (let i = 0; i < png.data.length; i += 4) {
