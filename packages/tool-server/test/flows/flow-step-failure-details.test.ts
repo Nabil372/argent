@@ -19,7 +19,7 @@ vi.mock("../../src/tools/flows/flow-tree", async (importOriginal) => ({
 import { createFlowTestHarness, label, screen } from "./harness";
 import { selectorMiss, waitForFrame, type ActionEnv } from "../../src/tools/flows/flow-actions";
 
-const { run, writeFlow } = createFlowTestHarness({
+const { run, runWithCalls, writeFlow } = createFlowTestHarness({
   tempDirectoryPrefix: "flow-failure-details-",
   reset: () => {
     currentTree = () => screen([]);
@@ -84,6 +84,65 @@ describe("tap-family selector misses", () => {
       );
     }
   }, 15_000);
+});
+
+describe("zero-area misses in a visibility check", () => {
+  it("gives a tap, an assert and an await the same counted reason and hint", async () => {
+    currentTree = () =>
+      screen([
+        label("Buy", { frame: { x: 0.1, y: 0.3, width: 0.5, height: 0 } }),
+        label("Buy", { frame: { x: 0.1, y: 0.4, width: 0, height: 0 } }),
+      ]);
+    await writeFlow("tap-buy", {
+      executionPrerequisite: "",
+      steps: [{ kind: "tap", selector: { text: "Buy" } }],
+    });
+    await writeFlow("assert-buy", {
+      executionPrerequisite: "",
+      steps: [{ kind: "assert", condition: "visible", selector: { text: "Buy" } }],
+    });
+    await writeFlow("await-buy", {
+      executionPrerequisite: "",
+      steps: [{ kind: "await", condition: "visible", selector: { text: "Buy" }, timeout: 500 }],
+    });
+
+    const runs = await Promise.all([run("tap-buy"), run("assert-buy"), run("await-buy")]);
+
+    for (const {
+      steps: [step],
+    } of runs) {
+      expect(step).toMatchObject({
+        status: "fail",
+        reason: '2 elements matched text="Buy" but none was visible (zero-area frame)',
+        hint:
+          "the element is in the tree but has no on-screen area; it may be off-screen (add a " +
+          "scroll-to step before this one), collapsed, or not laid out yet",
+      });
+      expect(step).not.toHaveProperty("indeterminate");
+    }
+  }, 15_000);
+
+  it("does not suggest a scroll-to step on Vega, which refuses it", async () => {
+    currentSource = "vega-automation";
+    currentTree = () =>
+      screen([
+        label("Price", { identifier: "price", frame: { x: 0, y: 1.2, width: 0, height: 0 } }),
+      ]);
+    await writeFlow("vega-assert", {
+      executionPrerequisite: "",
+      steps: [{ kind: "assert", condition: "visible", selector: { identifier: "price" } }],
+    });
+
+    const [step] = (await runWithCalls("vega-assert", "amazon-4a27df03c9777152")).steps;
+
+    expect(step).toMatchObject({
+      status: "fail",
+      reason: '1 element matched id="price" but none was visible (zero-area frame)',
+      hint:
+        "the element is in the tree but has no on-screen area; it may be off-screen, " +
+        "collapsed, or not laid out yet",
+    });
+  });
 });
 
 describe("zero-area selector misses on Vega", () => {

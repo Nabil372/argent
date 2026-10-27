@@ -635,4 +635,66 @@ describe("scroll-to directive", () => {
     // One increment per attempt, all 25 of them.
     expect(swipes).toHaveLength(25);
   }, 15000);
+
+  it("reports a target that is in the tree only at zero area when the scroll ends", async () => {
+    // The tree never changes, and it holds the target with no height: the
+    // selector is right, so "not in this scroll direction" is not the account.
+    currentTree = () =>
+      screen([
+        n({ label: "Only row", frame: { x: 0.1, y: 0.4, width: 0.8, height: 0.1 } }),
+        n({ label: "Buy", frame: { x: 0.1, y: 0.6, width: 0.8, height: 0 } }),
+      ]);
+
+    const swipes: SwipeCall[] = [];
+    await writeFlow("zero-area-end", {
+      executionPrerequisite: "",
+      steps: [{ kind: "scroll-to", target: { text: "Buy" }, direction: "down" }],
+    });
+
+    const tool = createRunFlowTool(mockRegistry(swipes));
+    const result = asRun(
+      await tool.execute({}, { name: "zero-area-end", project_root: tmpDir, device: DEVICE })
+    );
+
+    expect(result.steps[0]).toMatchObject({
+      status: "fail",
+      reason: '1 element matched text="Buy" but none was visible (zero-area frame)',
+      hint:
+        "the element is in the tree but has no on-screen area; it may be off-screen in " +
+        "another scroll direction, collapsed, or not laid out yet",
+    });
+    expect(swipes).toHaveLength(1);
+  });
+
+  it("reports a target that is in the tree only at zero area at the attempt cap", async () => {
+    let scrolled = 0;
+    currentTree = () =>
+      screen([
+        n({ label: `Row ${scrolled}`, frame: { x: 0.1, y: 0.4, width: 0.8, height: 0.1 } }),
+        n({ label: "Buy", frame: { x: 0.1, y: 0.6, width: 0.8, height: 0 } }),
+      ]);
+
+    const swipes: SwipeCall[] = [];
+    const registry = mockRegistry(swipes, () => {
+      scrolled++;
+    });
+    await writeFlow("zero-area-cap", {
+      executionPrerequisite: "",
+      steps: [{ kind: "scroll-to", target: { text: "Buy" }, direction: "down" }],
+    });
+
+    const tool = createRunFlowTool(registry);
+    const result = asRun(
+      await tool.execute({}, { name: "zero-area-cap", project_root: tmpDir, device: DEVICE })
+    );
+
+    expect(result.steps[0]).toMatchObject({
+      status: "fail",
+      reason: '1 element matched text="Buy" but none was visible (zero-area frame)',
+      hint:
+        "the element is in the tree but has no on-screen area; it may be off-screen more " +
+        "than 25 scroll steps away or in another scroll direction, collapsed, or not laid out yet",
+    });
+    expect(swipes).toHaveLength(25);
+  }, 15000);
 });
