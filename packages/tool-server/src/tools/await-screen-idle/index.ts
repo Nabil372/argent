@@ -502,6 +502,7 @@ nowhere until it is woken.
     searchHint:
       "wait until screen settles idle stable stops changing animation transition rendered ready before screenshot",
     longRunning: true,
+    readOnly: true,
     zodSchema,
     capability,
     services: (params): Record<string, ServiceRef> => {
