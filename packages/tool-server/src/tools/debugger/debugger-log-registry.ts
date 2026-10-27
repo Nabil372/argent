@@ -19,6 +19,7 @@ import {
 import {
   buildNotConnected,
   classifyNotConnected,
+  debuggerMetroPort,
   resolveDebuggerService,
   trackDebuggerOutcome,
   type DebuggerNotConnectedResult,
@@ -108,7 +109,7 @@ export function createDebuggerLogRegistryTool(
     },
     description: `Get a summary of all console logs captured from the app's JS runtime.
 Returns the log file path, entry counts by level, and message clusters (grouped by similarity). Works against Hermes (iOS / Android / Vega) and V8 (Chromium).
-Use when investigating warnings, errors, or unexpected output. Call this first for an overview. Pass tail (and optionally levels) to get the newest entries in the result itself, since the log file may sit outside the directories you can read; read the returned file only when you need more than that. The file, totalEntries, byLevel and clusters stop at 50,000 entries; past that, { droppedEntries } counts the later entries, of which tail returns only the newest 100 per level. Returns empty stats if no log data has been captured yet, but check { note }, which is present only when the stats are empty BECAUSE the previous debugger session ended: torn down (e.g. by stop-all-simulator-servers) with its log file deleted, or cut off by the app crashing with its log file kept at the path the note names. Absent that note, empty really does mean the app has logged nothing. With tail, a note also brings { previousSessionEntries }: the newest entries of that ended session, filtered by levels, on this one call only, since the note is spent once read.
+Use when investigating warnings, errors, or unexpected output. Call this first for an overview. Pass tail (and optionally levels) to get the newest entries in the result itself, since the log file may sit outside the directories you can read; read the returned file only when you need more than that. The file, totalEntries, byLevel and clusters stop at 50,000 entries; past that, { droppedEntries } counts the later entries, of which tail returns only the newest 100 per level. Returns empty stats if no log data has been captured yet, but check { note }, which is present only when the stats are empty BECAUSE the previous debugger session ended: torn down (e.g. by stop-all-simulator-servers) with its log file deleted, or cut off by the app crashing with its log file kept at the path the note names. Absent that note, empty really does mean the app has logged nothing. With tail, a note also brings { previousSessionEntries }: the newest entries of that ended session, filtered by levels, on this one call only, since the note is spent once read. Only the first read after the session ended gets them, and only while the new session has logged nothing and no debugger-connect has run since, so after a crash or teardown pass tail on your first debugger-log-registry call, before debugger-connect.
 When the debugger cannot be reached, this tool does not fail: it returns { status: "not_connected", reason, detail, guidance } with NO log file. Follow the guidance (do not retry in a loop). Read a log file in this state only when a { note } names one kept from before the app crashed. A "connected" result's stats may come from a session whose socket has since died. Use debugger-status, not this tool, to judge debugger health.`,
     zodSchema,
     capability: DEBUGGER_TOOL_CAPABILITY,
@@ -147,11 +148,11 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           // under the connect id and the `logicalDeviceId` Metro echoed, and
           // `forgetDeviceAlias` ran in that same dispose, so only the freshly
           // resolved api still knows the logical id.
-          const reaped = takeReapedSessionAnyId("js-runtime-debugger", [
-            canonicalDeviceId(params.device_id),
-            params.device_id,
-            api.logicalDeviceId,
-          ]);
+          const reaped = takeReapedSessionAnyId(
+            "js-runtime-debugger",
+            [canonicalDeviceId(params.device_id), params.device_id, api.logicalDeviceId],
+            debuggerMetroPort(params)
+          );
           if (reaped) Object.assign(response, explainReaped(reaped, params));
         }
         return response;
@@ -164,10 +165,11 @@ When the debugger cannot be reached, this tool does not fail: it returns { statu
           err,
           params
         );
-        const reaped = takeReapedSessionAnyId("js-runtime-debugger", [
-          canonicalDeviceId(params.device_id),
-          params.device_id,
-        ]);
+        const reaped = takeReapedSessionAnyId(
+          "js-runtime-debugger",
+          [canonicalDeviceId(params.device_id), params.device_id],
+          debuggerMetroPort(params)
+        );
         if (reaped) Object.assign(result, explainReaped(reaped, params));
         return result;
       }

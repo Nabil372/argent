@@ -36,12 +36,23 @@ export interface ReapedSession {
   connectionLost?: boolean;
   /** The newest console entries of a reaped JS-runtime debugger, for a read that asks for tail. */
   logTail?: TailEntry[];
+  /**
+   * Metro port of a reaped JS-runtime debugger, part of the key: apps on one
+   * device each get their own session per port.
+   */
+  port?: number;
+}
+
+interface ReapedDebuggerSession {
+  logTail?: TailEntry[];
+  port?: number;
 }
 
 const reaped = new Map<string, ReapedSession>();
 
-function key(kind: ReapedSessionKind, deviceId: string): string {
-  return `${kind}:${deviceId.toLowerCase()}`;
+function key(kind: ReapedSessionKind, deviceId: string, port?: number): string {
+  const id = deviceId.toLowerCase();
+  return port === undefined ? `${kind}:${id}` : `${kind}:${port}:${id}`;
 }
 
 /**
@@ -54,23 +65,25 @@ export function recordReapedSession(
   deviceIds: string | Array<string | undefined>,
   salvage?: string,
   connectionLost = false,
-  logTail?: TailEntry[]
+  { logTail, port }: ReapedDebuggerSession = {}
 ): void {
   const ids = [deviceIds].flat().filter((id): id is string => id !== undefined);
   const entry: ReapedSession = { kind, deviceId: ids[0]!, ids, atMs: Date.now() };
   if (salvage) entry.salvage = salvage;
   if (connectionLost) entry.connectionLost = true;
   if (logTail?.length) entry.logTail = logTail;
-  for (const id of ids) reaped.set(key(kind, id), entry);
+  if (port !== undefined) entry.port = port;
+  for (const id of ids) reaped.set(key(kind, id, port), entry);
 }
 
 export function takeReapedSession(
   kind: ReapedSessionKind,
-  deviceId: string
+  deviceId: string,
+  port?: number
 ): ReapedSession | undefined {
-  const entry = reaped.get(key(kind, deviceId));
+  const entry = reaped.get(key(kind, deviceId, port));
   for (const id of entry?.ids ?? []) {
-    if (reaped.get(key(kind, id)) === entry) reaped.delete(key(kind, id));
+    if (reaped.get(key(kind, id, port)) === entry) reaped.delete(key(kind, id, port));
   }
   return entry;
 }
@@ -78,12 +91,13 @@ export function takeReapedSession(
 /** Takes the entry under every id one device answers to, returning the first. */
 export function takeReapedSessionAnyId(
   kind: ReapedSessionKind,
-  ids: Array<string | undefined>
+  ids: Array<string | undefined>,
+  port?: number
 ): ReapedSession | undefined {
   let first: ReapedSession | undefined;
   for (const id of new Set(ids)) {
     if (id === undefined) continue;
-    const entry = takeReapedSession(kind, id); // not `first ??= take(...)`: take every id
+    const entry = takeReapedSession(kind, id, port); // not `first ??= take(...)`: take every id
     first ??= entry;
   }
   return first;

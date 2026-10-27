@@ -186,6 +186,15 @@ describe("LogFileWriter", () => {
     expect(writer.tail({ limit: TAIL_MAX })).toHaveLength(TAIL_MAX);
   });
 
+  it("retainedTail() keeps an error buried under more than TAIL_MAX logs", () => {
+    writer.write(makeEntry(0, { level: "error" }));
+    for (let i = 1; i <= TAIL_MAX + 5; i++) writer.write(makeEntry(i));
+
+    const retained = writer.retainedTail();
+    expect(retained[0]).toEqual(expect.objectContaining({ id: 0, level: "error" }));
+    expect(retained).toHaveLength(TAIL_MAX + 1);
+  });
+
   it("tail() keeps the newest entries after the file stops at 50,000", () => {
     for (let i = 0; i < 50_003; i++) writer.write(makeEntry(i, { message: "m" }));
 

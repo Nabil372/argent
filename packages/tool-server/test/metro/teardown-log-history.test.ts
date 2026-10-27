@@ -194,16 +194,42 @@ describe("a debugger session reaped by stop-all-simulator-servers", () => {
   it("does not attach the explanation to a registry that has its own entries", async () => {
     const urn = await connectAndCapture(LOGICAL_ID, 5);
     await registry.disposeService(urn);
-    // Reconnect and capture fresh history before reading.
-    await connectAndCapture(LOGICAL_ID, 3);
+    const api = await registry.resolveService<JsRuntimeDebuggerApi>(urn);
+    api.logWriter.write({
+      id: 0,
+      timestamp: new Date().toISOString(),
+      level: "log",
+      message: "new",
+    });
 
     const result = (await registry.invokeTool("debugger-log-registry", {
       port: mockPort,
       device_id: LOGICAL_ID,
-    })) as { totalEntries: number; note?: string };
+      tail: 5,
+    })) as { totalEntries: number; note?: string; previousSessionEntries?: unknown };
 
-    expect(result.totalEntries).toBe(3);
+    expect(result.totalEntries).toBe(1);
     expect(result.note).toBeUndefined();
+    expect(result.previousSessionEntries).toBeUndefined();
+  });
+
+  it("keeps the torn-down session's lines away from a read on another Metro port", async () => {
+    await registry.disposeService(await connectAndCapture(LOGICAL_ID, 3));
+
+    const otherApp = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort + 1,
+      device_id: LOGICAL_ID,
+      tail: 5,
+    })) as { note?: string; previousSessionEntries?: unknown };
+    const sameApp = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: LOGICAL_ID,
+      tail: 5,
+    })) as { previousSessionEntries?: unknown[] };
+
+    expect(otherApp.note).toBeUndefined();
+    expect(otherApp.previousSessionEntries).toBeUndefined();
+    expect(sameApp.previousSessionEntries).toHaveLength(3);
   });
 
   it("reports the loss once, not on every later empty read", async () => {
@@ -347,24 +373,52 @@ describe("a debugger session whose app crashed", () => {
   });
 
   it("returns the newest lines from before the crash once, with the note", async () => {
-    await crash(await connectAndCapture(LOGICAL_ID, 3));
+    const file = await crash(await connectAndCapture(LOGICAL_ID, 3));
     const read = () =>
       registry.invokeTool("debugger-log-registry", {
         port: mockPort,
         device_id: LOGICAL_ID,
         tail: 2,
         levels: ["log"],
-      }) as Promise<{ status: string; previousSessionEntries?: Array<{ message: string }> }>;
+      }) as Promise<{
+        status: string;
+        note?: string;
+        previousSessionEntries?: Array<{ message: string }>;
+      }>;
 
     const first = await read();
     const second = await read();
 
     expect(first.status).toBe("not_connected");
+    expect(first.note).toContain(`kept at ${file}`);
     expect(first.previousSessionEntries?.map((e) => e.message)).toEqual([
       "captured 1",
       "captured 2",
     ]);
     expect(second.previousSessionEntries).toBeUndefined();
+  });
+
+  it("filters the lines from before the crash by levels", async () => {
+    const urn = await connectAndCapture(LOGICAL_ID, 0);
+    const api = await registry.resolveService<JsRuntimeDebuggerApi>(urn);
+    ["log", "error", "log", "error"].forEach((level, i) =>
+      api.logWriter.write({
+        id: i,
+        timestamp: new Date().toISOString(),
+        level,
+        message: `${level} ${i}`,
+      })
+    );
+    await crash(urn);
+
+    const result = (await registry.invokeTool("debugger-log-registry", {
+      port: mockPort,
+      device_id: LOGICAL_ID,
+      tail: 5,
+      levels: ["error"],
+    })) as { previousSessionEntries?: Array<{ message: string }> };
+
+    expect(result.previousSessionEntries?.map((e) => e.message)).toEqual(["error 1", "error 3"]);
   });
 
   it("names the kept file on the next debugger-connect", async () => {
