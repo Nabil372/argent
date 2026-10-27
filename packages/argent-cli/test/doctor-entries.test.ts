@@ -132,6 +132,34 @@ describe("classifyMcpEntry", () => {
     expect(classifyMcpEntry(entry, ctx()).status).toBe("ok");
   });
 
+  it("warns when the project's devEngines makes npm refuse every npx", () => {
+    const devEngines = (runtime: unknown) =>
+      fs.writeFileSync(
+        path.join(projectRoot, "package.json"),
+        JSON.stringify({ devEngines: { runtime } })
+      );
+    const onDemand = { command: "npx", args: ["-y", "@swmansion/argent@latest", "mcp"] };
+    const local = { command: "npx", args: ["--no-install", "argent", "mcp"] };
+    devEngines({ name: "node", version: "18.x", onFail: "error" });
+    expect(classifyMcpEntry(onDemand, ctx())).toMatchObject({
+      status: "warn",
+      label: expect.stringMatching(/devEngines wants Node 18\.x/),
+      fix: expect.stringMatching(/onFail to "warn"/),
+    });
+    expect(classifyMcpEntry(local, ctx({ localInstalled: true })).status).toBe("warn");
+    devEngines({ name: "node", version: "18.x" });
+    expect(classifyMcpEntry(onDemand, ctx()).status).toBe("warn");
+    devEngines({ name: "node", version: "18.x", onFail: "warn" });
+    expect(classifyMcpEntry(onDemand, ctx()).status).toBe("ok");
+    devEngines([
+      { name: "node", version: "18.x" },
+      { name: "node", version: process.version },
+    ]);
+    expect(classifyMcpEntry(onDemand, ctx()).status).toBe("ok");
+    devEngines({ name: "bun", version: "1.x" });
+    expect(classifyMcpEntry(onDemand, ctx()).status).toBe("ok");
+  });
+
   it("accepts the other on-demand spellings", () => {
     for (const args of [
       ["-y", "argent@latest", "mcp"],

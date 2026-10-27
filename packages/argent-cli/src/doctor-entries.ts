@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { homedir } from "node:os";
-import { MCP_BINARY_NAME, type McpServerEntry } from "@argent/installer";
+import { MCP_BINARY_NAME, nodeSatisfiesEngines, type McpServerEntry } from "@argent/installer";
 import { type DoctorCheck, check, home, samePath } from "./doctor-shared.js";
 import { GLOBAL_SHIM_FIX, addToPathFix, findGlobalArgent, isOnPath } from "./doctor-install.js";
 import { redactUrl } from "./doctor-tool-server.js";
@@ -130,6 +130,57 @@ function installFix(ctx: EntryContext): string {
   return ctx.localDeclared === false
     ? `Add @swmansion/argent to devDependencies, then ${ctx.installCmd}`
     : ctx.installCmd;
+}
+
+interface DevEngine {
+  name?: unknown;
+  version?: unknown;
+  onFail?: unknown;
+}
+
+function nearestPackageJson(dir: string): string | null {
+  let current = path.resolve(dir);
+  while (!fs.existsSync(path.join(current, "package.json"))) {
+    if (path.dirname(current) === current) return null;
+    current = path.dirname(current);
+  }
+  return path.join(current, "package.json");
+}
+
+/**
+ * npm exec (every npx) first checks the project's devEngines, and with onFail
+ * "error" (the default) aborts with EBADDEVENGINES when this Node fails it.
+ */
+function npxBlockedByDevEngines(dir: string, cmd: string): DoctorCheck | null {
+  const manifestPath = nearestPackageJson(dir);
+  if (!manifestPath) return null;
+  let runtime: unknown;
+  try {
+    runtime = (
+      JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { devEngines?: { runtime?: unknown } }
+    ).devEngines?.runtime;
+  } catch {
+    return null;
+  }
+  const nodeEngines = (Array.isArray(runtime) ? runtime : [runtime]).filter(
+    (e): e is DevEngine => !!e && typeof e === "object" && (e as DevEngine).name === "node"
+  );
+  const ranges = nodeEngines
+    .map((e) => e.version)
+    .filter((v): v is string => typeof v === "string");
+  const fails =
+    ranges.length > 0 &&
+    ranges.every((range) => nodeSatisfiesEngines(process.version, range) === false) &&
+    nodeEngines.some((e) => (e.onFail ?? "error") === "error");
+  if (!fails) return null;
+  return check(
+    "warn",
+    `${cmd} — npm refuses npx here: devEngines wants Node ${ranges.join(" or ")}, this shell has ${process.version}`,
+    {
+      detail: home(manifestPath),
+      fix: `Start the editor with a Node matching ${ranges.join(" or ")}, or set devEngines.runtime.onFail to "warn"`,
+    }
+  );
 }
 
 /** The script `node` runs: the first argument that is neither an option nor an option's value. */
@@ -361,10 +412,11 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
       (bare === "npx" && !entry.args.some((a) => NPX_NO_INSTALL.has(a))) ||
       (bare === "yarn" && entry.args[0] === "dlx");
     const pkg = packageOption(entry.args) ?? entry.args.find((a) => ARGENT_PACKAGE_ARG.test(a));
+    const blocked = bare === "npx" ? npxBlockedByDevEngines(base, cmd) : null;
     if (fetches && pkg && ARGENT_PACKAGE_ARG.test(pkg)) {
       return bare === "yarn" && !ctx.yarnBerry
         ? check("info", `${cmd} (needs Yarn 2 or later, since Yarn 1 has no dlx; not verified)`)
-        : check("ok", cmd, { detail: "fetched from npm when the editor starts it" });
+        : (blocked ?? check("ok", cmd, { detail: "fetched from npm when the editor starts it" }));
     }
     const missingLocal = check("error", `${cmd} — no local @swmansion/argent to run`, {
       fix: installFix(ctx),
@@ -374,7 +426,7 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
     // the argent in npm's global prefix (by either name), wherever PATH points.
     const runsLocal = ctx.localResolvable ?? ctx.localInstalled;
     const runsGlobal = !fetches && (ctx.npmGlobalHasArgent ?? ctx.globalOnPath);
-    return runsLocal || runsGlobal ? check("ok", cmd) : missingLocal;
+    return runsLocal || runsGlobal ? (blocked ?? check("ok", cmd)) : missingLocal;
   }
   return check("info", `${cmd} (custom command, not verified)`);
 }
