@@ -392,8 +392,13 @@ describe("classifyMcpEntry argument rules", () => {
   it("does not treat `npx --no-install @swmansion/argent` as fetched on demand", () => {
     for (const flag of ["--no-install", "--no"]) {
       const entry = { command: "npx", args: [flag, "@swmansion/argent", "mcp"] };
-      expect(classifyMcpEntry(entry, ctx()).status).toBe("error");
+      expect(classifyMcpEntry(entry, ctx({ npmGlobalHasArgent: false })).status).toBe("error");
     }
+  });
+
+  it("lets `npx --no-install @swmansion/argent` fall back to npm's global argent", () => {
+    const entry = { command: "npx", args: ["--no-install", "@swmansion/argent", "mcp"] };
+    expect(classifyMcpEntry(entry, ctx({ npmGlobalHasArgent: true })).status).toBe("ok");
   });
 
   it("does not treat a yarn entry as fetched on demand", () => {

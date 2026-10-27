@@ -371,12 +371,9 @@ function classifyCommand(entry: McpServerEntry, ctx: EntryContext): DoctorCheck 
     });
     if (bare === "yarn") return ctx.localInstalled ? check("ok", cmd) : missingLocal;
     // npx resolves like Node (ancestors too); `--no-install` then falls back to
-    // the `argent` in npm's global prefix, wherever PATH points.
+    // the argent in npm's global prefix (by either name), wherever PATH points.
     const runsLocal = ctx.localResolvable ?? ctx.localInstalled;
-    const runsGlobal =
-      !fetches &&
-      entry.args.includes(MCP_BINARY_NAME) &&
-      (ctx.npmGlobalHasArgent ?? ctx.globalOnPath);
+    const runsGlobal = !fetches && (ctx.npmGlobalHasArgent ?? ctx.globalOnPath);
     return runsLocal || runsGlobal ? check("ok", cmd) : missingLocal;
   }
   return check("info", `${cmd} (custom command, not verified)`);
