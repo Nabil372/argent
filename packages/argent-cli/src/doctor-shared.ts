@@ -72,6 +72,8 @@ export interface EntryToolsUrl {
   editor: string;
   url: string;
   token?: string;
+  /** The env key whose `${VAR}` this shell can't fill in, so the remote can't be probed. */
+  unresolved?: string;
 }
 
 export function check(
@@ -96,6 +98,12 @@ export function realPath(p: string): string {
     const parent = path.dirname(p);
     return parent === p ? p : path.join(realPath(parent), path.basename(p));
   }
+}
+
+/** A path for a fix line: `~/…` when the shell needs no quotes for it, else quoted in full. */
+export function shellPath(p: string): string {
+  const short = home(p);
+  return /^[\w~./@+:,-]+$/.test(short) ? short : shellQuotePath(p);
 }
 
 export function samePath(a: string, b: string | null | undefined): boolean {

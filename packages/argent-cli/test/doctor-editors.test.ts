@@ -8,7 +8,8 @@ import {
   claudeProjectKey,
   editorsSection,
   gitToplevel,
-  isStrictJson,
+  isRejectedJson,
+  linksToRemote,
 } from "../src/doctor-editors.js";
 import { type DoctorContext, type EntryToolsUrl } from "../src/doctor-shared.js";
 import { skillsSection } from "../src/doctor-skills.js";
@@ -83,18 +84,32 @@ describe("gitToplevel", () => {
   });
 });
 
-describe("isStrictJson", () => {
-  it("rejects what Claude Code can't parse, but allows a BOM", () => {
+describe("isRejectedJson", () => {
+  const rejects = (editor: string, text: string) => {
     const file = path.join(projectRoot, "x.json");
-    for (const [text, ok] of [
-      ['{"a":1}', true],
-      ['﻿{"a":1}', true],
-      ['{"a":1,}', false],
-      ['{"a":1 // c\n}', false],
-    ] as const) {
-      fs.writeFileSync(file, text);
-      expect(isStrictJson(file)).toBe(ok);
-    }
+    fs.writeFileSync(file, text);
+    return isRejectedJson(editor, file);
+  };
+
+  it("rejects what Claude Code can't parse, but allows a BOM", () => {
+    expect(rejects("Claude Code", '{"a":1}')).toBe(false);
+    expect(rejects("Claude Code", '﻿{"a":1}')).toBe(false);
+    expect(rejects("Claude Code", '{"a":1,}')).toBe(true);
+    expect(rejects("Claude Code", '{"a":1 // c\n}')).toBe(true);
+  });
+
+  it("allows Gemini comments but not trailing commas", () => {
+    expect(rejects("Gemini", '{"a":1 // c\n}')).toBe(false);
+    expect(rejects("Gemini", '{"a":{"b":1,},}')).toBe(true);
+  });
+
+  it("allows opencode comments and trailing commas, but not broken syntax", () => {
+    expect(rejects("opencode", '{"a":1, // c\n}')).toBe(false);
+    expect(rejects("opencode", '{"a":{"b":1}')).toBe(true);
+  });
+
+  it("leaves other editors' configs to the lenient read", () => {
+    expect(rejects("Cursor", '{"a":{"b":1,},}')).toBe(false);
   });
 });
 
@@ -221,6 +236,29 @@ describe("editor and skill sections", () => {
     const checks = editorsSection(doctorCtx()).checks;
     expect(checks.find((c) => c.status === "error")?.label).toMatch(/not valid JSON/);
     expect(checks.some((c) => c.label === "Claude Code: argent mcp")).toBe(false);
+  });
+
+  it("finds argent on the inherited PATH for a VS Code entry that only adds a dir to PATH", () => {
+    const entry = { type: "stdio", ...argent, env: { PATH: path.join(projectRoot, "no-argent") } };
+    writeJson(path.join(projectRoot, ".vscode", "mcp.json"), { servers: { argent: entry } });
+    writeJson(path.join(projectRoot, ".cursor", "mcp.json"), { mcpServers: { argent: entry } });
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(statusOf(checks, "VS Code: argent mcp")).toBe("ok");
+    expect(statusOf(checks, "Cursor: argent mcp")).toBe("error");
+  });
+
+  it("flags a Gemini settings.json with a trailing comma, which Gemini refuses to load", () => {
+    fs.mkdirSync(path.join(home, ".gemini"));
+    fs.writeFileSync(
+      path.join(home, ".gemini", "settings.json"),
+      '{"mcpServers": {"argent": {"command":"argent","args":["mcp"],}},}'
+    );
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.find((c) => c.status === "error")).toMatchObject({
+      label: "Gemini: the config file is not valid JSON, so Gemini won't load it",
+      detail: "~/.gemini/settings.json",
+    });
+    expect(checks.some((c) => c.label === "Gemini: argent mcp")).toBe(false);
   });
 
   it("ignores a leftover /mcp toggle when Claude Code has no argent entry", () => {
@@ -448,6 +486,47 @@ describe("editor and skill sections", () => {
     );
   });
 
+  it("lets the project entry shadow the user one for opencode and Codex", () => {
+    writeJson(path.join(home, ".config", "opencode", "opencode.json"), {
+      mcp: { argent: { type: "local", command: ["/opt/gone/bin/argent", "mcp"] } },
+    });
+    writeJson(path.join(projectRoot, "opencode.json"), {
+      mcp: { argent: { type: "local", command: ["argent", "mcp"] } },
+    });
+    const codexEntry = (command: string) =>
+      `[mcp_servers.argent]\ncommand = "${command}"\nargs = ["mcp"]\n`;
+    fs.mkdirSync(path.join(home, ".codex"));
+    fs.writeFileSync(path.join(home, ".codex", "config.toml"), codexEntry("/opt/gone/bin/argent"));
+    fs.mkdirSync(path.join(projectRoot, ".codex"));
+    fs.writeFileSync(path.join(projectRoot, ".codex", "config.toml"), codexEntry("argent"));
+    const checks = editorsSection(doctorCtx()).checks;
+    expect(checks.some((c) => c.status === "error")).toBe(false);
+    const unused = checks.filter((c) => c.label.includes("/opt/gone")).map((c) => c.label);
+    expect(unused).toEqual([
+      "Codex: /opt/gone/bin/argent mcp (unused: the project-scope entry wins)",
+      "opencode: /opt/gone/bin/argent mcp (unused: the project-scope entry wins)",
+    ]);
+  });
+
+  it("lets a package's own Codex config shadow the one at the git root", () => {
+    const pkg = path.join(projectRoot, "packages", "app");
+    const codexEntry = (command: string) =>
+      `[mcp_servers.argent]\ncommand = "${command}"\nargs = ["mcp"]\n`;
+    fs.mkdirSync(path.join(projectRoot, ".codex"));
+    fs.writeFileSync(
+      path.join(projectRoot, ".codex", "config.toml"),
+      codexEntry("/opt/gone/argent")
+    );
+    fs.mkdirSync(path.join(pkg, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(pkg, ".codex", "config.toml"), codexEntry("argent"));
+    const ctx = { ...doctorCtx(), projectRoot: pkg, cwd: pkg, gitRoot: projectRoot };
+    const checks = editorsSection(ctx).checks;
+    expect(checks.some((c) => c.status === "error")).toBe(false);
+    expect(checks.find((c) => c.label.includes("/opt/gone"))?.label).toBe(
+      "Codex: /opt/gone/argent mcp (unused: the closer project config entry wins)"
+    );
+  });
+
   it("looks for a .mcp.json rejection only next to a project entry", () => {
     writeJson(path.join(home, ".claude.json"), { mcpServers: { argent } });
     writeJson(path.join(projectRoot, ".claude", "settings.local.json"), {
@@ -579,6 +658,25 @@ describe("editor and skill sections", () => {
     const urls: EntryToolsUrl[] = [];
     editorsSection(doctorCtx(), urls);
     expect(urls).toEqual([{ editor: "Claude Code", url: "http://127.0.0.1:9", token: "good" }]);
+  });
+
+  it("marks a remote whose variable this shell can't fill in, and does not count it as remote", () => {
+    vi.stubEnv("ARGENT_TOOLS_URL", undefined);
+    vi.stubEnv("ARGENT_AUTH_TOKEN", undefined);
+    const entry = { ...argent, env: { ARGENT_TOOLS_URL: "${ARGENT_TOOLS_URL}" } };
+    writeJson(path.join(projectRoot, ".mcp.json"), { mcpServers: { argent: entry } });
+    const urls: EntryToolsUrl[] = [];
+    editorsSection(doctorCtx(), urls);
+    expect(urls).toEqual([
+      {
+        editor: "Claude Code",
+        url: "${ARGENT_TOOLS_URL}",
+        token: undefined,
+        unresolved: "ARGENT_TOOLS_URL",
+      },
+    ]);
+    expect(linksToRemote(entry)).toBe(false);
+    expect(linksToRemote({ ...argent, env: { ARGENT_TOOLS_URL: "http://h:1" } })).toBe(true);
   });
 
   it("does not probe the remote of a switched-off entry", () => {

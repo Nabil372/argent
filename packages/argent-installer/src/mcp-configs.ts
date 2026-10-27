@@ -380,6 +380,25 @@ export function isInvalidToml(filePath: string): boolean {
   }
 }
 
+/** A JSON config that does not parse with only the syntax extensions its editor accepts. */
+export function isInvalidJson(
+  filePath: string,
+  accepts: { comments: boolean; trailingCommas: boolean }
+): boolean {
+  let text: string;
+  try {
+    text = fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
+  } catch {
+    return false;
+  }
+  const errors: ParseError[] = [];
+  parseJsoncText(text, errors, {
+    disallowComments: !accepts.comments,
+    allowTrailingComma: accepts.trailingCommas,
+  });
+  return errors.length > 0;
+}
+
 // readToml reads a broken file as {}, so writing that back would wipe it.
 function readTomlForEdit(filePath: string): Record<string, unknown> {
   if (isInvalidToml(filePath)) {

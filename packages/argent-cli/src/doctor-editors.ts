@@ -7,6 +7,7 @@ import {
   detectAdapters,
   findConfiguredAdapterScopes,
   isArgentDisabledInClaudeProject,
+  isInvalidJson,
   isInvalidToml,
   isSwitchedOffInEditor,
   probeLocalInstall,
@@ -50,16 +51,25 @@ const CWD_SUPPORT: Record<string, CwdSupport> = {
 
 type EntryScope = "local" | "project" | "global";
 
-/** Claude Code rejects a config file that is not strict JSON (comments, trailing commas). */
-export function isStrictJson(configPath: string): boolean {
-  try {
-    let text = fs.readFileSync(configPath, "utf8");
-    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-    JSON.parse(text);
-    return true;
-  } catch {
-    return false;
-  }
+// The JSON syntax each editor's config loader accepts. The others read their
+// config as leniently as argent does.
+const JSON_SYNTAX: Record<string, { comments: boolean; trailingCommas: boolean; fix: string }> = {
+  "Claude Code": {
+    comments: false,
+    trailingCommas: false,
+    fix: "Fix the JSON syntax (Claude Code allows no comments or trailing commas)",
+  },
+  "Gemini": {
+    comments: true,
+    trailingCommas: false,
+    fix: "Fix the JSON syntax (Gemini allows comments, but no trailing commas)",
+  },
+  "opencode": { comments: true, trailingCommas: true, fix: "Fix the JSON syntax" },
+};
+
+export function isRejectedJson(editor: string, configPath: string): boolean {
+  const syntax = JSON_SYNTAX[editor];
+  return !!syntax && isInvalidJson(configPath, syntax);
 }
 
 function isYarnBerryProject(root: string): boolean {
@@ -75,7 +85,7 @@ function isYarnBerryProject(root: string): boolean {
 }
 
 // These load their project config from cwd up to the git root.
-const GIT_ROOT_EDITORS = new Set(["Codex", "opencode"]);
+export const GIT_ROOT_EDITORS = new Set(["Codex", "opencode"]);
 
 /**
  * Claude Code reads its .claude dir from the checkout it runs in, Codex and
@@ -160,23 +170,22 @@ interface Found {
   rank?: number;
 }
 
-// Claude Code starts one entry per name: local scope over project, a closer
-// .mcp.json over one further up, project over user. Gemini starts the project
-// entry when both scopes define one.
+// These start one entry per name: Claude Code's local scope over project, a
+// closer project config over one further up, project over user.
+const RANKED_EDITORS = new Set(["Claude Code", "Gemini", "Codex", "opencode"]);
+
 function rankOf(adapterName: string, scope: EntryScope, configPath?: string): number | undefined {
-  if (adapterName === "Claude Code") {
-    if (scope === "local") return Number.MAX_SAFE_INTEGER;
-    // Every .mcp.json is in an ancestor of cwd: the longer path is the closer one.
-    return scope === "project" ? 1 + path.dirname(configPath!).length : 0;
-  }
-  if (adapterName === "Gemini") return scope === "project" ? 1 : 0;
-  return undefined;
+  if (!RANKED_EDITORS.has(adapterName)) return undefined;
+  if (scope === "local") return Number.MAX_SAFE_INTEGER;
+  // Every project config is in an ancestor of cwd: the longer path is the closer one.
+  return scope === "project" ? 1 + path.dirname(configPath!).length : 0;
 }
 
 function unusedLabel(f: Found, winner: Found): string {
+  const closer = f.adapterName === "Claude Code" ? "closer .mcp.json" : "closer project config";
   const winnerName =
     f.rankedScope === "project" && winner.rankedScope === "project"
-      ? "closer .mcp.json"
+      ? closer
       : `${winner.rankedScope}-scope`;
   return `${f.adapterName}: ${formatEntry(f.entry)} (unused: the ${winnerName} entry wins)`;
 }
@@ -254,12 +263,13 @@ export function editorsSection(
   }
 
   for (const { adapter, scope, configPath } of configured) {
-    if (adapter.name === "Claude Code" && !isStrictJson(configPath)) {
+    if (isRejectedJson(adapter.name, configPath)) {
       checks.push(
-        check("error", "Claude Code: the config file is not valid JSON, so Claude Code skips it", {
-          detail: home(configPath),
-          fix: "Fix the JSON syntax (Claude Code allows no comments or trailing commas)",
-        })
+        check(
+          "error",
+          `${adapter.name}: the config file is not valid JSON, so ${adapter.name} won't load it`,
+          { detail: home(configPath), fix: JSON_SYNTAX[adapter.name]!.fix }
+        )
       );
       unparsed.add(adapter.name);
       continue;
@@ -476,8 +486,18 @@ function collectToolsUrl(f: Found, entryToolsUrls: EntryToolsUrl[]): void {
   const rawToken = f.entry.env?.[AUTH_TOKEN_ENV];
   const token =
     rawToken === undefined ? process.env[AUTH_TOKEN_ENV] : expandEnvReferences(rawToken);
-  if (hasUnresolvedVariable(url) || (token && hasUnresolvedVariable(token))) return;
-  entryToolsUrls.push({ editor: f.adapterName, url, token });
+  const unresolved = hasUnresolvedVariable(url)
+    ? "ARGENT_TOOLS_URL"
+    : token && hasUnresolvedVariable(token)
+      ? AUTH_TOKEN_ENV
+      : undefined;
+  entryToolsUrls.push({ editor: f.adapterName, url, token, ...(unresolved ? { unresolved } : {}) });
+}
+
+/** Whether this shell can tell the entry's server links to a remote tool-server. */
+export function linksToRemote(entry: McpServerEntry): boolean {
+  const rawUrl = entry.env?.ARGENT_TOOLS_URL;
+  return !!rawUrl && !hasUnresolvedVariable(expandEnvReferences(rawUrl));
 }
 
 /** The nearest directory at or above `dir` holding `.git`: the repo, worktree or submodule root. */

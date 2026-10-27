@@ -145,6 +145,19 @@ describe("remote status probe", () => {
     expect(result?.label).toMatch(/rejects the token \(HTTP 401\)/);
   });
 
+  it("names an entry whose remote uses a variable this shell can't fill in", async () => {
+    const [result] = await entryRemoteChecks(
+      [{ editor: "Claude Code", url: "${ARGENT_TOOLS_URL}", unresolved: "ARGENT_TOOLS_URL" }],
+      "argent"
+    );
+    expect(result).toMatchObject({
+      status: "info",
+      label:
+        "Claude Code entry: its env ARGENT_TOOLS_URL uses a variable this shell does not set, not verified",
+      detail: "${ARGENT_TOOLS_URL}",
+    });
+  });
+
   it("gives up on a server that accepts and never answers", async () => {
     const url = await listen(net.createServer(() => {}));
     const started = Date.now();

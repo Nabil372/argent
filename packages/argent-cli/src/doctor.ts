@@ -34,7 +34,7 @@ import {
   localReinstallCommand,
   runGlobalShim,
 } from "./doctor-install.js";
-import { claudeProjectKey, editorsSection, gitToplevel } from "./doctor-editors.js";
+import { claudeProjectKey, editorsSection, gitToplevel, linksToRemote } from "./doctor-editors.js";
 import { skillsSection } from "./doctor-skills.js";
 import { entryRemoteChecks, toolServerSection } from "./doctor-tool-server.js";
 import { platformsSection } from "./doctor-platforms.js";
@@ -189,8 +189,7 @@ export async function collectDoctorReport(options: {
   const entryToolsUrls: EntryToolsUrl[] = [];
   const startedEntries: McpServerEntry[] = [];
   const editors = editorsSection(ctx, entryToolsUrls, startedEntries);
-  const entriesAllRemote =
-    startedEntries.length > 0 && startedEntries.every((e) => e.env?.ARGENT_TOOLS_URL);
+  const entriesAllRemote = startedEntries.length > 0 && startedEntries.every(linksToRemote);
 
   // Sections that touch the network or spawn a process run concurrently.
   const [toolServer, entryRemotes, platforms, other] = await Promise.all([

@@ -34,6 +34,7 @@ export {
   isArgentDisabledInClaudeProject,
   isSwitchedOffInEditor,
   hasCodexRules,
+  isInvalidJson,
   isInvalidToml,
   type McpConfigAdapter,
   type McpServerEntry,

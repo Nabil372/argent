@@ -157,7 +157,17 @@ export async function entryRemoteChecks(
   argentCmd: string
 ): Promise<DoctorCheck[]> {
   return Promise.all(
-    urls.map(async ({ editor, url, token }) => {
+    urls.map(async ({ editor, url, token, unresolved }) => {
+      if (unresolved) {
+        return check(
+          "info",
+          `${editor} entry: its env ${unresolved} uses a variable this shell does not set, not verified`,
+          {
+            detail: redactUrl(url),
+            fix: `Set the variable where ${editor} starts argent, or remove ${unresolved} from the entry`,
+          }
+        );
+      }
       const problem = toolsUrlProblem(url);
       if (problem) {
         return check("error", `${editor} entry: its env ARGENT_TOOLS_URL ${problem}`, {
