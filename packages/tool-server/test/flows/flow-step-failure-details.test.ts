@@ -38,6 +38,11 @@ const INDETERMINATE_HINT =
   "tree source that stopped answering — then check the device and the tree source; re-run " +
   "before you edit the e2e test";
 
+/** The repair Vega's toolkit reader sends with an empty tree. */
+const VEGA_HINT =
+  "No UI tree from the Vega automation toolkit. The toolkit attaches at app launch — " +
+  "relaunch the foreground app.";
+
 function disconnected(): never {
   throw new Error("native devtools disconnected");
 }
@@ -174,9 +179,6 @@ describe("selector misses on a screen that was never read", () => {
   // it reads a tree, so a snapshot's cropOn is where a flow meets this read.
   // "no element matched" is a claim about what the screen holds, and this read
   // supports no such claim.
-  const VEGA_HINT =
-    "No UI tree from the Vega automation toolkit. The toolkit attaches at app launch — " +
-    "relaunch the foreground app.";
   it("refuses a verdict on a Vega cropOn and gives the toolkit's repair, not the scroll-to advice", async () => {
     currentSource = "vega-automation";
     currentTree = () => screen([]);
@@ -540,6 +542,32 @@ describe("refused tree read", () => {
       expect(step).not.toHaveProperty("indeterminate");
       expect(step).not.toHaveProperty("hint");
     }
+  });
+});
+
+describe("a wait that could not judge its condition", () => {
+  // The flag and the hint of such a step come from its last read attempt, not
+  // from any earlier read in the window.
+  it("gives a device error after a blind read the shared hint, not the blind read's repair", async () => {
+    // The toolkit's repair is for the blind read that sent it. The reads that
+    // throw after it send none, so the step gets the shared hint.
+    currentSource = "vega-automation";
+    let reads = 0;
+    currentTree = () => {
+      if (reads++ > 0) disconnected();
+      currentFlags = { hint: VEGA_HINT };
+      return screen([]);
+    };
+    await writeFlow("blind-then-throw", {
+      executionPrerequisite: "",
+      steps: [{ kind: "await", condition: "visible", selector: { text: "Home" }, timeout: 500 }],
+    });
+
+    const [step] = (await run("blind-then-throw")).steps;
+
+    expect(reads).toBeGreaterThan(1);
+    expect(step).toMatchObject({ status: "fail", indeterminate: true, hint: INDETERMINATE_HINT });
+    expect(step.reason).toContain("native devtools disconnected");
   });
 });
 
