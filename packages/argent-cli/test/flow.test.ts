@@ -581,6 +581,74 @@ describe("argent e2e run", () => {
     ]);
   });
 
+  it("frames an errored step in a single run's recap, as it frames a failed one", async () => {
+    const dir = path.join(tempRoot, "frame-error");
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(
+      path.join(dir, "err.yaml"),
+      [
+        "steps:",
+        "  - launch: com.acme.shop",
+        "  - tap: { text: Profile }",
+        "  - tool: flow-read-prerequisite",
+        "    args: { name: missing }",
+        "  - tap: { text: Sign out }",
+        "",
+      ].join("\n")
+    );
+    const reason =
+      'Invalid params for tool "flow-read-prerequisite": `project_root` is required (string) ' +
+      "and was not provided. You sent: `name`.";
+    toolsClientMock.callTool.mockResolvedValue({
+      data: report({
+        flow: "err",
+        ok: false,
+        passed: 2,
+        skipped: 1,
+        errored: 1,
+        steps: [
+          { index: 0, kind: "launch", status: "pass", line: 2 },
+          { index: 1, kind: "tap", status: "pass", target: '"Profile"', line: 3 },
+          {
+            index: 2,
+            kind: "tool",
+            status: "error",
+            tool: "flow-read-prerequisite",
+            reason,
+            line: 4,
+          },
+          { index: 3, kind: "tap", status: "skip", target: '"Sign out"', line: 6 },
+        ],
+      }),
+    });
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(tempRoot);
+      await expect(flow(["run", path.join("frame-error", "err.yaml")], opts)).rejects.toThrow(
+        "process.exit:1"
+      );
+    } finally {
+      process.chdir(previousCwd);
+    }
+
+    expect(logs.join("\n").split("\n")).toEqual([
+      'E2E test "err" on SIM-1',
+      "  ✓  1 launch",
+      '  ✓  2 tap "Profile"',
+      `  ✗  3 tool flow-read-prerequisite — ${reason}`,
+      '  ·  4 tap "Sign out"',
+      "",
+      "  ✗ step 3 tool flow-read-prerequisite",
+      `    ${reason}`,
+      `    at ${path.join("frame-error", "err.yaml")}:4`,
+      "      3 |   - tap: { text: Profile }",
+      "    > 4 |   - tool: flow-read-prerequisite",
+      "      5 |     args: { name: missing }",
+      "",
+      "FAIL — 2 passed, 0 failed, 1 errored, 1 skipped",
+    ]);
+  });
+
   it("frames the failing step in a live run's final recap, by absolute path outside the working directory", async () => {
     const dir = path.join(tempRoot, "frame-live");
     await fsp.mkdir(dir, { recursive: true });
