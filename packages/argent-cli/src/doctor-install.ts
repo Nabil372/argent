@@ -101,6 +101,11 @@ function globalBinCandidates(prefixDir: string): string[] {
     return [path.join(path.dirname(path.dirname(prefixDir)), "bin")];
   }
   if (/\/yarn\/(global|data\/global)$/i.test(p)) return [path.join(homedir(), ".yarn", "bin")];
+  // <PNPM_HOME>/global/5: the bin is PNPM_HOME itself, or PNPM_HOME/bin on newer pnpm.
+  if (/\/\.?pnpm\/global\/[^/]+$/i.test(p)) {
+    const pnpmHome = path.dirname(path.dirname(prefixDir));
+    return [pnpmHome, path.join(pnpmHome, "bin")];
+  }
   if (path.basename(prefixDir) === "lib") return [path.join(path.dirname(prefixDir), "bin")];
   return [prefixDir];
 }

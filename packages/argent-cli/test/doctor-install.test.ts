@@ -588,6 +588,16 @@ describe("globalBinDirOf layouts", () => {
     expect(globalBinDirOf(pkg)).toBe(path.join(bun, "bin"));
   });
 
+  it("finds pnpm's global bin dir, PNPM_HOME or its bin subdir", () => {
+    const pnpmHome = path.join(projectRoot, "Library", "pnpm");
+    const pkg = path.join(pnpmHome, "global", "5", "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(pkg, { recursive: true });
+    writeArgent(path.join(pnpmHome, "bin"));
+    expect(globalBinDirOf(pkg)).toBe(path.join(pnpmHome, "bin"));
+    writeArgent(pnpmHome);
+    expect(globalBinDirOf(pkg)).toBe(pnpmHome);
+  });
+
   it("finds Yarn classic's global bin dir", () => {
     vi.stubEnv("HOME", projectRoot);
     try {
