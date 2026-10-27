@@ -111,7 +111,7 @@ Classify before editing:
 | ------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Hard failure       | A step fails and later steps skip              | Inspect that step and actual state                                                                                                                     |
 | Fault in the test  | The reason names a fault in the test           | Change the test as the reason tells you. A rerun fails the same way. Examples: a refused tree read, a wrong `run:`, `script:` or `tool:` step          |
-| Check did not run  | Any other error, or the `indeterminate:` line  | Look at the app, then the device and the tree source, then rerun. A failed `launch:` is `errored` too but **is** a verdict; treat it as a hard failure |
+| Check did not run  | Any other error, or the `indeterminate:` line  | Look at the app before the device and the tree source. Run again. A failed `launch:` is `errored` too but **is** a verdict; treat it as a hard failure |
 | Silent misfire     | The run passes but final state is wrong        | Restore the first wrong screen and record a stronger gate                                                                                              |
 | Partial divergence | An intermediate result disagrees with its echo | Find the first divergent transition                                                                                                                    |
 | Acceptance failure | Actions pass but a requested check fails       | Preserve the check and investigate behavior                                                                                                            |
@@ -122,7 +122,7 @@ Then:
 
 1. Record the first failure or divergence index and message. Also record its `expected:`, `actual:`, `indeterminate:` and `hint:` lines.
 2. Capture `screenshot` and `describe`. Use native or React Native discovery when needed.
-3. Compare actual state with the preceding echo and expected destination. If the step has a hint, read it now. A hint is only one possible cause. Many failures have no hint.
+3. Compare actual state with the preceding echo and expected destination. If the step has a hint, read it now. A hint is only one possible cause.
 4. Classify the cause: selector, screen, missing element, readiness, stale data, optional interstitial, or product behavior.
 5. State the diagnosis in one sentence before correcting it.
 
