@@ -1514,6 +1514,41 @@ describe("a recorded wait is re-probed against the runner's tree", () => {
     expect(echoed).toContain(`the element's own text is "Total"`);
   });
 
+  // The own-text hint shows only when the own text and the subtree text differ,
+  // so it usually comes with a long found text. The cap keeps the head and the
+  // tail, and the found text must not push the hint into the cut.
+  it("keeps the own-text hint whole when the found text is cut", async () => {
+    serveTree(
+      iosRunnerTree([
+        {
+          className: "UIView",
+          identifier: "total",
+          label: "Subtotal before tax",
+          frame: IOS_ROW,
+          windowFrame: IOS_ROW,
+          children: [iosLabel("Lorem ipsum dolor sit amet ".repeat(20))],
+        },
+      ])
+    );
+    await startRecording("longowntext");
+
+    const result = await recordWait("longowntext", {
+      condition: "text",
+      selector: { identifier: "total" },
+      expectedText: "$5.00",
+    });
+    const echoed = echoedReasonOf(warningOf(result, "longowntext") ?? "");
+    const [head, tail] = echoed.split(/… \(\d+ more chars\) …/);
+
+    expect(tail).toBeDefined();
+    expect(head).toContain(
+      `the element's own text is "Subtotal before tax"; the check accepts the subtree text or the own text`
+    );
+    // The tail is the end of the found text, not the end of the own text.
+    expect(tail).not.toContain("own text");
+    expect(tail).toMatch(/Lorem ipsum dolor sit amet ?"$/);
+  });
+
   // The cap ELIDES THE MIDDLE: the note about a dark final poll lives at the END.
   it("keeps the tail of an over-long reason, where the final-poll note lives", async () => {
     const wall = "Lorem ipsum dolor sit amet ".repeat(60);

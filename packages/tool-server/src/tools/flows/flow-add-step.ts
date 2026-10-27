@@ -488,11 +488,16 @@ function elisionMarker(dropped: number): string {
   return `… (${dropped} more chars) …`;
 }
 
+/**
+ * The reason and the own-text hint come first and the note comes last, so
+ * {@link cappedReason} keeps them. The found text, which can run long, goes
+ * between them, and the cut takes the middle of it.
+ */
 function probeVerdict(outcome: DirectiveOutcome): string {
   return [
     outcome.reason ?? "no match",
-    outcome.actual !== undefined ? `actual: ${JSON.stringify(outcome.actual)}` : undefined,
     outcome.hint,
+    outcome.actual !== undefined ? `actual: ${JSON.stringify(outcome.actual)}` : undefined,
     outcome.note,
   ]
     .filter((part) => part !== undefined)
