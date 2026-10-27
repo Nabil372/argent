@@ -11,7 +11,8 @@ export interface DebugCapture {
   cleanup(): Promise<void>;
 }
 
-const MAX_BUFFERED_BYTES = 32 * 1024 * 1024;
+const MAX_BUFFERED_BYTES = 128 * 1024 * 1024;
+const WRITE_CONCURRENCY = 4;
 
 export function startDebugCapture(
   stdin: Writable,
@@ -21,7 +22,7 @@ export function startDebugCapture(
   const startedAtMs = performance.now();
   let unsubscribe: (() => void) | null = null;
   let finishing: Promise<void> | null = null;
-  let writes = Promise.resolve();
+  const writes = Array.from({ length: WRITE_CONCURRENCY }, () => Promise.resolve());
   let queuedBytes = 0;
   let writeError: Error | null = null;
   const files: string[] = [];
@@ -43,14 +44,16 @@ export function startDebugCapture(
         const receivedAtUs = Math.max(0, Math.round((receivedAtMs - startedAtMs) * 1_000));
         const previous = capture.frameTimesUs.at(-1);
         const ptsUs = previous !== undefined ? Math.max(receivedAtUs, previous + 1) : 0;
-        const file = path.join(directory, `${capture.frameTimesUs.length}.jpg`);
+        const index = capture.frameTimesUs.length;
+        const file = path.join(directory, `${index}.jpg`);
+        const lane = index % WRITE_CONCURRENCY;
         capture.frameTimesUs.push(ptsUs);
         queuedBytes += frame.length;
-        writes = writes.then(async () => {
+        writes[lane] = writes[lane].then(async () => {
           try {
             if (writeError) return;
             await fs.writeFile(file, frame);
-            files.push(file);
+            files[index] = file;
           } catch (err) {
             writeError = err instanceof Error ? err : new Error(String(err));
             capture.warning = `Debug capture ended because a JPEG could not be saved: ${writeError.message}. Subsequent frames were not recorded.`;
@@ -68,7 +71,9 @@ export function startDebugCapture(
       unsubscribe = null;
       const receivedAtUs = Math.round((performance.now() - startedAtMs) * 1_000);
       finishing = (async () => {
-        await writes;
+        await Promise.all(writes);
+        const missing = files.findIndex((file) => file === undefined);
+        if (missing !== -1) files.splice(missing);
         capture.frameTimesUs.splice(files.length);
         if (files.length > 0) {
           const ptsUs = Math.max(receivedAtUs, capture.frameTimesUs.at(-1)! + 1);

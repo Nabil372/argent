@@ -1809,7 +1809,6 @@ describe("debug finalization safeguards", () => {
       const api = await makeSession(iosDevice);
       const stream = fakeStream();
       const child = fakeChild();
-      child.exitOnStdinEnd();
       const pointer = fakePointer();
       await startAndSettle(api, { mode: "debug", pointer });
       const emit = stream.subscribe.mock.calls[0][0] as (
@@ -1821,7 +1820,10 @@ describe("debug finalization safeguards", () => {
           ? vi.spyOn(fs, "writeFile").mockRejectedValueOnce(new Error("disk full"))
           : null;
       try {
-        emit(cause === "overflow" ? Buffer.alloc(33 * 1024 * 1024) : fakeJpeg(), performance.now());
+        emit(
+          cause === "overflow" ? Buffer.alloc(129 * 1024 * 1024) : fakeJpeg(),
+          performance.now()
+        );
         await api.debugCapture!.finish();
         expect(api.recordingActive).toBe(false);
         expect(api.debugCapture!.warning).toBeTruthy();
@@ -1830,8 +1832,11 @@ describe("debug finalization safeguards", () => {
       } finally {
         write?.mockRestore();
       }
+      expect(api.recordingExitedUnexpectedly).toBe(false);
+      child.exit(0);
       await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
       const result = await stopCapture(api);
+      expect(result.warning).not.toContain("ffmpeg exited before stop");
       expect(result.warning).toContain(cause === "overflow" ? "could not keep up" : "disk full");
       expect(pointer.restore).toHaveBeenCalledOnce();
     }

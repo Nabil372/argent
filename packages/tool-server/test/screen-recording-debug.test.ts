@@ -1,5 +1,6 @@
+import { promises as fs } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
@@ -72,13 +73,57 @@ describe("debug frame delivery", () => {
     const ended = vi.fn();
     const capture = startDebugCapture(stdin, scratch, ended);
     capture.attach(input.stream);
-    for (let i = 0; i < 40; i++) input.emit(input.stream.latest!, 1_000 + i);
+    for (let i = 0; i < 140; i++) input.emit(input.stream.latest!, 1_000 + i);
     await capture.finish();
     expect(ended).toHaveBeenCalledOnce();
     expect(capture.warning).toContain("could not keep up");
-    expect(capture.frameTimesUs.length - 1).toBeLessThan(40);
+    expect(capture.frameTimesUs.length - 1).toBeLessThan(140);
     stdin.destroy();
   });
+});
+
+it("drains the JPEG backlog across more than its total byte budget", async () => {
+  const stdin = new Writable({
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+  const frame = Buffer.alloc(2 * 1024 * 1024);
+  const input = source(frame);
+  const ended = vi.fn();
+  const capture = startDebugCapture(stdin, scratch, ended);
+  capture.attach(input.stream);
+  for (let i = 0; i < 80; i++) {
+    input.emit(frame, performance.now());
+    await vi.waitFor(async () => expect((await readdir(scratch)).length).toBe(i + 2));
+  }
+  await capture.finish();
+  expect(ended).not.toHaveBeenCalled();
+  expect(capture.frameTimesUs).toHaveLength(82);
+  expect(capture.warning).toBeNull();
+});
+
+it("retains only the contiguous saved frames after a write failure", async () => {
+  const actual = fs.writeFile.bind(fs);
+  vi.spyOn(fs, "writeFile").mockImplementation(async (file, data, ...args) => {
+    if (String(file).endsWith("1.jpg")) throw new Error("disk full");
+    return actual(file, data, ...args);
+  });
+  const stdin = new Writable({
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+  const input = source(Buffer.from("first"));
+  const ended = vi.fn();
+  const capture = startDebugCapture(stdin, scratch, ended);
+  capture.attach(input.stream);
+  for (let i = 1; i < 10; i++) input.emit(Buffer.from(`${i}`), performance.now());
+  await capture.finish();
+  expect(ended).toHaveBeenCalledOnce();
+  expect(capture.warning).toContain("disk full");
+  expect(capture.frameTimesUs).toHaveLength(2);
+  expect((await readdir(scratch)).length).toBeLessThan(10);
 });
 
 const hasEncoder =
