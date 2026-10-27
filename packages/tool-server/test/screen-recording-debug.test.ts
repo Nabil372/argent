@@ -207,7 +207,7 @@ it.skipIf(!hasEncoder)(
       expect(probe.status, probe.stderr).toBe(0);
       const result = JSON.parse(probe.stdout) as {
         frames: { pts_time: string }[];
-        streams: { width: number; height: number; time_base: string; pix_fmt: string }[];
+        streams: { width: number; height: number; time_base: string; pix_fmt: string; level: number }[];
       };
       expect(result.frames.map((frame) => Math.round(Number(frame.pts_time) * 1_000_000))).toEqual([
         ...Array.from({ length: 120 }, (_, i) => Math.round((i * 1_000_000) / 120)),
@@ -218,6 +218,8 @@ it.skipIf(!hasEncoder)(
         height: 32,
         time_base: "1/1000000",
       });
+      expect(result.streams[0].level).toBeLessThan(62);
+      expect(stderr).not.toContain("MB rate");
       expect(["yuv420p", "yuvj420p"]).toContain(result.streams[0].pix_fmt);
       expect(result.streams[0]).not.toHaveProperty("profile", "High 4:4:4 Predictive");
       const raw = spawnSync(

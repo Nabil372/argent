@@ -159,6 +159,9 @@ export function ffmpegArgs(opts: {
       "yuv420p",
       "-fps_mode",
       "passthrough",
+      // x264 otherwise uses the microsecond timebase as a million-fps rate hint.
+      "-x264-params",
+      "fps=120/1",
       "-enc_time_base",
       "1:1000000",
       "-video_track_timescale",
