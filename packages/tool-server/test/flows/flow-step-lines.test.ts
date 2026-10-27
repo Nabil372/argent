@@ -108,6 +108,13 @@ describe("flowStepLine", () => {
     expect(stepLines(flow.steps)).toEqual([4, 6, 7]);
   });
 
+  it("does not count the blank lines at the end of the file", () => {
+    const steps = yaml("steps:", "  - echo: a", "  - tap: b");
+
+    expect(stepLines(parseFlow(steps + "\n".repeat(8)).steps)).toEqual([2, 3]);
+    expect(stepLines(parseFlow(steps + " ".repeat(8)).steps)).toEqual([2, 3]);
+  });
+
   it("counts CRLF line endings the same as LF", () => {
     const lf = "\n" + yaml("steps:", "  - echo: a", "", "  - tap: b");
     const crlf = lf.replaceAll("\n", "\r\n");
