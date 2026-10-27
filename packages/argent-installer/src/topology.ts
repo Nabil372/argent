@@ -13,22 +13,20 @@ import { isYarnPnp } from "./preflight.js";
 
 // `which argent` also matches temp package runners (npx / pnpm dlx / bunx /
 // yarn dlx / yarn berry scripts), which prepend their cache .bin/ dir to PATH.
-const TEMP_RUNNER_MARKERS = [
-  "_npx",
-  "/dlx-",
-  "\\dlx-",
-  "/dlx/",
-  "\\dlx\\",
-  "/bunx-",
-  "\\bunx-",
-  "/xfs-",
-  "\\xfs-",
-  "bun/install/cache",
-  ".bun\\install\\cache",
+// Each marker matches whole path segments, so a permanent install under e.g.
+// `/mnt/xfs-data` or `/home/dlx` still counts.
+const TEMP_RUNNER_SEGMENTS: RegExp[] = [
+  /\/_npx\//,
+  /\/dlx-\d+\//,
+  /\/[^/]*(?:cache|pnpm)[^/]*\/dlx\//i,
+  /\/bunx-\d+-/,
+  /\/xfs-[0-9a-f]{8}\//,
+  /\/\.?bun\/install\/cache\//,
 ];
 
 export function isTempRunnerPath(binaryPath: string): boolean {
-  return TEMP_RUNNER_MARKERS.some((marker) => binaryPath.includes(marker));
+  const posixPath = binaryPath.replaceAll("\\", "/");
+  return TEMP_RUNNER_SEGMENTS.some((segment) => segment.test(posixPath));
 }
 
 /**
