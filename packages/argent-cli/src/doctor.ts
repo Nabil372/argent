@@ -289,6 +289,10 @@ Options:
 
 Exits 1 when any check fails (✗); warnings (!) don't affect the exit code.`;
 
+export function doctorExitCode(report: Pick<DoctorReport, "errors" | "warnings">): number {
+  return report.errors > 0 ? 1 : 0;
+}
+
 export async function doctor(argv: string[], options: { paths: ToolsServerPaths }): Promise<void> {
   const known = new Set(["--json", "--offline", "--help", "-h"]);
   const unknown = argv.filter((a) => !known.has(a));
@@ -309,7 +313,7 @@ export async function doctor(argv: string[], options: { paths: ToolsServerPaths 
   console.log(
     argv.includes("--json") ? JSON.stringify(report, null, 2) : renderDoctorReport(report)
   );
-  process.exitCode = report.errors > 0 ? 1 : 0;
+  process.exitCode = doctorExitCode(report);
   // A probe of a host that drops packets leaves a pending connect that would
   // keep the process alive for undici's 10s connect timeout.
   await exitAfterFlush(process.exitCode);

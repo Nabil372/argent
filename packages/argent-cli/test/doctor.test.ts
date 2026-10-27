@@ -8,6 +8,7 @@ import { resolveInstallableUpdateTarget } from "@argent/installer";
 import {
   collectDoctorReport,
   doctor,
+  doctorExitCode,
   globalReinstallCommand,
   localReinstallCommand,
   renderDoctorReport,
@@ -96,6 +97,13 @@ describe("renderDoctorReport", () => {
       expect(out).not.toContain(raw);
     }
     expect(out).toContain("http://h/x\\x0d\\x1b[2K  ✓ fake row\\x0anext");
+  });
+});
+
+describe("doctorExitCode", () => {
+  it("fails only on errors, as the help promises warnings don't affect it", () => {
+    expect(doctorExitCode({ errors: 0, warnings: 3 })).toBe(0);
+    expect(doctorExitCode({ errors: 1, warnings: 0 })).toBe(1);
   });
 });
 
@@ -410,6 +418,71 @@ describe("collectDoctorReport", () => {
     expect(platforms.checks).toEqual([
       expect.objectContaining({ status: "info", label: expect.stringMatching(/^Skipped/) }),
     ]);
+  });
+
+  it("keeps Platforms when another editor still starts the local tool-server", async () => {
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: {
+          argent: {
+            command: "argent",
+            args: ["mcp"],
+            env: { ARGENT_TOOLS_URL: "http://127.0.0.1:1" },
+          },
+        },
+      })
+    );
+    fs.mkdirSync(path.join(projectRoot, ".cursor"));
+    fs.writeFileSync(
+      path.join(projectRoot, ".cursor", "mcp.json"),
+      JSON.stringify({ mcpServers: { argent: { command: "argent", args: ["mcp"] } } })
+    );
+    const platforms = section(await collect(), "Platforms");
+    expect(platforms.map((c) => c.label)).not.toContainEqual(expect.stringMatching(/^Skipped/));
+  });
+
+  it("vouches for a `yarn dlx` entry only when packageManager names Yarn 2 or later", async () => {
+    fs.writeFileSync(
+      path.join(projectRoot, ".mcp.json"),
+      JSON.stringify({
+        mcpServers: { argent: { command: "yarn", args: ["dlx", "@swmansion/argent", "mcp"] } },
+      })
+    );
+    const dlxEntry = async (packageManager: string) => {
+      fs.writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({ packageManager }));
+      return section(await collect(), "Editors (MCP config)").find((c) =>
+        c.label.startsWith("Claude Code: yarn dlx")
+      );
+    };
+    expect((await dlxEntry("yarn@1.22.22"))?.status).toBe("info");
+    expect((await dlxEntry("yarn@4.5.0"))?.status).toBe("ok");
+  });
+
+  it("prints the usage instead of the report for an unknown option", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {}) as typeof process.exit);
+    try {
+      process.exitCode = undefined;
+      const pkg = path.join(home, "pkg");
+      const paths = {
+        bundlePath: path.join(pkg, "dist", "tool-server.cjs"),
+        simulatorServerDir: path.join(pkg, "bin"),
+        nativeDevtoolsDir: path.join(pkg, "dylibs"),
+        version: "1.0.0",
+      };
+      await doctor(["--josn"], { paths });
+      expect(error).toHaveBeenCalledWith(expect.stringMatching(/^Unknown option: --josn\n/));
+      expect(log).not.toHaveBeenCalled();
+      expect(exit).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+    } finally {
+      process.exitCode = undefined;
+      log.mockRestore();
+      error.mockRestore();
+      exit.mockRestore();
+    }
   });
 
   it("exits 1 on a failed check and on an unknown option", async () => {
