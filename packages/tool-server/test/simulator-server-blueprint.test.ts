@@ -345,7 +345,7 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
     const frame = deferred();
     const close = vi.fn();
     openMjpegStreamMock.mockImplementationOnce(async () => ({
-      waitForFirstFrame: () => frame.promise.then(() => Buffer.alloc(0)),
+      waitForFirstFrame: vi.fn((_timeoutMs: number) => frame.promise.then(() => Buffer.alloc(0))),
       close,
     }));
 
@@ -366,7 +366,9 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
   it("starts the fallback anyway when the first frame times out", async () => {
     const close = vi.fn();
     openMjpegStreamMock.mockImplementationOnce(async () => ({
-      waitForFirstFrame: () => Promise.reject(new Error("no frame within 5000 ms")),
+      waitForFirstFrame: vi.fn((_timeoutMs: number) =>
+        Promise.reject(new Error("no frame within 5000 ms"))
+      ),
       close,
     }));
 
@@ -389,7 +391,7 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
   it("fails the start when the fallback exits during the first-frame wait", async () => {
     const frame = deferred();
     openMjpegStreamMock.mockImplementationOnce(async () => ({
-      waitForFirstFrame: () => frame.promise.then(() => Buffer.alloc(0)),
+      waitForFirstFrame: vi.fn((_timeoutMs: number) => frame.promise.then(() => Buffer.alloc(0))),
       close: vi.fn(),
     }));
 
