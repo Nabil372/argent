@@ -386,6 +386,8 @@ describe("startMcpServer warming the screen reader", () => {
     ["a physical iPhone", "00008110-000978540290401E"],
     ["a Vega device", "amazon-abc123"],
     ["a Chromium app", "chromium-cdp-9222"],
+    ["an attached simulator", `ext:prov:${SIM}`],
+    ["a remote simulator", `remote:${SIM}`],
   ])("does not warm %s", async (_label, udid) => {
     await start({ autoDescribe: true });
 
@@ -417,7 +419,15 @@ describe("startMcpServer warming the screen reader", () => {
     expect(warms()).toBe(0);
   });
 
-  it.each(["describe", "await-ui-element", "native-describe-screen"])(
+  it("warms a simulator named by a lowercase UDID", async () => {
+    await start({ autoDescribe: true });
+
+    await tap(SIM.toLowerCase());
+
+    await vi.waitFor(() => expect(warms()).toBe(1));
+  });
+
+  it.each(["describe", "await-ui-element"])(
     "does not warm a device the agent already read with %s",
     async (name) => {
       await start({ autoDescribe: true });
@@ -430,19 +440,27 @@ describe("startMcpServer warming the screen reader", () => {
     }
   );
 
-  it("survives a failed warm-up and warms again on the next action", async () => {
+  it("still warms a device first read with native-describe-screen", async () => {
+    await start({ autoDescribe: true });
+
+    await client!.callTool({ name: "native-describe-screen", arguments: { udid: SIM } });
+    await tap(SIM);
+
+    await vi.waitFor(() => expect(warms()).toBe(1));
+  });
+
+  it("survives a failed warm-up and does not retry it", async () => {
     stubBehavior.warmFails = true;
     await start({ autoDescribe: true });
 
     const first = await tap(SIM);
     expect(first.isError).toBeFalsy();
     await vi.waitFor(() => expect(warms()).toBe(1));
-    await settle();
-    // One attempt only: no resend of the warm-up.
-    expect(warms()).toBe(1);
 
-    await tap(SIM);
-    await vi.waitFor(() => expect(warms()).toBe(2));
+    const second = await tap(SIM);
+    expect(second.isError).toBeFalsy();
+    await settle();
+    expect(warms()).toBe(1);
   });
 
   it("does not warm when the element tree is turned off", async () => {

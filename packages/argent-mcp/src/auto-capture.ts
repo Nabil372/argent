@@ -153,7 +153,7 @@ export function isIosSimulatorUdid(udid: string): boolean {
 }
 
 /** Tools that start a device's accessibility reader themselves. */
-const SCREEN_READER_TOOLS = new Set(["describe", "await-ui-element", "native-describe-screen"]);
+const SCREEN_READER_TOOLS = new Set(["describe", "await-ui-element"]);
 
 export function startsScreenReader(toolName: string): boolean {
   return SCREEN_READER_TOOLS.has(normalizeToolName(toolName));

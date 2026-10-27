@@ -262,8 +262,6 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
         durationMs: Date.now() - t1,
       });
     } catch (e) {
-      // Not warm after all: let the next action try again.
-      warmedDevices.delete(udid);
       await spyLog({
         ts: new Date().toISOString(),
         event: "warm_screen_reader",
@@ -285,9 +283,11 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
     // First touch of an iOS simulator: start its accessibility reader in the
     // background (one discarded read), so the first action's element tree
     // does not pay the reader's cold start after the action itself. Other
-    // platforms have no persistent reader to warm, and there a concurrent read
-    // collides with the action's own (uiautomator dump, Vega page source).
-    // A call that starts the reader itself counts as warm.
+    // platforms are skipped because a concurrent read collides with the
+    // action's own (uiautomator dump, Vega page source). A call that starts
+    // the reader itself counts as warm. One attempt per device: a failed
+    // warm-up is not retried, since most failures (tvOS, an older tool-server
+    // without the route, an unknown UDID) would fail on every action.
     const warmUdid = getUdidFromArgs(params.arguments);
     if (
       autoDescribeOn &&
