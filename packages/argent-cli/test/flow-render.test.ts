@@ -647,7 +647,6 @@ describe("failure recap", () => {
 
 describe("failure source frame", () => {
   const LOGIN = [
-    "name: login",
     "steps:",
     "  - launch: com.acme.shop",
     "  - assert: { visible: { text: Home } }",
@@ -655,24 +654,24 @@ describe("failure source frame", () => {
   ].join("\n");
 
   it("frames the failing line between the lines around it, marking it", () => {
-    expect(renderSourceFrame("flows/a-login.yaml", 4, LOGIN)).toEqual([
-      "at flows/a-login.yaml:4",
-      "  3 |   - launch: com.acme.shop",
-      "> 4 |   - assert: { visible: { text: Home } }",
-      "  5 |   - tap: { text: Profile }",
+    expect(renderSourceFrame("flows/a-login.yaml", 3, LOGIN)).toEqual([
+      "at flows/a-login.yaml:3",
+      "  2 |   - launch: com.acme.shop",
+      "> 3 |   - assert: { visible: { text: Home } }",
+      "  4 |   - tap: { text: Profile }",
     ]);
   });
 
   it("frames only the lines that exist at the start and the end of the file", () => {
     expect(renderSourceFrame("f.yaml", 1, LOGIN)).toEqual([
       "at f.yaml:1",
-      "> 1 | name: login",
-      "  2 | steps:",
+      "> 1 | steps:",
+      "  2 |   - launch: com.acme.shop",
     ]);
-    expect(renderSourceFrame("f.yaml", 5, LOGIN)).toEqual([
-      "at f.yaml:5",
-      "  4 |   - assert: { visible: { text: Home } }",
-      "> 5 |   - tap: { text: Profile }",
+    expect(renderSourceFrame("f.yaml", 4, LOGIN)).toEqual([
+      "at f.yaml:4",
+      "  3 |   - assert: { visible: { text: Home } }",
+      "> 4 |   - tap: { text: Profile }",
     ]);
   });
 
@@ -751,7 +750,7 @@ describe("failure source frame", () => {
 
   it("gives only the location when the file could not be read or no longer has the line", () => {
     expect(renderSourceFrame("f.yaml", 4, undefined)).toEqual(["at f.yaml:4"]);
-    expect(renderSourceFrame("f.yaml", 6, LOGIN)).toEqual(["at f.yaml:6"]);
+    expect(renderSourceFrame("f.yaml", 5, LOGIN)).toEqual(["at f.yaml:5"]);
     expect(renderSourceFrame("f.yaml", 1, "")).toEqual(["at f.yaml:1"]);
   });
 
@@ -802,15 +801,15 @@ describe("failure source frame", () => {
       },
       { index: 2, kind: "tap", status: "skip", target: '"Profile"' },
     ]);
-    const source = renderSourceFrame("flows/a-login.yaml", 4, LOGIN);
+    const source = renderSourceFrame("flows/a-login.yaml", 3, LOGIN);
     const recap = [
       '  ✗ step 2 assert visible "Home"',
       '    no element matched selector text="Home"',
       "    hint: the login may still be loading",
-      "    at flows/a-login.yaml:4",
-      "      3 |   - launch: com.acme.shop",
-      "    > 4 |   - assert: { visible: { text: Home } }",
-      "      5 |   - tap: { text: Profile }",
+      "    at flows/a-login.yaml:3",
+      "      2 |   - launch: com.acme.shop",
+      "    > 3 |   - assert: { visible: { text: Home } }",
+      "      4 |   - tap: { text: Profile }",
     ];
     expect(renderSingleFailure(report, source)).toEqual(["", ...recap]);
     expect(renderReport(report, source)).toBe(
@@ -847,7 +846,7 @@ describe("failure source frame", () => {
           path: "a-login.yaml",
           headline: 'step 2 assert visible "Home"',
           detail: 'no element matched selector text="Home"',
-          source: renderSourceFrame("flows/a-login.yaml", 4, LOGIN),
+          source: renderSourceFrame("flows/a-login.yaml", 3, LOGIN),
           rerun: "argent e2e run flows/a-login.yaml --platform ios",
         },
         {
@@ -863,10 +862,10 @@ describe("failure source frame", () => {
       "",
       '  ✗ a-login.yaml › step 2 assert visible "Home"',
       '    no element matched selector text="Home"',
-      "    at flows/a-login.yaml:4",
-      "      3 |   - launch: com.acme.shop",
-      "    > 4 |   - assert: { visible: { text: Home } }",
-      "      5 |   - tap: { text: Profile }",
+      "    at flows/a-login.yaml:3",
+      "      2 |   - launch: com.acme.shop",
+      "    > 3 |   - assert: { visible: { text: Home } }",
+      "      4 |   - tap: { text: Profile }",
       "    re-run: argent e2e run flows/a-login.yaml --platform ios",
       "",
       "  ✗ b-checkout.yaml › step 1 tap",

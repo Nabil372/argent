@@ -143,9 +143,8 @@ function report(overrides: Record<string, unknown> = {}): Record<string, unknown
   };
 }
 
-/** A flow whose step on line 4 is the one LOGIN_STEPS fails. */
+/** A flow whose step on line 3 is the one LOGIN_STEPS fails. */
 const LOGIN_YAML = [
-  "name: login",
   "steps:",
   "  - launch: com.acme.shop",
   "  - assert: { visible: { text: Home } }",
@@ -153,25 +152,25 @@ const LOGIN_YAML = [
   "",
 ].join("\n");
 
-/** LOGIN_YAML's frame around line 4, indented as a recap prints it. */
+/** LOGIN_YAML's frame around line 3, indented as a recap prints it. */
 const LOGIN_FRAME = [
-  "      3 |   - launch: com.acme.shop",
-  "    > 4 |   - assert: { visible: { text: Home } }",
-  "      5 |   - tap: { text: Profile }",
+  "      2 |   - launch: com.acme.shop",
+  "    > 3 |   - assert: { visible: { text: Home } }",
+  "      4 |   - tap: { text: Profile }",
 ];
 
 /** The steps of a LOGIN_YAML run, each on the line the tool-server reports. */
 const LOGIN_STEPS: StepFixture[] = [
-  { index: 0, kind: "launch", status: "pass", line: 3 },
+  { index: 0, kind: "launch", status: "pass", line: 2 },
   {
     index: 1,
     kind: "assert",
     status: "fail",
     target: 'visible "Home"',
     reason: 'no element matched selector text="Home"',
-    line: 4,
+    line: 3,
   },
-  { index: 2, kind: "tap", status: "skip", target: '"Profile"', line: 5 },
+  { index: 2, kind: "tap", status: "skip", target: '"Profile"', line: 4 },
 ];
 
 function loginReport(flow: string): Record<string, unknown> {
@@ -574,7 +573,7 @@ describe("argent e2e run", () => {
       "",
       '  ✗ step 2 assert visible "Home"',
       '    no element matched selector text="Home"',
-      `    at ${path.join("frame", "login.yaml")}:4`,
+      `    at ${path.join("frame", "login.yaml")}:3`,
       ...LOGIN_FRAME,
       "",
       "FAIL — 1 passed, 1 failed, 0 errored, 1 skipped",
@@ -672,7 +671,7 @@ describe("argent e2e run", () => {
       "",
       '  ✗ step 2 assert visible "Home"',
       '    no element matched selector text="Home"',
-      `    at ${flowFile}:4`,
+      `    at ${flowFile}:3`,
       ...LOGIN_FRAME,
       "",
       "FAIL (started on SIM-1) — 1 passed, 1 failed, 0 errored, 1 skipped",
@@ -686,7 +685,7 @@ describe("argent e2e run", () => {
     await fsp.writeFile(path.join(dir, "main.yaml"), "steps:\n  - run: shared/sign-in.yaml\n");
     await fsp.writeFile(
       path.join(dir, "fragsrc", "real.yml"),
-      "steps:\n  - tap: { text: Sign in }\n  - type: { text: hunter2 }\n"
+      "steps:\n  - tap: { text: Sign in }\n  - type: { into: Password, text: hunter2 }\n"
     );
     // The runner accepts the link's `.yaml` name, then names the file the link points to.
     await fsp.symlink(
@@ -730,7 +729,7 @@ describe("argent e2e run", () => {
     expect(lines.slice(at + 1, at + 4)).toEqual([
       "      1 | steps:",
       "    > 2 |   - tap: { text: Sign in }",
-      "      3 |   - type: { text: hunter2 }",
+      "      3 |   - type: { into: Password, text: hunter2 }",
     ]);
   });
 
@@ -1831,12 +1830,19 @@ describe("argent e2e run", () => {
     const dir = path.join(tempRoot, "frame-json");
     await fsp.mkdir(dir, { recursive: true });
     const flowFile = path.join(dir, "login.yaml");
-    await fsp.writeFile(flowFile, LOGIN_YAML);
+    await fsp.writeFile(flowFile, "steps:\n  - launch: com.acme.shop\n  - run: sign-in.yaml\n");
+    await fsp.writeFile(
+      path.join(dir, "sign-in.yaml"),
+      "steps:\n  - assert: { visible: { text: Home } }\n"
+    );
+    // The tool-server names a fragment by its resolved path.
+    const fragment = await fsp.realpath(path.join(dir, "sign-in.yaml"));
     const steps: StepFixture[] = [
       LOGIN_STEPS[0]!,
-      { ...LOGIN_STEPS[1]!, depth: 1, flow: "sign-in", line: 2, file: flowFile },
+      { index: 1, kind: "run", status: "pass", flow: "sign-in", target: "sign-in.yaml", line: 3 },
+      { ...LOGIN_STEPS[1]!, index: 2, depth: 1, flow: "sign-in", line: 2, file: fragment },
     ];
-    const failed = report({ flow: "login", ok: false, passed: 1, failed: 1, steps });
+    const failed = report({ flow: "login", ok: false, passed: 2, failed: 1, steps });
 
     toolsClientMock.callTool.mockResolvedValue({ data: failed });
     await expect(flow(["run", flowFile, "--json"], opts)).rejects.toThrow("process.exit:1");
@@ -1851,8 +1857,7 @@ describe("argent e2e run", () => {
     );
     await expect(flow(["run", flowFile, "--json-stream"], opts)).rejects.toThrow("process.exit:1");
     expect(logs.map((line) => JSON.parse(line))).toEqual([
-      { event: "progress", data: steps[0] },
-      { event: "progress", data: steps[1] },
+      ...steps.map((data) => ({ event: "progress", data })),
       { event: "result", data: failed },
     ]);
   });
@@ -2660,9 +2665,8 @@ describe("argent e2e run <dir>", () => {
     errSpy.mockRestore();
   });
 
-  /** A flow whose line 3 runs the SIGN_IN_YAML fragment. */
+  /** A flow whose line 2 runs the SIGN_IN_YAML fragment. */
   const CHECKOUT_YAML = [
-    "name: b-checkout",
     "steps:",
     "  - run: fragments/sign-in.yaml",
     "  - tap: { text: Pay }",
@@ -2671,13 +2675,13 @@ describe("argent e2e run <dir>", () => {
   const SIGN_IN_YAML = [
     "steps:",
     "  - tap: { text: Sign in }",
-    "  - type: { text: hunter2 }",
+    "  - type: { into: Password, text: hunter2 }",
     "",
   ].join("\n");
 
   /**
    * A suite of two flows under `name` in tempRoot: a-login fails on its own
-   * line 4, b-checkout on line 2 of the fragment its line 3 runs. The
+   * line 3, b-checkout on line 2 of the fragment its line 2 runs. The
    * fragment sits in a subdirectory, so a non-recursive run does not list it.
    */
   async function writeFramedSuite(name: string) {
@@ -2703,7 +2707,7 @@ describe("argent e2e run <dir>", () => {
           status: "pass",
           flow: "sign-in",
           target: "fragments/sign-in.yaml",
-          line: 3,
+          line: 2,
         },
         {
           index: 1,
@@ -2716,7 +2720,7 @@ describe("argent e2e run <dir>", () => {
           line: 2,
           file: fragment,
         },
-        { index: 2, kind: "tap", status: "skip", target: '"Pay"', line: 4 },
+        { index: 2, kind: "tap", status: "skip", target: '"Pay"', line: 3 },
       ],
     });
     return { suite, fragment, login: loginReport("a-login"), checkout };
@@ -3387,7 +3391,7 @@ describe("argent e2e run <dir>", () => {
       "",
       '  ✗ a-login.yaml › step 2 assert visible "Home"',
       '    no element matched selector text="Home"',
-      `    at ${path.join("framed", "a-login.yaml")}:4`,
+      `    at ${path.join("framed", "a-login.yaml")}:3`,
       ...LOGIN_FRAME,
       `    re-run: argent e2e run ${path.join("framed", "a-login.yaml")}`,
       "",
@@ -3396,7 +3400,7 @@ describe("argent e2e run <dir>", () => {
       `    at ${path.join("framed", "fragments", "sign-in.yaml")}:2`,
       "      1 | steps:",
       "    > 2 |   - tap: { text: Sign in }",
-      "      3 |   - type: { text: hunter2 }",
+      "      3 |   - type: { into: Password, text: hunter2 }",
       `    re-run: argent e2e run ${path.join("framed", "b-checkout.yaml")}`,
       "",
       "FAIL — 2 e2e tests: 0 passed, 2 failed, 0 skipped (0.0s)",
@@ -3865,7 +3869,7 @@ describe("argent e2e run <dir>", () => {
       { path: "b-checkout.yaml", status: "fail", report: checkout },
     ]);
     expect(parsed.flows[1]).toMatchObject({
-      report: { steps: [{ line: 3 }, { line: 2, file: fragment }, { line: 4 }] },
+      report: { steps: [{ line: 2 }, { line: 2, file: fragment }, { line: 3 }] },
     });
     expect(errs).toEqual([]);
   });
