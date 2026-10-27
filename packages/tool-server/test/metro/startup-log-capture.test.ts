@@ -29,6 +29,7 @@ let mockPort: number;
 let registry: Registry;
 let failSetup = false;
 let dropOnSetup = false;
+let dropOnEnable = false;
 
 function handleCDPMessage(ws: WebSocket, raw: string) {
   const { id, method } = JSON.parse(raw) as { id: number; method: string };
@@ -44,6 +45,10 @@ function handleCDPMessage(ws: WebSocket, raw: string) {
         },
       })
     );
+    if (dropOnEnable) {
+      ws.terminate();
+      return;
+    }
   }
   if (method === "Runtime.addBinding" && dropOnSetup) {
     ws.terminate();
@@ -103,6 +108,7 @@ afterEach(async () => {
   await registry?.dispose();
   failSetup = false;
   dropOnSetup = false;
+  dropOnEnable = false;
   __resetReapedSessionsForTesting();
 });
 
@@ -142,6 +148,17 @@ describe("JsRuntimeDebugger startup log capture", () => {
     expect(files).toHaveLength(1);
     const file = path.join(process.env.HOME!, ".argent", "tmp", files[0]!);
     expect(fs.readFileSync(file, "utf-8")).toContain("printed at startup");
+    const reaped = takeReapedSession("js-runtime-debugger", DEVICE);
+    expect(reaped?.connectionLost).toBe(true);
+    expect(reaped?.salvage).toContain(`kept at ${file}`);
+  });
+
+  it("keeps the replayed logs when the app dies before answering Runtime.enable", async () => {
+    dropOnEnable = true;
+    await expect(connect()).rejects.toThrow();
+    const files = logFiles();
+    expect(files).toHaveLength(1);
+    const file = path.join(process.env.HOME!, ".argent", "tmp", files[0]!);
     const reaped = takeReapedSession("js-runtime-debugger", DEVICE);
     expect(reaped?.connectionLost).toBe(true);
     expect(reaped?.salvage).toContain(`kept at ${file}`);
