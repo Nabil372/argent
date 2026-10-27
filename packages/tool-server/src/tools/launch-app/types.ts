@@ -8,7 +8,7 @@ export interface LaunchAppParams {
   bundleId: string;
   /** Android-only. */
   activity?: string;
-  /** Apple simulator-only: appended to the simctl launch argv after the bundle id. */
+  /** Apple-only: appended to the simctl / devicectl launch argv after the bundle id. */
   launchArgs?: string[];
 }
 
@@ -26,3 +26,4 @@ export interface LaunchAppIosServices {
   nativeDevtools: NativeDevtoolsApi;
 }
 export type LaunchAppVegaServices = Record<string, never>;
+export type LaunchAppHarmonyServices = Record<string, never>;

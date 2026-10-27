@@ -8,7 +8,7 @@ export interface RestartAppParams {
   bundleId: string;
   /** Android-only: ignored on iOS. */
   activity?: string;
-  /** Apple simulator-only: appended to the simctl launch argv after the bundle id. */
+  /** Apple-only: appended to the simctl / devicectl launch argv after the bundle id. */
   launchArgs?: string[];
 }
 
@@ -25,3 +25,4 @@ export interface RestartAppIosServices {
   nativeDevtools: NativeDevtoolsApi;
 }
 export type RestartAppVegaServices = Record<string, never>;
+export type RestartAppHarmonyServices = Record<string, never>;

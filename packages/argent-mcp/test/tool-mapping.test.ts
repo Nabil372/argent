@@ -45,6 +45,39 @@ describe("toMcpTool — MCP _meta forwarding", () => {
     expect(result).not.toHaveProperty("_meta");
   });
 
+  it("forwards readOnly as annotations.readOnlyHint", () => {
+    const result = toMcpTool({ ...base, readOnly: true });
+    expect(result.annotations).toEqual({ readOnlyHint: true });
+  });
+
+  it("omits annotations when readOnly is unset or false", () => {
+    expect(toMcpTool(base)).not.toHaveProperty("annotations");
+    expect(toMcpTool({ ...base, readOnly: false })).not.toHaveProperty("annotations");
+  });
+
+  it("leaves retired params (untyped `not: {}`) out of the advertised schema", () => {
+    const result = toMcpTool({
+      ...base,
+      inputSchema: {
+        properties: { foo: { type: "string" }, settle: { description: "Retired", not: {} } },
+        additionalProperties: false,
+      },
+    });
+    expect(result.inputSchema).toEqual({
+      type: "object",
+      properties: { foo: { type: "string" } },
+      additionalProperties: false,
+    });
+  });
+
+  it("keeps a param whose `not` is a real constraint", () => {
+    const schema = { properties: { foo: { type: "string", not: { const: "" } } } };
+    expect(toMcpTool({ ...base, inputSchema: schema }).inputSchema).toEqual({
+      type: "object",
+      ...schema,
+    });
+  });
+
   it("always forces inputSchema.type to 'object' and preserves other keys", () => {
     const result = toMcpTool(base);
     expect(result.inputSchema).toEqual({

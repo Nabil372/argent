@@ -141,7 +141,7 @@ describe("view-network-request-details: a body the agent cut short", () => {
     const body = (await details()).response.body!;
 
     expect(body).toBe(
-      `[TRUNCATED — original size: 2579461 bytes as the app received them; the agent kept only the first 1048576 bytes, MIME: application/json]\n${ja.toString("utf8").slice(0, 1000)}...`
+      `[TRUNCATED: first 1000 chars shown, full size: 2579461 bytes as the app received them; the agent kept only the first 1048576 bytes, MIME: application/json]\n${ja.toString("utf8").slice(0, 1000)}...`
     );
     expect(body).toContain("抹茶ラテ 大サイズ");
   });
@@ -159,7 +159,7 @@ describe("view-network-request-details: a body the agent cut short", () => {
     serve(record({ encodedDataLength: 5000 }));
 
     expect((await details()).response.body).toBe(
-      "[TRUNCATED — original size: 5000 bytes as the app received them; the agent kept only the first " +
+      "[TRUNCATED: first 3 chars shown, full size: 5000 bytes as the app received them; the agent kept only the first " +
         `${kept.length} bytes, MIME: application/json]\nok `
     );
   });
@@ -173,7 +173,7 @@ describe("view-network-request-details: a body the agent cut short", () => {
     serve(record({ encodedDataLength: 5000 }));
 
     expect((await details()).response.body).toBe(
-      `[binary, original size: 5000 bytes as the app received them; the agent kept only the first ${kept.length} bytes, MIME: application/json]`
+      `[body omitted: binary application/json, 5000 bytes as the app received them; the agent kept only the first ${kept.length} bytes]`
     );
   });
 
@@ -186,9 +186,9 @@ describe("view-network-request-details: a body the agent cut short", () => {
     const body = (await details()).response.body!;
 
     expect(body).toBe(
-      `[TRUNCATED — original size: 3000011 bytes as the app received them; the agent kept only the first 1048576 bytes, MIME: application/json]\n${ascii.toString().slice(0, 1000)}...`
+      `[TRUNCATED: first 1000 chars shown, full size: 3000011 bytes as the app received them; the agent kept only the first 1048576 bytes, MIME: application/json]\n${ascii.toString().slice(0, 1000)}...`
     );
-    expect(body).not.toContain("original size: 1048576");
+    expect(body).not.toContain("full size: 1048576");
   });
 
   it("says the original size is unknown when the record has no received length", async () => {
@@ -196,7 +196,7 @@ describe("view-network-request-details: a body the agent cut short", () => {
     serve(record());
 
     expect((await details()).response.body).toMatch(
-      /^\[TRUNCATED — original size: unknown; the agent kept only the first 2000 bytes, MIME: application\/json\]\nx{1000}\.\.\.$/
+      /^\[TRUNCATED: first 1000 chars shown, full size: unknown; the agent kept only the first 2000 bytes, MIME: application\/json\]\nx{1000}\.\.\.$/
     );
   });
 
@@ -217,7 +217,7 @@ describe("view-network-request-details: a body the agent cut short", () => {
 
     expect(
       body.startsWith(
-        `[TRUNCATED — original size: ${gz.length} bytes as the app received them; the agent kept only the first ${kept.length} bytes, MIME: application/json]\n${text.slice(0, 1000)}...`
+        `[TRUNCATED: first 1000 chars shown, full size: ${gz.length} bytes as the app received them; the agent kept only the first ${kept.length} bytes, MIME: application/json]\n${text.slice(0, 1000)}...`
       )
     ).toBe(true);
   });
@@ -237,7 +237,7 @@ describe("view-network-request-details: a body the agent cut short", () => {
     );
 
     expect((await details()).request.postData).toBe(
-      `[TRUNCATED — original size: ${sent.length} bytes as the app sent them; the agent kept only the first 1048576 bytes, MIME: text/plain]\n${"名前=".repeat(400).slice(0, 1000)}...`
+      `[TRUNCATED: first 1000 chars shown, full size: ${sent.length} bytes as the app sent them; the agent kept only the first 1048576 bytes, MIME: text/plain]\n${"名前=".repeat(400).slice(0, 1000)}...`
     );
   });
 });
@@ -250,11 +250,13 @@ describe("view-network-request-details: a body the agent kept whole", () => {
 
     responseBody.mockResolvedValue(heldBody(Buffer.from("y".repeat(1500))));
     expect((await details()).response.body).toBe(
-      `[TRUNCATED — original size: 1500 chars, MIME: application/json]\n${"y".repeat(1000)}...`
+      `[TRUNCATED: first 1000 chars shown, full size: 1500 chars, MIME: application/json]\n${"y".repeat(1000)}...`
     );
 
     responseBody.mockResolvedValue(heldBody(Buffer.from([0x6f, 0x6b, 0xe6, 0x8a])));
-    expect((await details()).response.body).toBe("[binary: 4 bytes, MIME: application/json]");
+    expect((await details()).response.body).toBe(
+      "[body omitted: binary application/json, 4 bytes]"
+    );
   });
 
   it("decodes an empty gzip body to an empty body", async () => {
@@ -305,7 +307,7 @@ describe("view-network-request-details: request bodies and charsets", () => {
     );
 
     expect((await details()).request.postData).toBe(
-      `[binary: ${sent.length} bytes, MIME: application/json]`
+      `[body omitted: binary application/json, ${sent.length} bytes]`
     );
   });
 
@@ -345,7 +347,7 @@ describe("view-network-request-details: request bodies and charsets", () => {
     );
 
     expect((await details()).response.body).toBe(
-      "[TRUNCATED — original size: 4000 bytes as the app received them; the agent kept only the first 3 bytes, MIME: text/plain]\n東"
+      "[TRUNCATED: first 1 chars shown, full size: 4000 bytes as the app received them; the agent kept only the first 3 bytes, MIME: text/plain]\n東"
     );
   });
 
@@ -429,7 +431,7 @@ describe("view-network-request-details: request bodies and charsets", () => {
     serve(postThen303({ "Content-Type": "text/plain", "Content-Length": String(sent.length) }));
 
     expect((await details()).request.postData).toBe(
-      `[TRUNCATED — original size: ${sent.length} bytes as the app sent them; the agent kept only the first 1048576 bytes, MIME: text/plain]\n${"x".repeat(1000)}...`
+      `[TRUNCATED: first 1000 chars shown, full size: ${sent.length} bytes as the app sent them; the agent kept only the first 1048576 bytes, MIME: text/plain]\n${"x".repeat(1000)}...`
     );
   });
 
@@ -492,7 +494,7 @@ describe("view-network-request-details: request bodies and charsets", () => {
     );
 
     expect((await details()).response.body).toBe(
-      `[binary: ${bytes.length} bytes, MIME: text/plain]`
+      `[body omitted: binary text/plain, ${bytes.length} bytes]`
     );
   });
 });

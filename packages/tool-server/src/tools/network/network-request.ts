@@ -17,6 +17,7 @@ import {
   makeNetworkDetailReadScript,
 } from "../../utils/debugger/scripts/network-interceptor";
 import { metroPort, metroPortField } from "../../utils/debugger/metro-port";
+import { isRedirect, reasonPhrase } from "./network-logs";
 
 const SENSITIVE_HEADER_PATTERNS = [
   "auth",
@@ -32,21 +33,25 @@ const SENSITIVE_HEADER_PATTERNS = [
   "x-api-key",
 ];
 
-function isSensitiveHeader(name: string): boolean {
+function isSensitiveHeader(name: string, value?: string): boolean {
   const lower = name.toLowerCase();
-  return SENSITIVE_HEADER_PATTERNS.some((p) => lower.includes(p));
+  if (SENSITIVE_HEADER_PATTERNS.some((p) => lower.includes(p))) return true;
+  // whatwg-fetch sends a [name, value] pair given as headers as "0: name,value".
+  return (
+    /^\d+$/.test(name) && value != null && isSensitiveHeader(String(value).split(",")[0]!.trim())
+  );
 }
 
 function redactHeaders(headers: Record<string, string> | undefined): Record<string, string> {
   if (!headers) return {};
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
-    result[key] = isSensitiveHeader(key) ? "[REDACTED]" : value;
+    result[key] = isSensitiveHeader(key, value) ? "[REDACTED]" : value;
   }
   return result;
 }
 
-/** Response body chars kept; the rest is truncated to limit context. */
+/** Body chars kept, of a request or a response; the rest is truncated to limit context. */
 const MAX_BODY_SIZE = 1000;
 
 /**
@@ -56,10 +61,33 @@ const MAX_BODY_SIZE = 1000;
  */
 const MAX_DECODED_BODY_BYTES = 16 * 1024 * 1024;
 
+/** Heads a body cut to `shown` chars; `fullSize` is the size of the whole body, with its unit. */
+function cutMarker(fullSize: string, mimeType?: string, shown = MAX_BODY_SIZE): string {
+  const mime = mimeType !== undefined ? `, MIME: ${mimeType}` : "";
+  return `[TRUNCATED: first ${shown} chars shown, full size: ${fullSize}${mime}]`;
+}
+
 function truncateBody(body: string, mimeType: string): string {
   return body.length > MAX_BODY_SIZE
-    ? `[TRUNCATED — original size: ${body.length} chars, MIME: ${mimeType}]\n${body.slice(0, MAX_BODY_SIZE)}...`
+    ? `${cutMarker(`${body.length} chars`, mimeType)}\n${body.slice(0, MAX_BODY_SIZE)}...`
     : body;
+}
+
+/** The text of a body that CDP sent as base64, or its bytes when they are not UTF-8 text. */
+function utf8Text(bytes: Buffer): string | Buffer {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return bytes;
+  }
+}
+
+/** A request body cut to MAX_BODY_SIZE; `truncated` says the interceptor kept only its start. */
+function truncatePostData(postData: string | undefined, truncated?: boolean): string | undefined {
+  // A body the interceptor cut is always longer than MAX_BODY_SIZE.
+  if (postData == null || postData.length <= MAX_BODY_SIZE) return postData;
+  const fullSize = truncated ? `more than ${postData.length} chars` : `${postData.length} chars`;
+  return `${cutMarker(fullSize)}\n${postData.slice(0, MAX_BODY_SIZE)}...`;
 }
 
 const zodSchema = z.object({
@@ -74,7 +102,7 @@ const zodSchema = z.object({
     .describe(
       "The requestId to get full details for: an ID from view-network-logs, or on Android an ID starting with android- from native-network-logs"
     ),
-  includeBody: z.coerce
+  includeBody: z
     .boolean()
     .default(true)
     .describe("Whether to include the response body (if captured). Defaults to true."),
@@ -89,6 +117,8 @@ interface RawEntry {
     method: string;
     headers: Record<string, string>;
     postData?: string;
+    /** The interceptor kept only the start of the body. */
+    postDataTruncated?: boolean;
   };
   response?: {
     url: string;
@@ -100,11 +130,15 @@ interface RawEntry {
   resourceType?: string;
   encodedDataLength?: number;
   timestamp?: number;
-  wallTime?: number;
   durationMs?: number;
   errorText?: string;
-  initiator?: { type: string; url?: string; lineNumber?: number };
   responseBody?: string;
+  /** The interceptor kept only the start of the body; encodedDataLength is its full size. */
+  bodyTruncated?: boolean;
+  /** The full length, in characters, of a text body the interceptor cut. */
+  bodyLength?: number;
+  /** A binary body the interceptor did not read; encodedDataLength is its size. */
+  bodyOmitted?: boolean;
 }
 
 interface NetworkRequestDetails {
@@ -137,6 +171,8 @@ interface NetworkRequestDetails {
     url?: string;
     status: number;
     statusText: string;
+    /** The final URL, when a redirect led away from the request URL. */
+    redirectedTo?: string;
     headers: Record<string, string>;
     mimeType: string;
     fromCache?: boolean;
@@ -158,11 +194,12 @@ export const networkRequestTool: ToolDefinition<
       `Failed to read network request ${params.requestId}: ${failureSignal.error_code}`,
   },
   description: `Get full details of a specific network request by its requestId.
-IDs come from view-network-logs, or on Android from native-network-logs (IDs starting with android-). An android- ID needs no debugger connection and works with any device_id of that device. Its details also include the request body, the final URL and any redirects.
+IDs come from view-network-logs, or on Android from native-network-logs (IDs starting with android-). An android- ID needs no debugger connection and works with any device_id of that device. Its details also include the final URL and any redirects.
 On iOS, native-network-logs returns each event in full, and this tool does not read those events.
-Returns request/response headers (sensitive headers redacted), status, timing, and optionally the response body.
-Large response bodies are truncated. Use when you need headers, body, or timing for a specific request after listing logs.
+Returns request/response headers (sensitive headers redacted), status, timing, the request body, and optionally the response body.
+Request and response bodies over 1000 chars are cut to 1000 under a "[TRUNCATED: ...]" line that gives the full size; a binary response body is replaced by "[body omitted: binary <mime>, N bytes]". Use when you need headers, body, or timing for a specific request after listing logs.
 If the requestId is not found, list the requests again with view-network-logs, or native-network-logs for an android- ID.`,
+  readOnly: true,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,
   services: (params): Record<string, ServiceRef> => {
@@ -203,7 +240,7 @@ If the requestId is not found, list the requests again with view-network-logs, o
           url: rec.url,
           method: rec.method,
           headers: redactHeaders(rec.requestHeaders),
-          postData: rec.postData,
+          postData: truncatePostData(rec.postData),
         };
       }
       if (rec.status != null) {
@@ -219,10 +256,12 @@ If the requestId is not found, list the requests again with view-network-logs, o
               requestId: rec.requestId,
             })) as { body?: string; base64Encoded?: boolean };
             if (out.body != null) {
-              const body = out.base64Encoded
-                ? Buffer.from(out.body, "base64").toString("utf8")
-                : out.body;
-              resp.body = truncateBody(body, resp.mimeType);
+              const body = out.base64Encoded ? utf8Text(Buffer.from(out.body, "base64")) : out.body;
+              if (typeof body !== "string") {
+                resp.body = `[body omitted: binary ${resp.mimeType || "data"}, ${body.length} bytes]`;
+              } else {
+                resp.body = truncateBody(body, resp.mimeType);
+              }
             }
           } catch {
             // Body not retained: navigated away, evicted, or never had one.
@@ -239,7 +278,7 @@ If the requestId is not found, list the requests again with view-network-logs, o
 
     const api = services.inspector as NetworkInspectorApi;
 
-    // Idempotent — the script no-ops if already installed.
+    // Idempotent: the script no-ops if already installed.
     await api.cdp.evaluate(NETWORK_INTERCEPTOR_SCRIPT).catch(() => {});
 
     const script = makeNetworkDetailReadScript(params.requestId);
@@ -259,7 +298,6 @@ If the requestId is not found, list the requests again with view-network-logs, o
       durationMs: entry.durationMs,
       encodedDataLength: entry.encodedDataLength,
       errorText: entry.errorText,
-      initiator: entry.initiator,
     };
 
     if (entry.request) {
@@ -267,20 +305,44 @@ If the requestId is not found, list the requests again with view-network-logs, o
         url: entry.request.url,
         method: entry.request.method,
         headers: redactHeaders(entry.request.headers),
-        postData: entry.request.postData,
+        postData: truncatePostData(entry.request.postData, entry.request.postDataTruncated),
       };
     }
 
     if (entry.response) {
       const resp: NetworkRequestDetails["response"] = {
         status: entry.response.status,
-        statusText: entry.response.statusText,
+        statusText: reasonPhrase(entry.response.status),
         headers: redactHeaders(entry.response.headers),
         mimeType: entry.response.mimeType,
       };
+      if (isRedirect(entry.request?.url, entry.response.url)) {
+        resp.redirectedTo = entry.response.url;
+      }
 
-      if (params.includeBody && entry.responseBody != null) {
-        resp.body = truncateBody(entry.responseBody, entry.response.mimeType);
+      if (params.includeBody && entry.bodyOmitted) {
+        // A length in characters, of a binary body read as text, is close to its size in bytes.
+        const size =
+          entry.encodedDataLength != null
+            ? `, ${entry.encodedDataLength} bytes`
+            : entry.bodyLength != null
+              ? `, ~${entry.bodyLength} bytes`
+              : "";
+        resp.body = `[body omitted: binary ${entry.response.mimeType || "data"}${size}]`;
+      } else if (params.includeBody && entry.responseBody != null) {
+        const body = entry.responseBody;
+        if (body.length > MAX_BODY_SIZE) {
+          const fullSize = !entry.bodyTruncated
+            ? `${body.length} chars`
+            : entry.encodedDataLength != null
+              ? `${entry.encodedDataLength} bytes`
+              : entry.bodyLength != null
+                ? `${entry.bodyLength} chars`
+                : `more than ${body.length} chars`;
+          resp.body = `${cutMarker(fullSize, entry.response.mimeType)}\n${body.slice(0, MAX_BODY_SIZE)}...`;
+        } else {
+          resp.body = body;
+        }
       }
 
       details.response = resp;
@@ -425,8 +487,8 @@ async function readAndroidBody(
   const text = decodeText(bytes, charsetOf(framing.contentType), body.truncated);
   if (text === null) {
     return body.truncated
-      ? `[binary, ${cutSize(kept.length, framing)}, MIME: ${mimeType || "unknown"}]`
-      : `[binary: ${bytes.length} bytes, MIME: ${mimeType || "unknown"}]`;
+      ? `[body omitted: binary ${mimeType || "data"}, ${framing.wholeSize ?? "size unknown"}; ${agentKept(kept.length)}]`
+      : `[body omitted: binary ${mimeType || "data"}, ${bytes.length} bytes]`;
   }
   return body.truncated
     ? cutByAgent(text, mimeType, kept.length, framing)
@@ -443,12 +505,13 @@ function cutByAgent(
   keptBytes: number,
   framing: AndroidBodyFraming
 ): string {
-  const shown = text.length > MAX_BODY_SIZE ? `${text.slice(0, MAX_BODY_SIZE)}...` : text;
-  return `[TRUNCATED — ${cutSize(keptBytes, framing)}, MIME: ${mimeType}]\n${shown}`;
+  const shown = Math.min(text.length, MAX_BODY_SIZE);
+  const fullSize = `${framing.wholeSize ?? "unknown"}; ${agentKept(keptBytes)}`;
+  return `${cutMarker(fullSize, mimeType, shown)}\n${text.slice(0, shown)}${text.length > shown ? "..." : ""}`;
 }
 
-function cutSize(keptBytes: number, framing: AndroidBodyFraming): string {
-  return `original size: ${framing.wholeSize ?? "unknown"}; the agent kept only the first ${keptBytes} bytes`;
+function agentKept(keptBytes: number): string {
+  return `the agent kept only the first ${keptBytes} bytes`;
 }
 
 function sizeInBytes(bytes: number, how: string): string | undefined {

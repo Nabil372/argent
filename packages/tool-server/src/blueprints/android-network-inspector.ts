@@ -160,7 +160,7 @@ export interface AndroidNetworkNotAttachable {
 export type AndroidNativeRecordState = "pending" | "headers" | "complete" | "failed";
 
 /** One hop before the final response: what was asked, and what came back. */
-export interface AndroidNativeRedirect {
+interface AndroidNativeRedirect {
   /** The URL that answered with the redirect. */
   url: string;
   method: string;
@@ -231,7 +231,7 @@ export interface AndroidNetworkInspectorState {
  * A call that did not reach the device after capture was set up: what was
  * captured is still listed, and `note` says why the device was not reached.
  */
-export interface AndroidNetworkCallNote {
+interface AndroidNetworkCallNote {
   status: "ok";
   note: string;
 }
