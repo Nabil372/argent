@@ -15,6 +15,7 @@ import {
   isAlias,
   isMap,
   isNode,
+  isScalar,
   isSeq,
   LineCounter,
   type Document,
@@ -3791,10 +3792,44 @@ function unalias(node: unknown, doc: Document): unknown {
 }
 
 /**
+ * Whether `key` is the merge key `<<`: plain, or the symbol a merge tag makes
+ * of it. A `<<` that the schema does not merge stays a key that neither a
+ * file's top level nor a step accepts, so its flow never parses.
+ */
+function isMergeKey(key: unknown): boolean {
+  return (
+    isScalar(key) &&
+    (key.value === "<<" || (typeof key.value === "symbol" && key.value.description === "<<"))
+  );
+}
+
+/**
+ * The node a YAML map holds under `key`, with merge keys applied as the yaml
+ * package's toJS applies them: the map's own pair wins, then each merged map
+ * in the order written. A merge value is a map or a list of maps, and any of
+ * them can be an alias.
+ */
+function mapValue(node: unknown, key: string, doc: Document): unknown {
+  const map = unalias(node, doc);
+  if (!isMap(map)) return undefined;
+  if (map.has(key)) return map.get(key, true);
+  for (const pair of map.items) {
+    if (!isMergeKey(pair.key)) continue;
+    const merged = unalias(pair.value, doc);
+    for (const source of isSeq(merged) ? merged.items : [merged]) {
+      const value = mapValue(source, key, doc);
+      if (value !== undefined) return value;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Record the line of each step in `steps` and of its block's children, read
  * off the YAML sequence the steps were parsed from. An alias has no items of
  * its own, so a list or a block the file spells as one is read from the node
- * the alias repeats. A step spelled as an alias starts on the alias's line.
+ * the alias repeats, and a `steps:` that a merge key supplies is read from the
+ * map it merges in. A step spelled as an alias starts on the alias's line.
  */
 function recordStepLines(
   steps: FlowStep[],
@@ -3810,10 +3845,7 @@ function recordStepLines(
     if (!isNode(item) || !item.range) return;
     stepLines.set(step, lineCounter.linePos(item.range[0]).line + lineOffset);
     const inner = blockSteps(step);
-    const block = unalias(item, doc);
-    if (inner && isMap(block)) {
-      recordStepLines(inner, block.get("steps", true), doc, lineCounter, lineOffset);
-    }
+    if (inner) recordStepLines(inner, mapValue(item, "steps", doc), doc, lineCounter, lineOffset);
   });
 }
 
@@ -3893,7 +3925,7 @@ export function parseFlow(content: string): FlowFile {
   // counted in `trimmed` must add back.
   const leading = content.slice(0, content.length - content.trimStart().length);
   const leadingLines = leading.split("\n").length - 1;
-  recordStepLines(steps, doc.get("steps", true), doc, lineCounter, leadingLines);
+  recordStepLines(steps, mapValue(doc.contents, "steps", doc), doc, lineCounter, leadingLines);
   return flow;
 }
 

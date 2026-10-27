@@ -179,6 +179,69 @@ describe("flowStepLine", () => {
     expect(stepLines(flow.steps)).toEqual([3, 5, 6, 5]);
   });
 
+  it.each([
+    ["<<", "%YAML 1.1"],
+    ["!!merge <<", "%YAML 1.2"],
+    ["!!str <<", "%YAML 1.1"],
+  ])(
+    "gives the steps that a %s merge key gives a when: block their own lines (%s)",
+    (key, directive) => {
+      const flow = parseFlow(
+        yaml(
+          directive,
+          "---",
+          "steps:",
+          "  - echo: zero",
+          `  - ${key}: &w`,
+          "      when: { platform: ios }",
+          "      steps:",
+          "        - echo: inner1",
+          "        - tap: inner2"
+        )
+      );
+
+      expect(stepLines(flow.steps)).toEqual([4, 5, 8, 9]);
+    }
+  );
+
+  it("reads a block's own steps: before any a merge key gives it", () => {
+    const flow = parseFlow(
+      yaml(
+        "%YAML 1.1",
+        "---",
+        "steps:",
+        "  - <<: { when: { platform: ios }, steps: [{ echo: merged }] }",
+        "    steps:",
+        "      - echo: own"
+      )
+    );
+
+    expect(stepLines(flow.steps)).toEqual([4, 6]);
+  });
+
+  it("reads steps: from the first merged map that holds it, at the top level too", () => {
+    const listed = parseFlow(
+      yaml(
+        "%YAML 1.1",
+        "---",
+        "steps:",
+        "  - &ios",
+        "    when: { platform: ios }",
+        "    steps:",
+        "      - echo: ios",
+        "  - &android",
+        "    when: { platform: android }",
+        "    steps:",
+        "      - echo: android",
+        "  - <<: [*android, *ios]"
+      )
+    );
+    expect(stepLines(listed.steps)).toEqual([5, 7, 9, 11, 12, 11]);
+
+    const topLevel = parseFlow(yaml("%YAML 1.1", "---", "<<:", "  steps:", "    - echo: a"));
+    expect(stepLines(topLevel.steps)).toEqual([5]);
+  });
+
   it("gives no line to a step that was not parsed from a file", () => {
     expect(flowStepLine({ kind: "echo", message: "hi" })).toBeUndefined();
   });
