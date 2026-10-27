@@ -85,7 +85,8 @@ export async function otherSection(
   running: string,
   offline: boolean,
   updateCmd: string,
-  pm: PackageManager
+  pm: PackageManager,
+  entriesStartGlobal = false
 ): Promise<DoctorSection> {
   const checks: DoctorCheck[] = [];
   // The same root `argent telemetry status` reads, which stops at package.json.
@@ -131,9 +132,11 @@ export async function otherSection(
     const globalTarget =
       installable ??
       (target && !isNewerVersion(target.latestVersion, running) ? target.latestVersion : null);
-    // A local-mode project's entries start its own copy, not the global one.
+    // A local-mode project's own entries start its copy; only bare `argent` ones start the global.
     const behind =
-      ctx.mode !== "local" && globalTarget && globalBehindCheck(ctx.global, running, globalTarget);
+      (ctx.mode !== "local" || entriesStartGlobal) &&
+      globalTarget &&
+      globalBehindCheck(ctx.global, running, globalTarget);
     if (behind) checks.push(behind);
   }
   return { title: "Other", checks };

@@ -12,6 +12,7 @@ import {
   projectInstallCommand,
   resolveInstallMode,
   resolveProjectRoot,
+  MCP_BINARY_NAME,
   PACKAGE_NAME,
   type McpServerEntry,
 } from "@argent/installer";
@@ -126,6 +127,11 @@ async function npmGlobalHasArgent(): Promise<boolean | null> {
   }
 }
 
+/** A bare `argent` command runs the global install on PATH. */
+function startsGlobalArgent(entry: McpServerEntry): boolean {
+  return entry.command.replace(/\.(cmd|exe)$/i, "") === MCP_BINARY_NAME;
+}
+
 function currentDir(): string {
   try {
     return process.cwd();
@@ -188,7 +194,14 @@ export async function collectDoctorReport(options: {
     toolServerSection(ctx, running, options.paths, linked),
     entryRemoteChecks(entryToolsUrls, ctx.argentCmd),
     platformsSection(ctx, options.paths, linked, reinstall, entriesAllRemote),
-    otherSection(ctx, running, options.offline, updateCmd, runningLocal ? projectPm : globalPm),
+    otherSection(
+      ctx,
+      running,
+      options.offline,
+      updateCmd,
+      runningLocal ? projectPm : globalPm,
+      startedEntries.some(startsGlobalArgent)
+    ),
   ]);
   toolServer.checks.push(...entryRemotes);
   const sections = [

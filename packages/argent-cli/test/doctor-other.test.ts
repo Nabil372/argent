@@ -128,6 +128,12 @@ describe("otherSection guards", () => {
     expect(checks.some((c) => c.label.startsWith("Global install"))).toBe(false);
   });
 
+  it("keeps the behind-latest warning in local mode when an entry starts the global", async () => {
+    const localMode = local({ mode: "local" });
+    const { checks } = await otherSection(localMode, "0.30.1", false, "u", "npm", true);
+    expect(checks.some((c) => c.label.startsWith("Global install v0.26.0"))).toBe(true);
+  });
+
   it("caps the update check and keeps the package manager from installing or logging", async () => {
     await otherSection(local(), "0.30.1", false, "argent update", "npm");
     expect(vi.mocked(resolveInstallableUpdateTarget).mock.lastCall?.[2]).toMatchObject({
