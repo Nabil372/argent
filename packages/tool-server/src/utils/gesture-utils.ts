@@ -74,8 +74,8 @@ export function assertTwoFingerTouchSupported(
     device,
     "Argent could not find this emulator's gRPC bridge, so it drives the emulator over adb " +
       "like a physical phone. That path cannot lift two fingers: they would stay down and " +
-      "block every later touch. Start the emulator as the same user that runs Argent " +
-      "(or with boot-device) to use two-finger gestures"
+      "block every later touch. To use two-finger gestures, stop the emulator from the account " +
+      "that started it, then start it with boot-device or with the same user and HOME as Argent"
   );
 }
 

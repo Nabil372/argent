@@ -14,7 +14,10 @@ export async function removeScreenSharingReverses(serial: string): Promise<void>
   }
 }
 
-/** The phone controller's `rotate` turns auto-rotate off and never turns it back on. */
+/**
+ * On an emulator, the phone controller turns auto-rotate off on its first touch
+ * or `rotate` and never turns it back on.
+ */
 export async function readAutoRotate(serial: string): Promise<string | null> {
   const value = (await adbShell(serial, "settings get system accelerometer_rotation")).trim();
   return value === "0" || value === "1" ? value : null;

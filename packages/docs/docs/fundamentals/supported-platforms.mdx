@@ -45,14 +45,22 @@ The agent folds and unfolds the device with the `fold` tool. `list-devices` mark
 
 ### Emulators started by another user
 
-Argent finds an emulator through a file that the emulator writes in the home directory of its user. An emulator that another user or another `HOME` started has no such file for Argent. Argent then controls that emulator over adb, the same way as a physical Android device. This path has these limits:
+Argent finds an emulator through a discovery file that the emulator writes in a directory of its user:
+
+- On macOS, the directory is in the home directory.
+- On Linux, the directory is in `$XDG_RUNTIME_DIR` or `/run/user/<uid>`, and in the home directory only when neither exists.
+
+Argent does not find the file of an emulator that another user started. On macOS, Argent also does not find the file when the same user started the emulator with another `HOME`. Argent then controls that emulator over adb, the same way as a physical Android device. This path has these limits:
 
 - Two-finger gestures (pinch, rotate, a two-finger `gesture-custom`) fail with an error. On this path, Android keeps both fingers down after the gesture and refuses all later touches.
 - Screenshots have a lower resolution than on an emulator that Argent finds. `screenshot-diff` reports a size mismatch when it compares screenshots from the two paths.
 - Only one Argent tool-server can control the emulator. When a second tool-server connects, the first one loses its connection and connects again on its next call.
 - Argent copies its screen-sharing agent to `/data/local/tmp/.studio` on the emulator and keeps it there for the next start.
+- A touch turns off auto-rotate on the emulator. Argent sets auto-rotate back when it stops controlling the emulator. If the tool-server crashes, or two tool-servers take turns on the emulator, auto-rotate can stay off. To turn it on again, run `adb -s <serial> shell settings put system accelerometer_rotation 1`.
 
-To remove these limits, start the emulator as the same user that runs Argent, or start it with `boot-device`.
+`shake` and `fold` fail on an emulator that another user or another `HOME` started. These tools use the emulator console, and the console accepts only the auth token from the home directory of the emulator.
+
+To remove these limits, stop the emulator from the account that started it. Then start it with `boot-device`, or with the same user and `HOME` as Argent. `boot-device` reuses an emulator that is already running, and `boot-device` with `force` cannot stop this emulator.
 
 ### Physical iPhones
 
