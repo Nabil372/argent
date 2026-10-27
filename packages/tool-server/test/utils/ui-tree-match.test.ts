@@ -268,16 +268,30 @@ describe("ui-tree-match", () => {
     expect(evaluateCondition("text", "x", [field], "contains")).toBe(false);
   });
 
-  it("a regex text condition does not read an iOS text field with no text as empty", () => {
-    // The simulator's view tree has no typed text: a field holding "Rex" reads "".
+  it("a regex text condition reads an empty iOS text field as an empty string", () => {
+    // The iOS tree carries typed text and an empty field's placeholder, so a
+    // field with neither is empty.
     const field = node({
       role: "AXTextField",
       identifier: "name",
       frame: { x: 0.1, y: 0.1, width: 0.5, height: 0.05 },
     });
 
+    expect(evaluateCondition("text", "^$", [field], "matches")).toBe(true);
+    expect(evaluateCondition("text", "^(?!.*Rex)", [field], "matches")).toBe(true);
+  });
+
+  it("a regex text condition does not read a password field with no text as empty", () => {
+    // The iOS tree drops a typed secret: a field holding one reads "".
+    const field = node({
+      role: "AXTextField",
+      identifier: "password",
+      password: true,
+      frame: { x: 0.1, y: 0.1, width: 0.5, height: 0.05 },
+    });
+
     expect(evaluateCondition("text", "^$", [field], "matches")).toBe(false);
-    expect(evaluateCondition("text", "^(?!.*Rex)", [field], "matches")).toBe(false);
+    expect(evaluateCondition("text", "^(?!.*hunter2)", [field], "matches")).toBe(false);
   });
 
   it("a regex text condition does not read a container with hoisted text as empty", () => {
