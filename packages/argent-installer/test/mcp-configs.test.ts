@@ -297,6 +297,17 @@ describe("getArgentEntry env passthrough", () => {
 });
 
 describe("remote entries", () => {
+  it("reads a command beside a URL as a command unless the type is remote", () => {
+    const file = path.join(tmpDir, ".mcp.json");
+    const claude = ALL_ADAPTERS.find((a) => a.name === "Claude Code")!;
+    const command = { command: "/nonexistent/argent", args: ["mcp"] };
+    const url = "http://127.0.0.1:1/mcp";
+    for (const type of [undefined, "stdio"]) {
+      fs.writeFileSync(file, JSON.stringify({ mcpServers: { argent: { type, ...command, url } } }));
+      expect(claude.getArgentEntry(file)).toEqual(command);
+    }
+  });
+
   it("reads each editor's URL key, keeps the switch-off key and prefers the URL to a command", () => {
     const read = (name: string, raw: Record<string, unknown>) => {
       const adapter = ALL_ADAPTERS.find((a) => a.name === name)!;

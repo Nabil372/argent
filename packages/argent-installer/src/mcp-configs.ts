@@ -55,7 +55,8 @@ export interface McpServerEntry {
   cwd?: string;
   /**
    * A remote (HTTP/SSE) server the editor connects to instead of starting a
-   * command; `command` is then "". Editors prefer it over a `command` beside it.
+   * command; `command` is then "". A `command` beside it wins unless `type` names
+   * a remote transport.
    */
   url?: string;
 }
@@ -216,6 +217,13 @@ function deleteIfEmpty(parent: Record<string, unknown>, key: string): void {
 // (Windsurf), `httpUrl` (Gemini).
 const REMOTE_URL_KEYS = ["url", "serverUrl", "httpUrl"] as const;
 
+// Claude Code runs an entry with no `type` (or `type: "stdio"`) as a command
+// even when a `url` sits beside it; only a remote `type` makes the URL win.
+function startsCommand(raw: Record<string, unknown>): boolean {
+  const hasCommand = typeof raw.command === "string" || Array.isArray(raw.command);
+  return hasCommand && (raw.type === undefined || raw.type === "stdio" || raw.type === "local");
+}
+
 // Absent → null; present but unrecognizable → the { command: "" } sentinel
 // (see McpConfigAdapter.getArgentEntry); a remote entry → { command: "", url }.
 // Env vars ride along (opencode spells the key `environment`): they mark a
@@ -241,7 +249,7 @@ function normalizeServerEntry(raw: unknown): McpServerEntry | null {
     const url = REMOTE_URL_KEYS.map((key) => raw[key]).find(
       (value): value is string => typeof value === "string" && value !== ""
     );
-    if (url) return { command: "", args: [], url, ...extra };
+    if (url && !startsCommand(raw)) return { command: "", args: [], url, ...extra };
     // opencode stores the command as a single array: { command: [cmd, ...args] }.
     if (Array.isArray(raw.command) && raw.command.every((c) => typeof c === "string")) {
       const [command = "", ...args] = raw.command as string[];
