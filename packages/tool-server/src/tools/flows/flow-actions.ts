@@ -2397,18 +2397,15 @@ async function waitForIdle(
 
   // An unreadable window is never a verdict about the app. Which flavour of
   // unreadable it was decides the repair, so they stay apart.
+  //
+  // A failed read sets no hint, so the runner gives it the one an `assert` on
+  // the same read gets (see `outcomeDetails` in flow-run.ts): the shared hint
+  // for an outage, none for a refused read.
   const unreadable = (underlying: Error): DirectiveOutcome => ({
     ok: false,
     indeterminate: true,
     ...(isRefusedRead(underlying) && { refused: true as const }),
     reason: `could not read the UI tree while waiting for the screen to settle: ${underlying.message}`,
-    // The underlying reader reports an instrumentation failure, whose remedy
-    // (relaunch the app) is the wrong repair for the commonest cause here: the
-    // app is simply not in the foreground, which reads exactly the same from the
-    // tree source. The hint names that.
-    hint:
-      "check the app is still in the foreground (a backgrounded app reads the same as an " +
-      "uninstrumented one)",
   });
 
   // The other flavour: the source answered, and said it could not see the app.

@@ -858,10 +858,8 @@ steps:
   });
 
   // A tree source that never answers at all: no read succeeded, so there is
-  // nothing to reason from and the advice is about the window, not the app.
-  // The existing mid-wait case lets the first read land, so this branch — the
-  // one that produces the foreground advice from a standing start — was never
-  // taken.
+  // nothing to reason from. The mid-wait case lets the first read land, so it
+  // reaches the same outcome by the other branch.
   it("reports a tree source that never answered as unreadable, naming the underlying error", async () => {
     currentTree = () => {
       throw new Error("native-devtools is not connected");
@@ -883,7 +881,9 @@ steps:
       "could not read the UI tree while waiting for the screen to settle: " +
         "native-devtools is not connected"
     );
-    expect(step.hint).toContain("check the app is still in the foreground");
+    // The shared hint, as for an `assert` on the same outage: a crashed app
+    // reads the same as a tree source that stopped answering.
+    expect(step.hint).toMatch(/^check the app first/);
     // An indeterminate readiness check stops the run rather than recording a
     // regression the app never had.
     expect(r.steps.at(-1)!.status).toBe("skip");
@@ -913,6 +913,8 @@ steps:
     expect(step!.status).toBe("error");
     expect(step!.reason).toContain("is an Apple system app");
     expect(step).not.toHaveProperty("indeterminate");
+    // The reason says what to change; no hint points at another cause.
+    expect(step).not.toHaveProperty("hint");
   });
 
   // A blip mid-settle is expected — the hold restarts from the next good read
@@ -1307,7 +1309,7 @@ steps:
       "could not read the UI tree while waiting for the screen to settle: " +
         "native-devtools is not connected"
     );
-    expect(step.hint).toContain("check the app is still in the foreground");
+    expect(step.hint).toMatch(/^check the app first/);
   });
 
   // H1: a screen that settles and then moves again has NOT settled. The
