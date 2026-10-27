@@ -1563,8 +1563,12 @@ describe("debug recording lifecycle", () => {
     expect(pointer.enable).toHaveBeenCalledOnce();
     expect(api.pumpTimer).toBeNull();
     const outputFile = api.outputFile!;
+    const directory = (await fs.readdir(scratch)).find((name) =>
+      name.startsWith("argent-recording-frames-")
+    )!;
     await fs.writeFile(outputFile, Buffer.alloc(64, 1));
     await vi.advanceTimersByTimeAsync(2_000);
+    await vi.waitFor(async () => expect(await fs.readdir(scratch)).not.toContain(directory));
     expect(api.recordingActive).toBe(false);
     expect(api.pendingRetrieval).toBe(true);
     expect(stream.close).toHaveBeenCalledOnce();
@@ -1778,7 +1782,7 @@ describe("debug finalization safeguards", () => {
       await cleanup();
     });
     const stopping = stopCapture(api);
-    await vi.waitFor(() => expect(debug.cleanup).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(debug.cleanup).toHaveBeenCalled());
     expect(api.stopPending).toBe(true);
     await expect(
       startCapture(api, {

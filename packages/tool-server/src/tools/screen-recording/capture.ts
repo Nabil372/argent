@@ -14,6 +14,7 @@ import {
 import { takeReapedSession } from "../../utils/reaped-sessions";
 import { openMjpegStream, readJpegDimensions, type MjpegStream } from "./mjpeg-stream";
 import { startDebugCapture } from "./debug-capture";
+import { createFrameDirectory } from "./frame-directory";
 import {
   assertNoActiveRecording,
   assertNotDisposed,
@@ -487,7 +488,7 @@ async function startCaptureLocked(
           failure_area: "tool_server",
           error_kind: "validation",
         });
-      frameDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "argent-recording-frames-"));
+      frameDirectory = await createFrameDirectory();
     }
     let graph: string | null = null;
     if (params.watermark && canvas) {
@@ -607,6 +608,13 @@ async function startCaptureLocked(
       ...(stderrRef.text ? { stderr: clip(stderrRef.text) } : {}),
     };
     api.captureProcess = null;
+    if (code === 0 && signal === null) {
+      void api.debugCapture?.cleanup().catch((err: unknown) => {
+        process.stderr.write(
+          `[screen-recording ${api.deviceId}] JPEG cleanup failed: ${String(err)}\n`
+        );
+      });
+    }
     if (api.recordingTimeout) {
       clearTimeout(api.recordingTimeout);
       api.recordingTimeout = null;
