@@ -452,7 +452,7 @@ describe("platformChecks for a toolchain that is there but fails", () => {
     expect(ios(empty)?.status).toBe("warn");
   });
 
-  it("treats an adb hang as a stuck server, not a broken binary", () => {
+  it("points an adb hang at the binary, since `adb version` never reaches the server", () => {
     const checks = platformChecks(
       hostDeps({
         platform: "linux",
@@ -462,11 +462,51 @@ describe("platformChecks for a toolchain that is there but fails", () => {
       }),
       "r"
     );
-    expect(checks.find((c) => c.label.startsWith("Android"))).toMatchObject({
+    const android = checks.find((c) => c.label.startsWith("Android"));
+    expect(android).toMatchObject({
       status: "error",
-      fix: expect.stringMatching(/adb kill-server/),
+      label: "Android: adb does not answer",
+      fix: expect.stringMatching(/^Check what \/sdk\/adb runs/),
     });
+    expect(android?.fix).not.toMatch(/kill-server|Reinstall/);
     expect(banner(checks)).toBe(false);
+  });
+
+  it("asks for a writable home when adb can't create its .android dir", () => {
+    const runError = "adb_utils.cpp:315 Cannot mkdir '/ro/home/.android': Permission denied";
+    const android = platformChecks(
+      hostDeps({ deps: deps({ path: "/sdk/adb", runError }) }),
+      "r"
+    ).find((c) => c.label.startsWith("Android"));
+    expect(android?.fix).toBe(
+      "Make /ro/home writable so adb can create .android (it keeps its keys there)"
+    );
+  });
+
+  it("warns when the emulator runs but has no AVD to boot", () => {
+    const linux = (androidAvds?: number) =>
+      platformChecks(
+        hostDeps({
+          platform: "linux",
+          signing: null,
+          xcode: null,
+          deps: [
+            { dep: "xcrun", path: null, hint: "x" },
+            { dep: "adb", path: "/sdk/adb", hint: "install adb" },
+            { dep: "emulator", path: "/sdk/emulator", hint: "install emulator" },
+            { dep: "vega", path: null, hint: "install vega" },
+          ],
+          ...(androidAvds === undefined ? {} : { androidAvds }),
+        }),
+        "r"
+      ).find((c) => c.label.startsWith("Android emulator"));
+    expect(linux(0)).toMatchObject({
+      status: "warn",
+      label: "Android emulator: no AVDs to boot",
+      fix: expect.stringMatching(/avdmanager create avd/),
+    });
+    expect(linux(2)).toBeUndefined();
+    expect(linux()).toBeUndefined();
   });
 
   it("counts a working adb as a platform, and reports the emulator binary", () => {
@@ -749,6 +789,50 @@ console.log(JSON.stringify({
       "r"
     );
     expect(bun.checks[1]?.fix).toBe("Reinstall argent: bun install --force");
+  });
+
+  it("falls back to its own check when the project's copy predates --check-deps", async () => {
+    const pkg = path.join(dir, "node_modules", "@swmansion", "argent");
+    fs.mkdirSync(path.join(pkg, "dist"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pkg, "package.json"),
+      JSON.stringify({ name: "@swmansion/argent", version: "0.30.1" })
+    );
+    fs.writeFileSync(
+      path.join(pkg, "dist", "tool-server.cjs"),
+      'console.error("Unknown command: " + process.argv[2]); process.exit(1);'
+    );
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ devDependencies: { "@swmansion/argent": "0.30.1" } })
+    );
+    vi.stubEnv("ARGENT_TEST_ADB", "/sdk/adb");
+    const section = await platformsSection(
+      { ...ctx(), mode: "local" },
+      { ...fakeBundle(), installKind: "global" },
+      noLink,
+      "r"
+    );
+    expect(section.checks[0]).toMatchObject({
+      status: "info",
+      label: expect.stringMatching(/project's local argent predates this check/),
+    });
+    expect(section.checks.find((c) => c.label === "Android")?.status).toBe("ok");
+    expect(section.checks.some((c) => c.status === "error")).toBe(false);
+  });
+
+  it("names the stop command of the copy whose server the note is about", async () => {
+    vi.stubEnv("ANDROID_HOME", "/sdk");
+    vi.stubEnv("ARGENT_TEST_ADB", "/sdk/platform-tools/adb");
+    const section = await platformsSection(
+      ctx(),
+      { ...fakeBundle(), installKind: "local" },
+      noLink,
+      "r"
+    );
+    expect(section.checks.find((c) => c.label === "Android")?.detail).toMatch(
+      /\(npx argent server stop\)/
+    );
   });
 });
 

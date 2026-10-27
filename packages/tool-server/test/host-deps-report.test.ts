@@ -73,7 +73,7 @@ vi.mock("node:child_process", () => ({
   ) => {
     runs.calls.push({ cmd, args, opts });
     const key = args[1] === "--set" ? `${cmd} --set ${args[2]}` : cmd;
-    const run = runs.results[key] ?? { stdout: "" };
+    const run = runs.results[`${cmd} ${args.join(" ")}`] ?? runs.results[key] ?? { stdout: "" };
     if (run.fail || run.killed) {
       const err = Object.assign(new Error(`Command failed: ${cmd}`), {
         stderr: run.stderr ?? "",
@@ -277,12 +277,30 @@ describe("collectHostDepsReport", () => {
     expect(ranCommands()).not.toContain("xcrun");
   });
 
-  it("runs only the version flags of adb and the emulator, with a timeout", async () => {
+  it("runs only flags of adb and the emulator that touch no daemon, with a timeout", async () => {
     await reportOn("linux");
-    expect(runs.calls.map((c) => [c.cmd, c.args, c.opts.timeout])).toEqual([
-      ["/sdk/adb", ["version"], 10_000],
-      ["/sdk/emulator", ["-version"], 10_000],
-    ]);
+    const calls = runs.calls.map((c) => [c.cmd, c.args, c.opts.timeout]);
+    expect(calls).toHaveLength(3);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        ["/sdk/adb", ["version"], 10_000],
+        ["/sdk/emulator", ["-version"], 10_000],
+        ["/sdk/emulator", ["-list-avds"], 10_000],
+      ])
+    );
+  });
+
+  it("counts the AVDs the emulator lists, without its diagnostic lines", async () => {
+    runs.results["/sdk/emulator -list-avds"] = {
+      stdout: "INFO    | Storing crashdata in: /tmp/x\nPixel_9_API_35\nmedium_phone\n",
+    };
+    expect((await reportOn("linux")).androidAvds).toBe(2);
+    runs.results["/sdk/emulator -list-avds"] = { stdout: "" };
+    expect((await reportOn("linux")).androidAvds).toBe(0);
+    runs.results["/sdk/emulator -list-avds"] = { fail: true, stderr: "boom\n" };
+    expect((await reportOn("linux")).androidAvds).toBeUndefined();
+    runs.results["/sdk/emulator"] = { fail: true, stderr: "bad CPU type in executable\n" };
+    expect((await reportOn("linux")).androidAvds).toBeUndefined();
   });
 
   it("kills a timed-out simctl with SIGKILL, which a wedged CoreSimulatorService can't ignore", async () => {

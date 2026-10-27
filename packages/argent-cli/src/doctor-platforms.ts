@@ -20,6 +20,7 @@ import {
   samePath,
 } from "./doctor-shared.js";
 import { localReinstallCommand } from "./doctor-install.js";
+import { stopCommand } from "./doctor-tool-server.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -42,12 +43,14 @@ interface HostDepsReport {
   } | null;
   chromiumPorts?: number[];
   kvmProblem?: string | null;
+  /** AVDs `emulator -list-avds` names, when the emulator runs. */
+  androidAvds?: number;
 }
 
 const DEPS_PROBE_TIMEOUT_MS = 30_000;
 
-const RESTART_NOTE =
-  "a running tool-server keeps the environment it started with, so stop it (argent server stop) after changing the variable";
+const restartNote = (stopCmd: string) =>
+  `a running tool-server keeps the environment it started with, so stop it (${stopCmd} server stop) after changing the variable`;
 
 export async function probeHostDeps(
   paths: ToolsServerPaths,
@@ -111,13 +114,24 @@ function androidRootFromEnv(adbPath: string): string | null {
   return null;
 }
 
+function adbFailureFix(runError: string): string {
+  const dir = /Cannot mkdir '([^']+)'/.exec(runError)?.[1];
+  return dir
+    ? `Make ${home(path.dirname(dir))} writable so adb can create ${path.basename(dir)} (it keeps its keys there)`
+    : "Reinstall Android SDK platform-tools for this machine's architecture";
+}
+
 function kvmFix(problem: string): string {
   return /missing/.test(problem)
     ? "Enable virtualization (VT-x/AMD-V) and load the kvm module (modprobe kvm_intel or kvm_amd)"
     : "sudo usermod -aG kvm $USER, then log in again";
 }
 
-export function platformChecks(report: HostDepsReport, reinstall: string): DoctorCheck[] {
+export function platformChecks(
+  report: HostDepsReport,
+  reinstall: string,
+  stopCmd = "argent"
+): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
   const dep = (name: string) => report.deps.find((d) => d.dep === name);
   const brokenBundle = report.bundled.filter((b) => b.error);
@@ -233,10 +247,11 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
   // Android device tools drive the emulator through simulator-server too.
   if (adb?.path && adb.runError && isHang(adb.runError)) {
     present++;
+    // `adb version` never contacts the adb server, so kill-server can't help.
     checks.push(
       check("error", "Android: adb does not answer", {
         detail: `${home(adb.path)}: ${adb.runError}`,
-        fix: "Run adb kill-server, then doctor again",
+        fix: `Check what ${home(adb.path)} runs: it hangs before reaching the adb server (a wrapper script or a stalled binary)`,
       })
     );
   } else if (adb?.path && adb.runError) {
@@ -244,7 +259,7 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
     checks.push(
       check("error", "Android: adb fails to run", {
         detail: `${home(adb.path)}: ${adb.runError}`,
-        fix: "Reinstall Android SDK platform-tools for this machine's architecture",
+        fix: adbFailureFix(adb.runError),
       })
     );
   } else if (adb?.path && !bundleOk(["simulator-server"])) {
@@ -255,7 +270,7 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
     checks.push(
       check("ok", "Android", {
         detail: envName
-          ? `adb at ${home(adb.path)}, found through ${envName} in this shell; ${RESTART_NOTE}`
+          ? `adb at ${home(adb.path)}, found through ${envName} in this shell; ${restartNote(stopCmd)}`
           : `adb at ${home(adb.path)}`,
       })
     );
@@ -277,6 +292,13 @@ export function platformChecks(report: HostDepsReport, reinstall: string): Docto
         check("warn", "Android emulator: no KVM acceleration (boots slowly or not at all)", {
           detail: report.kvmProblem,
           fix: kvmFix(report.kvmProblem),
+        })
+      );
+    } else if (report.androidAvds === 0) {
+      checks.push(
+        check("warn", "Android emulator: no AVDs to boot", {
+          detail: `${home(emulator.path)} -list-avds names none`,
+          fix: "Create one in Android Studio's Device Manager, or with avdmanager create avd",
         })
       );
     }
@@ -402,14 +424,28 @@ export async function platformsSection(
         ctx.installCmd
       )}`
     : reinstall;
-  const source = local
+  let source = local
     ? [
         check("info", "Checked the project's local argent, which its editor entries start", {
           detail: home(local.packageDir),
         }),
       ]
     : [];
-  const report = await probeHostDeps(checked);
+  let report = await probeHostDeps(checked);
+  let reinstallShown = reinstallChecked;
+  if (local && typeof report === "string" && predatesCheckDeps(report)) {
+    source = [
+      check(
+        "info",
+        "The project's local argent predates this check, so the argent running doctor ran it",
+        {
+          detail: `${home(local.packageDir)}: ${report}`,
+        }
+      ),
+    ];
+    report = await probeHostDeps(paths);
+    reinstallShown = reinstall;
+  }
   if (typeof report === "string") {
     return {
       title: "Platforms",
@@ -417,14 +453,24 @@ export async function platformsSection(
         ...source,
         check("error", "Could not run the bundled tool-server's dependency check", {
           detail: report,
-          fix: depsProbeFix(report, reinstallChecked),
+          fix: depsProbeFix(report, reinstallShown),
         }),
       ],
     };
   }
+  const stopCmd = stopCommand(ctx, checked);
   const sdkRoot = sdkRootCheck(ctx.cwd, ctx.argentCmd);
   return {
     title: "Platforms",
-    checks: [...source, ...platformChecks(report, reinstallChecked), ...(sdkRoot ? [sdkRoot] : [])],
+    checks: [
+      ...source,
+      ...platformChecks(report, reinstallShown, stopCmd),
+      ...(sdkRoot ? [sdkRoot] : []),
+    ],
   };
+}
+
+/** A tool-server from before `--check-deps` rejects the flag as a command. */
+function predatesCheckDeps(failure: string): boolean {
+  return failure.includes("Unknown command: --check-deps");
 }

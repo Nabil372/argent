@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { promisify } from "node:util";
 import { INSTALL_HINTS } from "./check-deps";
 import { resolveAndroidBinary } from "./android-binary";
+import { AVD_NAME_PATTERN } from "./adb";
 import { resolveVegaBinary } from "./vega-cli";
 import { commandOnPath } from "./command-on-path";
 import { getCandidateChromiumPorts } from "./chromium-discovery";
@@ -57,6 +58,8 @@ interface HostDepsReport {
   chromiumPorts: number[];
   /** Linux: why the emulator can't use KVM (boot-device's own preflight). Null when it can, or off Linux. */
   kvmProblem: string | null;
+  /** AVDs `emulator -list-avds` names. Absent when the emulator is missing or fails. */
+  androidAvds?: number;
 }
 
 const execFileAsync = promisify(execFile);
@@ -243,6 +246,16 @@ async function probeDep(dep: ToolDependency): Promise<HostDepsReport["deps"][num
   };
 }
 
+async function countAvds(emulator: HostDepsReport["deps"][number]): Promise<number | undefined> {
+  if (!emulator.path || emulator.runError) return undefined;
+  const result = await runProbe(emulator.path, ["-list-avds"]);
+  if ("error" in result) return undefined;
+  return result.stdout
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => AVD_NAME_PATTERN.test(l)).length;
+}
+
 export async function collectHostDepsReport(): Promise<HostDepsReport> {
   const isMac = process.platform === "darwin";
   const bundled = [bundledArtifact("simulator-server", simulatorServerBinaryPath, true)];
@@ -255,10 +268,12 @@ export async function collectHostDepsReport(): Promise<HostDepsReport> {
   }
   bundled.push(bundledArtifact("android helper apk", bundledHelperApkPath));
 
-  const [deps, xcode, signing] = await Promise.all([
-    Promise.all(REPORTED_DEPS.map(probeDep)),
+  const emulator = probeDep("emulator");
+  const [deps, xcode, signing, androidAvds] = await Promise.all([
+    Promise.all(REPORTED_DEPS.map((dep) => (dep === "emulator" ? emulator : probeDep(dep)))),
     isMac ? probeMacXcode() : null,
     isMac ? probeSigning() : null,
+    emulator.then(countAvds),
   ]);
 
   return {
@@ -269,5 +284,6 @@ export async function collectHostDepsReport(): Promise<HostDepsReport> {
     xcode,
     chromiumPorts: getCandidateChromiumPorts(),
     kvmProblem: linuxBootDiagnostics()?.[0] ?? null,
+    androidAvds,
   };
 }
