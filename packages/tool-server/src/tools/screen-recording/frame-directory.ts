@@ -21,7 +21,11 @@ export async function cleanupAbandonedFrames(): Promise<void> {
       const stat = await fs.stat(directory).catch(() => null);
       if (!stat || Date.now() - stat.mtimeMs < 24 * 60 * 60 * 1_000) continue;
     }
-    await fs.rm(directory, { recursive: true, force: true });
+    await fs.rm(directory, { recursive: true, force: true }).catch((err: unknown) => {
+      process.stderr.write(
+        `[screen-recording] Could not remove abandoned JPEGs at ${directory}: ${String(err)}\n`
+      );
+    });
   }
 }
 

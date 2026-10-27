@@ -46,3 +46,24 @@ it("reaps only old directories from recordings without an owner", async () => {
   await expect(fs.access(old)).rejects.toThrow();
   await expect(fs.access(recent)).resolves.toBeUndefined();
 });
+
+it("reports an undeletable spool and still cleans the next one and creates a new capture", async () => {
+  const blocked = path.join(root, "argent-recording-frames-123-blocked");
+  const removable = path.join(root, "argent-recording-frames-124-removable");
+  await fs.mkdir(blocked);
+  await fs.mkdir(removable);
+  vi.spyOn(process, "kill").mockImplementation(() => {
+    throw Object.assign(new Error("gone"), { code: "ESRCH" });
+  });
+  const remove = fs.rm.bind(fs);
+  vi.spyOn(fs, "rm").mockImplementation(async (file, options) => {
+    if (file === blocked) throw Object.assign(new Error("permission denied"), { code: "EPERM" });
+    return remove(file, options);
+  });
+  const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  const created = await createFrameDirectory();
+  await expect(fs.access(created)).resolves.toBeUndefined();
+  await expect(fs.access(blocked)).resolves.toBeUndefined();
+  await expect(fs.access(removable)).rejects.toThrow();
+  expect(stderr).toHaveBeenCalledWith(expect.stringContaining("permission denied"));
+});
