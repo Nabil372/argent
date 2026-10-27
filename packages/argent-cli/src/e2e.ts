@@ -150,14 +150,16 @@ a running instance.
 
 A directory run prints only the steps that need attention (each failure, each
 warning, and each script step's output), then its outcome. After the last test
-it lists every failed test: its reason, its expected/actual/indeterminate/hint
-lines, its "at <path>:<line>" location with the lines around it, and a command
-that re-runs that test alone. Then it prints a final summary. --recursive walks
-subdirectories too (dot-directories and node_modules are skipped). A test that
-fails its steps keeps the batch running, as does one the server rejects up
-front — an invalid file, or a device it cannot resolve. A transport failure, a
-rejection the server does not mark as validation, or a reply that is not a
-report stops the batch and counts the remaining tests skipped.
+it lists every failed test with:
+  - its reason and its expected/actual/indeterminate/hint lines
+  - its "at <path>:<line>" location and the lines around it
+  - a command that re-runs that test alone
+Then it prints a final summary. --recursive walks subdirectories too
+(dot-directories and node_modules are skipped). A test that fails its steps
+keeps the batch running, as does one the server rejects up front — an invalid
+file, or a device it cannot resolve. A transport failure, a rejection the server
+does not mark as validation, or a reply that is not a report stops the batch and
+counts the remaining tests skipped.
 
 The CLI sends a run to its tool-server: the local one that starts
 automatically, or the one that \`argent link\` or ARGENT_TOOLS_URL names. Over
