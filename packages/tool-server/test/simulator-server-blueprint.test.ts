@@ -121,6 +121,40 @@ function androidDevice(serial: string): DeviceInfo {
   return { id: serial, platform: "android", kind: "emulator" };
 }
 
+async function startAdbFallback(serial: string, port: number, discoveryStderr?: string) {
+  const grpcLess = makeFakeProc();
+  const fallback = makeFakeProc();
+  spawnMock.mockReturnValueOnce(grpcLess).mockReturnValueOnce(fallback);
+  const { simulatorServerBlueprint } = await import("../src/blueprints/simulator-server");
+  const device = androidDevice(serial);
+  const factoryPromise = simulatorServerBlueprint.factory({}, device, { device });
+  setImmediate(() => {
+    grpcLess.stderr.push(
+      discoveryStderr ?? `Error: emulator "${serial}" not found among running emulators\n`
+    );
+    setTimeout(() => {
+      grpcLess.emit("exit", 1);
+      signalReady(fallback, port);
+    }, 20);
+  });
+  return { fallback, factoryPromise };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+function trackSettled(promise: Promise<unknown>) {
+  const state = { settled: false };
+  promise.then(
+    () => (state.settled = true),
+    () => (state.settled = true)
+  );
+  return state;
+}
+
 describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInfo", () => {
   beforeEach(async () => {
     spawnMock.mockReset();
@@ -291,6 +325,84 @@ describe("simulatorServerBlueprint.factory — receives a pre-resolved DeviceInf
     await instance.dispose();
     expect(fallback.kill).toHaveBeenCalled();
     expect(restoreAutoRotateMock).toHaveBeenCalledWith(serial, "1");
+  });
+
+  it("falls back when a Rust backtrace follows the discovery error", async () => {
+    const serial = "emulator-5578";
+    const frames = Array.from({ length: 10 }, (_, i) => `   ${i}: __mh_execute_header\n`).join("");
+    const { factoryPromise } = await startAdbFallback(
+      serial,
+      55578,
+      `Error: emulator "${serial}" not found among running emulators\n\nStack backtrace:\n${frames}`
+    );
+    const instance = await factoryPromise;
+
+    expect(spawnMock.mock.calls[1]![1]).toEqual(["android_device", "--id", serial]);
+    expect(instance.api.singleTouchOnly).toBe(true);
+  });
+
+  it("hands out the fallback only after its first frame and then closes the stream", async () => {
+    const frame = deferred();
+    const close = vi.fn();
+    openMjpegStreamMock.mockImplementationOnce(async () => ({
+      waitForFirstFrame: () => frame.promise.then(() => Buffer.alloc(0)),
+      close,
+    }));
+
+    const { factoryPromise } = await startAdbFallback("emulator-5580", 55580);
+    const state = trackSettled(factoryPromise);
+    await vi.waitFor(() =>
+      expect(openMjpegStreamMock).toHaveBeenCalledWith("http://127.0.0.1:55581")
+    );
+    await new Promise((r) => setTimeout(r, 20));
+    expect(state.settled).toBe(false);
+    expect(close).not.toHaveBeenCalled();
+
+    frame.resolve();
+    await factoryPromise;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the fallback anyway when the first frame times out", async () => {
+    const close = vi.fn();
+    openMjpegStreamMock.mockImplementationOnce(async () => ({
+      waitForFirstFrame: () => Promise.reject(new Error("no frame within 5000 ms")),
+      close,
+    }));
+
+    const { factoryPromise } = await startAdbFallback("emulator-5582", 55582);
+    const instance = await factoryPromise;
+
+    expect(instance.api.singleTouchOnly).toBe(true);
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts the fallback anyway when the stream cannot be opened", async () => {
+    openMjpegStreamMock.mockImplementationOnce(() => Promise.reject(new Error("ECONNREFUSED")));
+
+    const { factoryPromise } = await startAdbFallback("emulator-5584", 55584);
+    const instance = await factoryPromise;
+
+    expect(instance.api.singleTouchOnly).toBe(true);
+  });
+
+  it("fails the start when the fallback exits during the first-frame wait", async () => {
+    const frame = deferred();
+    openMjpegStreamMock.mockImplementationOnce(async () => ({
+      waitForFirstFrame: () => frame.promise.then(() => Buffer.alloc(0)),
+      close: vi.fn(),
+    }));
+
+    const { fallback, factoryPromise } = await startAdbFallback("emulator-5586", 55586);
+    await vi.waitFor(() =>
+      expect(openMjpegStreamMock).toHaveBeenCalledWith("http://127.0.0.1:55587")
+    );
+    fallback.emit("exit", 1);
+    frame.resolve();
+
+    const error = (await factoryPromise.catch((e: unknown) => e)) as Error;
+    expect(error.message).toContain("exited with code 1 before its first frame");
+    expect(getFailureSignal(error)).toMatchObject({ error_code: "SIMULATOR_SERVER_TERMINATED" });
   });
 
   it("leaves an emulator found through gRPC discovery multi-touch and untouched", async () => {

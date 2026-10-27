@@ -77,6 +77,10 @@ const STDERR_MAX_LINE_CHARS = 500;
 // about why the binary stopped; its errors are printed without that prefix.
 const ROUTINE_LOG_LINE = /^\[\S+\s+(?:INFO|DEBUG|TRACE)\s/;
 
+// With RUST_BACKTRACE set, the error line is followed by enough frames to push
+// it out of the tail, and the frames themselves name nothing useful.
+const BACKTRACE_START = /^\s*stack backtrace:/i;
+
 function exitedBeforeReadyMessage(
   code: number | null,
   signal: NodeJS.Signals | null,
@@ -346,12 +350,26 @@ async function waitForFirstFrame(streamUrl: string): Promise<void> {
 
 type SpawnedServer = Awaited<ReturnType<typeof spawnSimulatorServerProcess>>;
 
-async function spawnWithEmulatorFallback(
-  device: DeviceInfo
-): Promise<SpawnedServer & { adbFallback: boolean }> {
+type StartedServer = SpawnedServer & {
+  adbFallback: boolean;
+  /** The auto-rotate setting to put back on dispose (adb fallback only). */
+  autoRotate: string | null;
+};
+
+function trackExit(proc: ChildProcess): { exited: boolean; code: number | null } {
+  const state = { exited: false, code: null as number | null };
+  proc.once("exit", (code) => {
+    state.exited = true;
+    state.code = code;
+  });
+  return state;
+}
+
+async function spawnWithEmulatorFallback(device: DeviceInfo): Promise<StartedServer> {
   const subcommand = subcommandForDevice(device);
   try {
-    return { ...(await spawnSimulatorServerProcess(device.id, subcommand)), adbFallback: false };
+    const server = await spawnSimulatorServerProcess(device.id, subcommand);
+    return { ...server, adbFallback: false, autoRotate: null };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (subcommand !== "android" || !EMULATOR_NOT_DISCOVERED.test(message)) throw err;
@@ -359,23 +377,44 @@ async function spawnWithEmulatorFallback(
       `[sim ${device.id}] emulator not found through gRPC discovery; ` +
         `falling back to the adb screen-sharing controller\n`
     );
-    await removeScreenSharingReverses(device.id).catch(() => {});
-    try {
-      const server = await spawnSimulatorServerProcess(device.id, "android_device");
-      await waitForFirstFrame(server.streamUrl);
-      return { ...server, adbFallback: true };
-    } catch (fallbackErr) {
-      // "Failed to find any running emulator" also means no emulator is up at
-      // all; then the fallback fails too, and the emulator controller's error
-      // (and its failure signal) is the one that explains it.
-      const fallbackMessage =
-        fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
-      process.stderr.write(
-        `[sim ${device.id}] adb screen-sharing fallback failed too: ${fallbackMessage}\n`
-      );
-      throw err;
-    }
+    return spawnAdbFallback(device.id, err);
   }
+}
+
+async function spawnAdbFallback(serial: string, discoveryErr: unknown): Promise<StartedServer> {
+  await removeScreenSharingReverses(serial).catch(() => {});
+  let server: SpawnedServer;
+  try {
+    server = await spawnSimulatorServerProcess(serial, "android_device");
+  } catch (fallbackErr) {
+    // "Failed to find any running emulator" also means no emulator is up at
+    // all; then the fallback fails too, and the emulator controller's error
+    // (and its failure signal) is the one that explains it.
+    const fallbackMessage =
+      fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr);
+    process.stderr.write(
+      `[sim ${serial}] adb screen-sharing fallback failed too: ${fallbackMessage}\n`
+    );
+    throw discoveryErr;
+  }
+
+  // The registry only listens for `terminated` once the factory resolves, so an
+  // exit during these waits has to fail the start instead.
+  const exit = trackExit(server.proc);
+  await waitForFirstFrame(server.streamUrl);
+  const autoRotate = await readAutoRotate(serial).catch(() => null);
+  if (exit.exited) {
+    throw new FailureError(
+      `simulator-server exited with code ${exit.code} before its first frame`,
+      {
+        error_code: FAILURE_CODES.SIMULATOR_SERVER_TERMINATED,
+        failure_stage: "simulator_server_process_exit",
+        failure_area: "tool_server",
+        error_kind: "subprocess",
+      }
+    );
+  }
+  return { ...server, adbFallback: true, autoRotate };
 }
 
 async function spawnSimulatorServerProcess(
@@ -465,8 +504,10 @@ async function spawnSimulatorServerProcess(
     let partialLine = "";
     // Routine lines are dropped here, not when the message is built, so a burst
     // of shutdown logging cannot push the error out of the tail.
+    let inBacktrace = false;
     const keepLine = (line: string) => {
-      if (!line.trim() || ROUTINE_LOG_LINE.test(line)) return;
+      if (BACKTRACE_START.test(line)) inBacktrace = true;
+      if (inBacktrace || !line.trim() || ROUTINE_LOG_LINE.test(line)) return;
       stderrTail.push(line.trimEnd().slice(0, STDERR_MAX_LINE_CHARS));
       stderrTail.splice(0, Math.max(0, stderrTail.length - STDERR_TAIL_LINES));
     };
@@ -647,8 +688,8 @@ export const simulatorServerBlueprint: ServiceBlueprint<SimulatorServerApi, Devi
       );
     }
 
-    const { proc, apiUrl, streamUrl, adbFallback } = await spawnWithEmulatorFallback(device);
-    const autoRotate = adbFallback ? await readAutoRotate(device.id).catch(() => null) : null;
+    const { proc, apiUrl, streamUrl, adbFallback, autoRotate } =
+      await spawnWithEmulatorFallback(device);
 
     const events = new TypedEventEmitter<ServiceEvents>();
 

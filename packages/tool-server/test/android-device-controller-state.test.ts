@@ -57,6 +57,8 @@ describe("auto-rotate", () => {
 
     adbShellMock.mockReset().mockResolvedValueOnce("1\n");
     await restoreAutoRotate("emulator-5554", "1");
-    expect(adbShellMock).toHaveBeenCalledTimes(1);
+    expect(adbShellMock.mock.calls).toEqual([
+      ["emulator-5554", "settings get system accelerometer_rotation"],
+    ]);
   });
 });
