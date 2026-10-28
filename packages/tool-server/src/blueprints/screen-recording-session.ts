@@ -261,10 +261,13 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
         // Decided BEFORE the teardown below clears the flags it reads: a
         // capture still encoding, a start mid-flight and one waiting to be
         // handed over all owe the caller a video.
-        const hadUnretrievedCapture =
-          !state.stopping &&
-          (state.recordingActive || state.startPending || state.pendingRetrieval);
-        const abandonedOutput = state.outputFile;
+        const hadCapture =
+          state.recordingActive ||
+          state.startPending ||
+          state.pendingRetrieval ||
+          state.stopping !== null ||
+          state.finishedRecording !== null;
+        const abandonedOutput = state.outputFile ?? state.finishedRecording?.outputFile;
         await state.stopping?.catch(() => {});
         if (state.recordingTimeout) {
           clearTimeout(state.recordingTimeout);
@@ -314,6 +317,7 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
             state.logoFile = null;
           }
           await state.debugCapture?.cleanup().catch(() => {});
+          const stopResult = state.finishedRecording?.result;
           clearLiveState(state);
           // The reminder must not outlive the capture it points at.
           clearActiveScreenRecording(state.deviceId);
@@ -321,7 +325,7 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
           // the teardown instead of "you never started a recording": the next
           // resolve builds a session that has never heard of this capture, and
           // nothing else would say the salvaged file exists.
-          if (hadUnretrievedCapture) {
+          if (hadCapture) {
             const outputExists = abandonedOutput
               ? await fs.stat(abandonedOutput).then(
                   async (stat) => {
@@ -337,7 +341,9 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
               state.deviceId,
               outputExists
                 ? `The recording output is at ${abandonedOutput}. Check that it plays before re-recording.`
-                : "No recording output was saved."
+                : stopResult instanceof Error
+                  ? stopResult.message
+                  : "No recording output was saved."
             );
           }
         }

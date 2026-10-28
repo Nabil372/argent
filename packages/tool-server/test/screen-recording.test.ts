@@ -1947,7 +1947,7 @@ describe("debug finalization safeguards", () => {
     { capped: false, mode: "debug" },
     { capped: true, mode: "debug" },
   ] as const)(
-    "waits for a concurrent $mode stop without a teardown breadcrumb (capped: $capped)",
+    "waits for a concurrent $mode stop and preserves its teardown path (capped: $capped)",
     async ({ capped, mode }) => {
       const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
         device: iosDevice,
@@ -1956,7 +1956,8 @@ describe("debug finalization safeguards", () => {
       const child = fakeChild();
       await startAndSettle(instance.api, { mode, timeLimitSeconds: 5 });
       if (capped) await vi.advanceTimersByTimeAsync(5_000);
-      await fs.writeFile(instance.api.outputFile!, Buffer.alloc(64, 1));
+      const outputFile = instance.api.outputFile!;
+      await fs.writeFile(outputFile, Buffer.alloc(64, 1));
       const stopping = stopCapture(instance.api);
       await instance.api.debugCapture?.finish();
       let disposed = false;
@@ -1970,9 +1971,36 @@ describe("debug finalization safeguards", () => {
       child.exit(0);
       expect((await stopping).encodingComplete).toBe(mode === "debug" ? true : undefined);
       await disposing;
-      const err = await stopCapture(await makeSession(iosDevice)).catch((error: unknown) => error);
+      const err = await stopCapture(await makeSession(iosDevice), outputFile).catch(
+        (error: unknown) => error
+      );
       expect(getFailureSignal(err)?.error_code).toBe(
-        FAILURE_CODES.SCREEN_RECORDING_NO_ACTIVE_SESSION
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+      expect((err as Error).message).toContain(outputFile);
+    }
+  );
+
+  it.each([true, false])(
+    "preserves diagnostics when teardown follows a completed stop (saved: %s)",
+    async (saved) => {
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      fakeChild().exitOnStdinEnd(saved ? 0 : 1);
+      await startAndSettle(instance.api, { mode: "debug" });
+      const outputFile = instance.api.outputFile!;
+      if (saved) await fs.writeFile(outputFile, Buffer.alloc(64, 1));
+      await stopCapture(instance.api).catch(() => {});
+      await instance.dispose();
+      const error = await stopCapture(await makeSession(iosDevice), outputFile).catch(
+        (err: Error) => err
+      );
+      expect((error as Error).message).toContain(outputFile);
+      if (!saved) expect((error as Error).message).toContain("Debug encoder exited");
+      expect(getFailureSignal(error)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
       );
     }
   );
