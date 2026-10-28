@@ -347,12 +347,12 @@ describe("the document a bash step returns", () => {
     const nested = (depth: number) => `${'{"a":'.repeat(depth)}1${"}".repeat(depth)}`;
     const copy = (file: string) =>
       `cp ${JSON.stringify(file)} "$ARGENT_OUTPUT.n"\nmv "$ARGENT_OUTPUT.n" "$ARGENT_OUTPUT"`;
-    const deep = await runBash(ws, "deep", copy(ws.write("deep.json", nested(1_025))));
-    const ok = await runBash(ws, "deep-ok", copy(ws.write("ok.json", nested(1_024))));
+    const deep = await runBash(ws, "deep", copy(ws.write("deep.json", nested(257))));
+    const ok = await runBash(ws, "deep-ok", copy(ws.write("ok.json", nested(256))));
 
     expect(deep.failure?.kind).toBe("output");
     expect(deep.failure?.message).toContain("nests deeper than");
-    // Not the 1025-segment path.
+    // Not the 257-segment path.
     expect(deep.failure!.message.length).toBeLessThan(200);
     expect(ok.failure).toBeUndefined();
   }, 30_000);
