@@ -156,7 +156,7 @@ describe("forward-secrets", () => {
     } else {
       await expect(call).rejects.toThrow(
         `forward-secrets sends secret values only over https:// or to a loopback address, and ${target} ` +
-          "is plain HTTP to another machine, so the call was not sent (it names APP_PASSWORD)."
+          "is neither, so the call was not sent (it names APP_PASSWORD)."
       );
       expect(posted).toHaveLength(0);
       // A call naming no secret this machine holds still goes.
@@ -165,7 +165,8 @@ describe("forward-secrets", () => {
     }
   });
 
-  it("says a 431 refused the forwarded header", async () => {
+  /** Answers every call with `status`, `headers` and `body`; the listing as usual. */
+  function answerCalls(status: number, headers: Record<string, string>, body = ""): void {
     server.removeAllListeners("request");
     server.on("request", (req: IncomingMessage, res) => {
       if (req.url === "/tools") {
@@ -175,15 +176,58 @@ describe("forward-secrets", () => {
         );
         return;
       }
-      res.writeHead(431);
-      res.end();
+      sent.push({ url: req.url ?? "", secrets: req.headers["x-argent-client-secrets"] as string });
+      res.writeHead(status, headers);
+      res.end(body);
     });
+  }
 
+  it.each([
+    [431, {}, ""],
+    [400, { "Content-Type": "text/html" }, "<html>400 Request Header Or Cookie Too Large</html>"],
+  ])(
+    "says a %i that carries no error body refused the forwarded header",
+    async (status, headers, body) => {
+      answerCalls(status, headers, body);
+      await expect(
+        client().callTool("keyboard", { text: "{{secret:APP_PASSWORD}}" })
+      ).rejects.toThrow(
+        `refused the request headers (${status}), as it does when they are too large. ` +
+          "The x-argent-client-secrets header carried APP_PASSWORD;"
+      );
+    }
+  );
+
+  it("keeps the tool-server's own 400 error", async () => {
+    answerCalls(400, { "Content-Type": "application/json" }, JSON.stringify({ error: "bad udid" }));
     await expect(
       client().callTool("keyboard", { text: "{{secret:APP_PASSWORD}}" })
-    ).rejects.toThrow(
-      "refused the request headers as too large (431). The x-argent-client-secrets header carried APP_PASSWORD;"
-    );
+    ).rejects.toThrow(/^bad udid$/);
+  });
+
+  it("does not follow a redirect with the secrets", async () => {
+    const elsewhere: string[] = [];
+    const sink = createServer((req, res) => {
+      elsewhere.push(String(req.headers["x-argent-client-secrets"]));
+      res.end("{}");
+    });
+    await new Promise<void>((resolve) => sink.listen(0, "127.0.0.1", resolve));
+    answerCalls(307, { Location: `http://127.0.0.1:${(sink.address() as AddressInfo).port}/x` });
+    try {
+      await expect(
+        client().callTool("keyboard", { text: "{{secret:APP_PASSWORD}}" })
+      ).rejects.toThrow(
+        "The tool-server answered 307 Temporary Redirect to keyboard. forward-secrets"
+      );
+      expect(elsewhere).toEqual([]);
+    } finally {
+      sink.close();
+    }
+  });
+
+  it("does not forward to a URL that does not parse", async () => {
+    const { forwardsSecretsTo } = await import("../src/tools-client.js");
+    expect(forwardsSecretsTo("127.0.0.1:3001")).toBe(false);
   });
 
   it("reads the names in a flow file and in a fragment sent through POST /upload", async () => {

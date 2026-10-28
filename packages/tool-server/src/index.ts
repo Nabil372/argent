@@ -1,4 +1,3 @@
-import { createServer } from "node:http";
 import * as path from "node:path";
 import { homedir } from "node:os";
 import { isFlagEnabled } from "@argent/configuration-core";
@@ -402,10 +401,7 @@ export function start(): void {
   // warm-up has settled (so the accept path never pays for it).
   Promise.all([watcherReady, identityWarm])
     .then(() => {
-      // Node's default 16 KiB would refuse a call forwarding a certificate-sized
-      // secret in x-argent-client-secrets with a bare 431.
-      const maxHeaderSize = 256 * 1024;
-      server = createServer({ maxHeaderSize }, httpHandle.app).listen(PORT, HOST, () => {
+      server = httpHandle.app.listen(PORT, HOST, () => {
         // Past this point a crash is a serving-time fault, not a startup fault.
         listening = true;
         const addr = server!.address();

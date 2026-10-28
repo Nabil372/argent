@@ -383,6 +383,7 @@ async function forwardedSecrets(args: unknown): Promise<Map<string, string> | un
  * plain header text, so only over TLS or to this machine.
  */
 export function forwardsSecretsTo(url: string): boolean {
+  if (!URL.canParse(url)) return false;
   const { protocol, hostname } = new URL(url);
   const host = hostname.replace(/^\[|\]$/g, "");
   return protocol === "https:" || ["127.0.0.1", "localhost", "::1"].includes(host);
@@ -523,7 +524,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     if (clientSecrets && !forwardsSecretsTo(url)) {
       throw new Error(
         `forward-secrets sends secret values only over https:// or to a loopback address, and ${url} ` +
-          `is plain HTTP to another machine, so the call was not sent (it names ` +
+          `is neither, so the call was not sent (it names ` +
           `${[...clientSecrets.keys()].join(", ")}). Link the tool-server through an https:// URL, ` +
           `or through an SSH tunnel to a 127.0.0.1 port.`
       );
@@ -548,6 +549,8 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
         },
         body: JSON.stringify(finalArgs ?? {}),
         signal: opts?.signal,
+        // A followed redirect would re-send the values to wherever it points.
+        ...(clientSecrets ? { redirect: "manual" as const } : {}),
       },
       { longRunning: meta?.longRunning === true, carriesUpload: sentOnce }
     ).catch((err: unknown) => {
@@ -604,11 +607,21 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       }
       json = {};
     }
-    if (res.status === 431 && clientSecrets) {
+    if (clientSecrets && res.status >= 300 && res.status < 400) {
       throw new ToolInvocationError(
-        `The tool-server, or a proxy in front of it, refused the request headers as too large (431). ` +
-          `The ${CLIENT_SECRETS_HEADER} header carried ${[...clientSecrets.keys()].join(", ")}; ` +
-          `define a secret this large on the machine running the tool-server instead.`
+        `The tool-server answered ${res.status} ${res.statusText} to ${name}. forward-secrets does not ` +
+          `follow a redirect, so the call was not sent on; link the URL it points to instead.`
+      );
+    }
+    // nginx answers an oversized header with a 400 page, which carries no error body.
+    const headersRefused =
+      res.status === 431 || (res.status === 400 && errorBodyMessage(json) === undefined);
+    if (clientSecrets && headersRefused) {
+      throw new ToolInvocationError(
+        `The tool-server, or a proxy in front of it, refused the request headers (${res.status}), ` +
+          `as it does when they are too large. The ${CLIENT_SECRETS_HEADER} header carried ` +
+          `${[...clientSecrets.keys()].join(", ")}; define a secret this large on the machine ` +
+          `running the tool-server instead.`
       );
     }
     if (!res.ok) {

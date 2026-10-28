@@ -147,6 +147,7 @@ describe("argent secrets", () => {
     [true, "https://192.0.2.10:3001", "A call sends it the value listed above"],
     [true, "http://127.0.0.1:3001", "A call sends it the value listed above"],
     [true, "http://192.0.2.10:3001", "so forward-secrets refuses a call"],
+    [true, "127.0.0.1:3001", "so forward-secrets refuses a call"],
   ])("with forward-secrets %s and a link to %s, says what a call sends", async (on, url, note) => {
     if (on)
       write(path.join(projectDir, ".argent", "flags.json"), '{"flags":{"forward-secrets":true}}');

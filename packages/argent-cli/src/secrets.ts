@@ -118,8 +118,8 @@ async function cmdList(argv: string[]): Promise<void> {
         `machine's own sources resolve the rest.`;
     } else {
       note =
-        `It is reached over plain HTTP, so forward-secrets refuses a call that names a secret ` +
-        `listed above. Link it through an https:// URL or an SSH tunnel to a 127.0.0.1 port.`;
+        `It is reached neither over https:// nor at a loopback address, so forward-secrets refuses ` +
+        `a call that names a secret listed above. Link it through an https:// URL or an SSH tunnel to a 127.0.0.1 port.`;
     }
     console.log(pc.yellow(`\nNote: a remote tool-server is linked (${routed.url}). ${note}`));
   }
