@@ -1,6 +1,12 @@
 import * as path from "node:path";
 
-import { LINKED_CALL_HEADER, describeParamIssues } from "@argent/registry";
+import {
+  E2E_DIR_CLIENT_HEADER,
+  LEGACY_E2E_DIRS,
+  LINKED_CALL_HEADER,
+  canonicalToolId,
+  describeParamIssues,
+} from "@argent/registry";
 import { ensureToolsServer, type ToolsServerHandle, type ToolsServerPaths } from "./launcher.js";
 import { getResolvedToolsUrl } from "./link-config.js";
 import {
@@ -10,7 +16,14 @@ import {
   type FileInputSpec,
   type FileInputWire,
 } from "./file-inputs.js";
-import { collectFlowMembers, collectStepMembers } from "./flow-files.js";
+import {
+  collectFlowMembers,
+  collectStepMembers,
+  e2eShadowWarningFor,
+  filesLogEnabled,
+  nameToE2ePathForOlderServer,
+  stepForOlderServer,
+} from "./flow-files.js";
 import { ToolInvocationError } from "./errors.js";
 
 export interface ToolMeta {
@@ -25,11 +38,16 @@ export interface ToolMeta {
   longRunning?: boolean;
   /** Listed for programmatic callers only; the MCP adapter skips it. */
   hideFromMcp?: boolean;
+  readOnly?: boolean;
+  /** Set on a former id of a tool: the tool's current id. */
+  aliasOf?: string;
 }
 
 export interface ToolInvocationResult {
   data: unknown;
   note?: string;
+  /** Set when a profiler was recording on the call's device as the call completed. */
+  profiling?: boolean;
   /** The `outputHint` of the tool's listing entry, when it has one. */
   outputHint?: string;
 }
@@ -82,7 +100,7 @@ export interface CreateToolsClientOptions {
   ) => Promise<Response>;
   /**
    * Receives each diagnostic line of the client, without a trailing newline:
-   * the `[flow-files]` lines that `ARGENT_FLOW_FILES_LOG=1` turns on, and each
+   * the `[flow-files]` lines that `ARGENT_E2E_FILES_LOG=1` turns on, and each
    * snapshot baseline a run returned that could not be written here.
    * Defaults to writing the line to stderr; `argent flow run --json` turns it
    * into a JSON record, since its stderr carries one JSON object per line.
@@ -125,7 +143,7 @@ async function consumeToolStream(
   onProgress: (event: unknown) => void,
   signal?: AbortSignal
 ): Promise<ToolInvocationResult> {
-  let final: { data?: unknown; note?: string } | undefined;
+  let final: { data?: unknown; note?: string; profiling?: boolean } | undefined;
   let progress = 0;
   const reader = body.getReader();
   const handleLine = (line: string): void => {
@@ -134,6 +152,7 @@ async function consumeToolStream(
       event?: string;
       data?: unknown;
       note?: string;
+      profiling?: boolean;
       error?: string;
       error_code?: string;
       error_kind?: string;
@@ -141,8 +160,13 @@ async function consumeToolStream(
     if (msg.event === "progress") {
       progress++;
       onProgress(msg.data);
-    } else if (msg.event === "result") final = { data: msg.data, note: msg.note };
-    else if (msg.event === "error") {
+    } else if (msg.event === "result") {
+      final = {
+        data: msg.data,
+        note: msg.note,
+        ...(msg.profiling === true ? { profiling: true } : {}),
+      };
+    } else if (msg.event === "error") {
       throw new ToolInvocationError(msg.error ?? "tool invocation failed", {
         errorCode: msg.error_code,
         errorKind: msg.error_kind,
@@ -198,7 +222,11 @@ async function consumeToolStream(
   if (!final) {
     throw brokenStream(name, "the stream ended without a result", progress);
   }
-  return { data: final.data, note: final.note };
+  return {
+    data: final.data,
+    note: final.note,
+    ...(final.profiling ? { profiling: true } : {}),
+  };
 }
 
 /**
@@ -213,6 +241,18 @@ export function errorBodyMessage(body: {
 }): string | undefined {
   if (Array.isArray(body.issues) && typeof body.message === "string") return body.message;
   return body.error ?? body.message;
+}
+
+/**
+ * The tool `name` names: the one listed under it, else the one listed under
+ * its current or former id, so an `e2e-*` call reaches an older tool-server
+ * that lists only `flow-*`.
+ */
+function findTool(tools: readonly ToolMeta[], name: string): ToolMeta | null {
+  const id = canonicalToolId(name);
+  return (
+    tools.find((t) => t.name === name) ?? tools.find((t) => canonicalToolId(t.name) === id) ?? null
+  );
 }
 
 /**
@@ -335,8 +375,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     name: string,
     opts?: { signal?: AbortSignal }
   ): Promise<ToolMeta | null> {
-    const tools = await fetchTools(opts);
-    return tools.find((t) => t.name === name) ?? null;
+    return findTool(await fetchTools(opts), name);
   }
 
   async function callTool(
@@ -352,32 +391,47 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     // server can read them in place (local) or from inlined content (routed).
     let finalArgs = args;
     const tools = await fetchTools({ signal: opts?.signal });
-    const meta = tools.find((t) => t.name === name) ?? null;
+    const meta = findTool(tools, name);
+    // An older tool-server reads saved tests only from `.argent/flows/`, and
+    // lists its tools by their `flow-*` ids only.
+    const olderServer = meta !== null && !tools.some((t) => t.name === canonicalToolId(meta.name));
+    if (meta) {
+      finalArgs = await nameToE2ePathForOlderServer(meta.name, meta.fileInputs, args);
+    }
+    if (olderServer && canonicalToolId(meta.name) === "e2e-add-step") {
+      finalArgs = await stepForOlderServer(finalArgs, (tool) => findTool(tools, tool)?.name);
+    }
+    // Picked here when the tool-server does not read the test in place.
+    const shadowWarning = await e2eShadowWarningFor(name, args);
     // Where a baseline the result returns may be written (see file-inputs.ts).
     const baselineDirs: string[] = [];
     if (meta?.fileInputs?.length) {
-      if (remote) assertRequiredPresent(meta, args);
-      finalArgs = await prepareFileInputs(meta.fileInputs, args ?? {}, {
+      if (remote) assertRequiredPresent(meta, finalArgs);
+      finalArgs = await prepareFileInputs(meta.fileInputs, finalArgs ?? {}, {
         includeContent: remote,
         uploadEndpoint: remote ? { url, token } : undefined,
         log: diagnose,
         baselineDirs,
         collectMembers: collectFlowMembers,
-        collectStepMembers,
-        toolFileInputs: (tool) => tools.find((t) => t.name === tool)?.fileInputs,
+        collectStepMembers: olderServer
+          ? (record, o) =>
+              collectStepMembers(record, o, (root) => path.join(root, LEGACY_E2E_DIRS[0]!))
+          : collectStepMembers,
+        toolFileInputs: (tool) => findTool(tools, tool)?.fileInputs,
         signal: opts?.signal,
       });
     }
     // File boundary, inbound: persist client-write directives (recorded flow
     // YAMLs, a run's new baselines) and rewrite them to the written paths. A
     // baseline that could not be written is said here, and stays in the
-    // result as `{ path, error }`.
+    // result as `{ path, error }`. A shadowed legacy test the tool-server did
+    // not see is said in the result's `warning`, as it says one it sees.
     const settle = async (data: unknown): Promise<unknown> => {
       const applied = await applyClientFileDirectives(data, { allowedDirs: baselineDirs });
       for (const { path: file, error } of applied.failed) {
         diagnose(`The baseline ${file} was not written on this client: ${error}`);
       }
-      if (process.env.ARGENT_FLOW_FILES_LOG === "1") {
+      if (filesLogEnabled()) {
         // A recorded flow YAML is written here too; only baselines are logged.
         for (const file of applied.written) {
           if (baselineDirs.includes(path.dirname(file))) {
@@ -385,7 +439,17 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
           }
         }
       }
-      return applied.result;
+      const result = applied.result;
+      if (
+        shadowWarning === undefined ||
+        typeof result !== "object" ||
+        result === null ||
+        Array.isArray(result) ||
+        typeof (result as { warning?: unknown }).warning === "string"
+      ) {
+        return result;
+      }
+      return { ...result, warning: shadowWarning };
     };
 
     // A call that sends a flow's closure runs that flow over a link, and its
@@ -393,7 +457,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     const stream = opts?.onProgress !== undefined || carriesMembers(finalArgs);
     const sentOnce = carriesUpload(finalArgs);
     const res = await doFetch(
-      `${url}/tools/${encodeURIComponent(name)}`,
+      `${url}/tools/${encodeURIComponent(meta?.name ?? name)}`,
       {
         method: "POST",
         headers: {
@@ -401,6 +465,9 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
           // Tells the tool-server the call came over a link, a link to
           // 127.0.0.1 included, which nothing else in the request shows.
           ...(remote ? { [LINKED_CALL_HEADER]: "1" } : {}),
+          // Tells the tool-server this client writes recordings under
+          // `.argent/e2e/`; an older client writes only `.argent/flows/`.
+          [E2E_DIR_CLIENT_HEADER]: "1",
           // A proxy that compresses the stream holds each line until its buffer
           // fills. `identity` keeps the stream uncompressed end to end.
           ...(stream ? { "Accept": "application/x-ndjson", "Accept-Encoding": "identity" } : {}),
@@ -433,6 +500,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
         data: await settle(streamed.data),
         note: streamed.note,
         outputHint: meta?.outputHint,
+        ...(streamed.profiling ? { profiling: true } : {}),
       };
     }
     let json: {
@@ -440,6 +508,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       error?: string;
       message?: string;
       note?: string;
+      profiling?: boolean;
       error_code?: string;
       error_kind?: string;
       issues?: unknown;
@@ -470,7 +539,12 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       });
     }
     opts?.signal?.throwIfAborted();
-    return { data: await settle(json.data), note: json.note, outputHint: meta?.outputHint };
+    return {
+      data: await settle(json.data),
+      note: json.note,
+      outputHint: meta?.outputHint,
+      ...(json.profiling === true ? { profiling: true } : {}),
+    };
   }
 
   return { fetchTools, fetchTool, callTool, baseUrl };
