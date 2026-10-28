@@ -27,6 +27,7 @@ import {
   open,
   readFile,
   readdir,
+  readlink,
   realpath,
   rename,
   rm,
@@ -34,7 +35,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { tmpdir, hostname } from "node:os";
+import { tmpdir, hostname, platform } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -281,12 +282,25 @@ async function writeDurableUnique(
   return null;
 }
 
-const DOWNLOAD_PREFIX = `.argent-download-${createHash("sha1").update(hostname()).digest("hex").slice(0, 12)}-`;
+async function downloadPrefix(): Promise<string | null> {
+  let identity = hostname();
+  if (platform() === "linux") {
+    try {
+      identity += await readFile("/proc/sys/kernel/random/boot_id", "utf8");
+      identity += await readlink("/proc/self/ns/pid");
+    } catch {
+      return null;
+    }
+  } else if (platform() !== "darwin") {
+    return null;
+  }
+  return `.argent-download-${createHash("sha1").update(identity).digest("hex").slice(0, 12)}-`;
+}
 
-async function cleanupDownloads(dir: string): Promise<void> {
+async function cleanupDownloads(dir: string, prefix: string): Promise<void> {
   for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory() || !entry.name.startsWith(DOWNLOAD_PREFIX)) continue;
-    const owner = /^(\d+)-/.exec(entry.name.slice(DOWNLOAD_PREFIX.length));
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
+    const owner = /^(\d+)-/.exec(entry.name.slice(prefix.length));
     if (!owner) continue;
     try {
       process.kill(Number(owner[1]), 0);
@@ -303,8 +317,9 @@ async function saveDurableFile(
   filename: string,
   write: (partial: string) => Promise<void>
 ): Promise<string> {
-  await cleanupDownloads(dir);
-  const staging = await mkdtemp(join(dir, `${DOWNLOAD_PREFIX}${process.pid}-`));
+  const prefix = await downloadPrefix();
+  if (prefix) await cleanupDownloads(dir, prefix);
+  const staging = await mkdtemp(join(dir, `${prefix ?? ".argent-download-"}${process.pid}-`));
   try {
     const partial = join(staging, "recording.part");
     await write(partial);

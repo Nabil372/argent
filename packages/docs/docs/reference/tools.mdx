@@ -118,7 +118,7 @@ Debug capture is not crash-safe. A hard tool-server kill can lose unencoded fram
 
 Debug timestamps mark when the tool-server parses each frame, not device presentation. Other work on the server can delay parsing and distort frame timing. It cannot recover frames omitted by the stream. It encodes at stop, so retrieval can take longer.
 
-Argent stages local copies and downloads before publishing the completed file. Filesystems without hard links use a visible `recording-*` subdirectory. Later saves remove abandoned staging directories from dead processes on the same host.
+Argent stages local copies and downloads before publishing the completed file. Filesystems without hard links use a visible `recording-*` subdirectory. Later saves remove abandoned staging directories from dead processes in the same host and PID namespace. Cleanup skips environments where ownership cannot be established.
 
 Linked recording downloads have a 2 GiB limit. Larger recordings remain on the tool-server. The result preserves its metadata and adds a retrieval warning with the server location.
 
