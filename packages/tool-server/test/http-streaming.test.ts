@@ -546,6 +546,56 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     ]);
   });
 
+  it("ignores late progress after a streamed shutdown error ends the response", async () => {
+    let progress: InvokeToolOptions["emitProgress"];
+    const attemptedAfterEnd = vi.fn();
+    handle = createHttpApp(
+      stubRegistry(async (options) => {
+        progress = options?.emitProgress;
+        await new Promise<void>((resolve) =>
+          options?.signal?.addEventListener("abort", () => resolve(), { once: true })
+        );
+        return {};
+      })
+    );
+    const server = handle.app.listen(0, "127.0.0.1");
+    server.on("request", (_req, res) => {
+      const write = res.write.bind(res);
+      res.write = ((...args: Parameters<typeof res.write>) => {
+        if (res.writableEnded) {
+          attemptedAfterEnd();
+          return false;
+        }
+        return write(...args);
+      }) as typeof res.write;
+      res.once("finish", () => {
+        expect(res.destroyed).toBe(false);
+        progress?.({ status: "skip", reason: "run aborted" });
+      });
+    });
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const response = await fetch(`http://127.0.0.1:${port}/tools/test-tool`, {
+        method: "POST",
+        headers: { "Accept": "application/x-ndjson", "Content-Type": "application/json" },
+        body: "{}",
+      });
+      handle.dispose();
+      const lines = parseLines(await response.text());
+      expect(lines).toEqual([
+        expect.objectContaining({
+          event: "error",
+          error_code: FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN,
+        }),
+      ]);
+      expect(attemptedAfterEnd).not.toHaveBeenCalled();
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("sends headers before a silent tool finishes and keeps its body active past five minutes", async () => {
     let finish!: () => void;
     const pending = new Promise<void>((resolve) => {
