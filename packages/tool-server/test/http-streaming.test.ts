@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import supertest from "supertest";
+import { InvalidToolInputError } from "../src/utils/capability";
 import type { AddressInfo } from "node:net";
 import type { Response } from "supertest";
 import { createHttpApp, type HttpAppHandle } from "../src/http";
 import {
   FAILURE_CODES,
   FailureError,
+  ToolExecutionError,
   type Registry,
   type InvokeToolOptions,
 } from "@argent/registry";
@@ -165,6 +167,26 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     expect(seenOptions?.emitProgress).toBeUndefined();
     expect(res.headers["content-type"]).toContain("application/json");
     expect(res.body).toEqual({ data: { ok: true } });
+  });
+
+  it("keeps a wrapped input rejection identical on buffered and streamed paths", async () => {
+    const input = new InvalidToolInputError("Use text or key, not both.");
+    handle = createHttpApp(
+      stubRegistry(async () => {
+        throw new ToolExecutionError("test-tool", input.message, { cause: input });
+      })
+    );
+    const buffered = await supertest(handle.app).post("/tools/test-tool").send({}).expect(400);
+    const streamed = await supertest(handle.app)
+      .post("/tools/test-tool")
+      .set("Accept", "application/x-ndjson")
+      .send({})
+      .buffer(true)
+      .parse(collectText)
+      .expect(200);
+    const [terminal] = parseLines(streamed.body as string);
+    expect(terminal).toMatchObject({ event: "error", ...buffered.body });
+    expect(terminal.error).toBe(input.message);
   });
 
   it("delivers a tool failure as an in-band terminal error line", async () => {

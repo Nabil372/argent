@@ -134,6 +134,8 @@ function errorSignalFields(err: unknown): { error_code?: string; error_kind?: st
  */
 function streamErrorMessage(err: unknown): string {
   if (err instanceof ToolNotFoundError) return err.message;
+  const invalidInputErr = findErrorInCauseChain(err, InvalidToolInputError);
+  if (invalidInputErr) return invalidInputErr.message;
   const depErr = findDependencyMissing(err);
   if (depErr) return depErr.message;
   const unsupportedErr = findErrorInCauseChain(err, UnsupportedOperationError);
