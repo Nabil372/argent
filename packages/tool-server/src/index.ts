@@ -81,9 +81,13 @@ function initializeStdioTimestampWrapper(): void {
 
 export function start(): void {
   initializeStdioTimestampWrapper();
-  void cleanupAbandonedFrames().catch((err: unknown) => {
-    process.stderr.write(`[screen-recording] Abandoned JPEG cleanup failed: ${String(err)}\n`);
-  });
+  const cleanupFrames = () =>
+    cleanupAbandonedFrames().catch((err: unknown) => {
+      process.stderr.write(`[screen-recording] Abandoned JPEG cleanup failed: ${String(err)}\n`);
+    });
+  void cleanupFrames();
+  const frameCleanup = setInterval(() => void cleanupFrames(), 60_000);
+  frameCleanup.unref();
 
   // Exit on uncaught errors (state may be corrupted), but clean up first so
   // child processes are not orphaned.
@@ -298,6 +302,7 @@ export function start(): void {
     if (exitCode > finalExitCode) finalExitCode = exitCode;
     if (shuttingDown) return;
     shuttingDown = true;
+    clearInterval(frameCleanup);
 
     eventLog?.info({
       type: "tool_server.stopping",

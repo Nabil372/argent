@@ -96,8 +96,15 @@ describe("tool-server startup telemetry", () => {
   it("drains telemetry when startup fails before the listener binds", async () => {
     const { start } = await import("../src/index");
 
+    const interval = vi.spyOn(globalThis, "setInterval");
+    const clear = vi.spyOn(globalThis, "clearInterval");
     start();
     expect(cleanupAbandonedFrames).toHaveBeenCalledOnce();
+    const sweepIndex = interval.mock.calls.findIndex(([, delay]) => delay === 60_000);
+    expect(sweepIndex).toBeGreaterThanOrEqual(0);
+    const sweep = interval.mock.calls[sweepIndex][0] as () => void;
+    sweep();
+    expect(cleanupAbandonedFrames).toHaveBeenCalledTimes(2);
 
     // The identity warm-up is kicked off during startup (before the readiness
     // gate), so the fingerprint resolve happens off the accept path. Regression
@@ -126,6 +133,9 @@ describe("tool-server startup telemetry", () => {
     expect(httpHandleMock.dispose).toHaveBeenCalledOnce();
     expect(registryMock.dispose).toHaveBeenCalledOnce();
     expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(clear).toHaveBeenCalledWith(interval.mock.results[sweepIndex].value);
+    interval.mockRestore();
+    clear.mockRestore();
 
     process.emit("SIGTERM");
 
