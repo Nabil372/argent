@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname } from "node:os";
 import { mkdtemp, mkdir, rm, readFile, writeFile, stat, symlink, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import {
@@ -1007,9 +1008,7 @@ describe("materializeArtifacts durable destination", () => {
       const file = join(hostDir, "source.mp4");
       await writeFile(file, Buffer.from(MP4));
       const collision = Object.assign(new Error("occupied"), { code: "EEXIST" });
-      const writing = local
-        ? vi.spyOn(fs, "copyFile").mockRejectedValue(collision)
-        : vi.spyOn(fs, "link").mockRejectedValue(collision);
+      const writing = vi.spyOn(fs, "link").mockRejectedValue(collision);
       try {
         const { result } = await materializeArtifacts(
           {
@@ -1059,7 +1058,7 @@ describe("materializeArtifacts durable destination", () => {
           }
         );
         const file = (result as { video: string }).video;
-        expect(file).toMatch(/\.argent-download-[^/\\]+[/\\]fallback\.mp4$/);
+        expect(file).toMatch(/[/\\]recording-[^/\\]+[/\\]fallback\.mp4$/);
         expect(await readFile(file)).toEqual(Buffer.from(MP4));
         expect(await readdir(join(file, ".."))).toEqual(["fallback.mp4"]);
         expect(result).not.toHaveProperty("warning");
@@ -1094,6 +1093,118 @@ describe("materializeArtifacts durable destination", () => {
       expect(cleanup).toHaveBeenCalledOnce();
     } finally {
       cleanup.mockRestore();
+    }
+  });
+
+  it.each([undefined, "4"])(
+    "rejects a cleanly truncated stream (Content-Length: %s)",
+    async (length) => {
+      const { result } = await materializeArtifacts(
+        {
+          video: {
+            ...handle("truncated", "truncated.mp4", "video/mp4"),
+            kind: "screen-recording",
+            size: 8,
+            saveDir: ".argent/recordings",
+          },
+          encodingComplete: true,
+        },
+        {
+          toolsUrl: "http://remote:3001",
+          fetchImpl: vi.fn(
+            async () =>
+              new Response(
+                Buffer.from("part"),
+                length ? { headers: { "Content-Length": length } } : undefined
+              )
+          ),
+        }
+      );
+      expect(result).toMatchObject({
+        video: null,
+        encodingComplete: true,
+        warning: expect.stringContaining("download size did not match"),
+      });
+      expect(await readdir(join(projectRoot, ".argent/recordings"))).toEqual([]);
+    }
+  );
+
+  it("publishes a local copy only after all bytes have been copied", async () => {
+    const source = join(hostDir, "local.mp4");
+    await writeFile(source, Buffer.from(MP4));
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let partial!: string;
+    const copying = vi
+      .spyOn(fs, "copyFile")
+      .mockImplementationOnce(async (_source, destination) => {
+        partial = String(destination);
+        await writeFile(partial, Buffer.from(MP4).subarray(0, 4));
+        await waiting;
+        await writeFile(partial, Buffer.from(MP4));
+      });
+    try {
+      const saving = materializeArtifacts(
+        {
+          video: {
+            ...handle("local", "local.mp4", "video/mp4"),
+            kind: "screen-recording",
+            size: MP4.length,
+            hostPath: source,
+            saveDir: ".argent/recordings",
+          },
+        },
+        { toolsUrl: "http://remote:3001" }
+      );
+      await vi.waitFor(async () => expect((await stat(partial)).size).toBe(4));
+      const final = join(projectRoot, ".argent/recordings", "local.mp4");
+      expect(await absent(final)).toBe(true);
+      expect(partial).toMatch(/recording\.part$/);
+      release();
+      expect((await saving).result).toEqual({ video: final });
+      expect(await readFile(final)).toEqual(Buffer.from(MP4));
+    } finally {
+      release();
+      copying.mockRestore();
+    }
+  });
+
+  it("reaps only dead-owner partials from this host while keeping completed fallback directories", async () => {
+    const dir = join(projectRoot, ".argent/recordings");
+    const prefix = `.argent-download-${createHash("sha1").update(hostname()).digest("hex").slice(0, 12)}-`;
+    const dead = `${prefix}91919191-dead`;
+    const alive = `${prefix}${process.pid}-alive`;
+    const other = ".argent-download-otherhost-91919191-dead";
+    for (const name of [dead, alive, other, "recording-completed"]) {
+      await mkdir(join(dir, name), { recursive: true });
+      await writeFile(join(dir, name, "recording.part"), "part");
+    }
+    const probe = vi.spyOn(process, "kill").mockImplementation((pid) => {
+      if (pid === 91919191) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+      return true;
+    });
+    try {
+      await materializeArtifacts(
+        {
+          video: {
+            ...handle("saved", "saved.mp4", "video/mp4"),
+            size: MP4.length,
+            saveDir: ".argent/recordings",
+          },
+        },
+        {
+          toolsUrl: "http://remote:3001",
+          fetchImpl: vi.fn(async () => new Response(Buffer.from(MP4))),
+        }
+      );
+      expect(await readdir(dir)).toEqual(
+        expect.arrayContaining([alive, other, "recording-completed", "saved.mp4"])
+      );
+      expect(await readdir(dir)).not.toContain(dead);
+    } finally {
+      probe.mockRestore();
     }
   });
 

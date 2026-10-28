@@ -26,6 +26,7 @@ import {
   mkdtemp,
   open,
   readFile,
+  readdir,
   realpath,
   rename,
   rm,
@@ -33,7 +34,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, hostname } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -280,6 +281,53 @@ async function writeDurableUnique(
   return null;
 }
 
+const DOWNLOAD_PREFIX = `.argent-download-${createHash("sha1").update(hostname()).digest("hex").slice(0, 12)}-`;
+
+async function cleanupDownloads(dir: string): Promise<void> {
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isDirectory() || !entry.name.startsWith(DOWNLOAD_PREFIX)) continue;
+    const owner = /^(\d+)-/.exec(entry.name.slice(DOWNLOAD_PREFIX.length));
+    if (!owner) continue;
+    try {
+      process.kill(Number(owner[1]), 0);
+      continue;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue;
+    }
+    await rm(join(dir, entry.name), { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function saveDurableFile(
+  dir: string,
+  filename: string,
+  write: (partial: string) => Promise<void>
+): Promise<string> {
+  await cleanupDownloads(dir);
+  const staging = await mkdtemp(join(dir, `${DOWNLOAD_PREFIX}${process.pid}-`));
+  try {
+    const partial = join(staging, "recording.part");
+    await write(partial);
+    const finalPath = await writeDurableUnique(dir, filename, (p) => link(partial, p)).catch(
+      async () => {
+        const completedDir = await mkdtemp(join(dir, "recording-"));
+        const completed = join(completedDir, filename);
+        try {
+          await rename(partial, completed);
+          return completed;
+        } catch (err) {
+          await rm(completedDir, { recursive: true, force: true }).catch(() => {});
+          throw err;
+        }
+      }
+    );
+    if (!finalPath) throw new Error("No unused recording filename was available.");
+    return finalPath;
+  } finally {
+    await rm(staging, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /**
  * Resolve an artifact's durable destination from its `saveDir` hint, or `null`
  * (⇒ the temp cache) when it has none or the hint is rejected. Resolved against
@@ -484,10 +532,9 @@ export async function materializeArtifacts(
           if (localPath) {
             // Already on this host — copy without buffering the whole file
             // (recordings can be large); only re-read if it's an inline image.
-            const finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
-              copyFile(localPath, p, fsConstants.COPYFILE_EXCL)
+            const finalPath = await saveDurableFile(saveTarget.dir, filename, (partial) =>
+              copyFile(localPath, partial, fsConstants.COPYFILE_EXCL)
             );
-            if (!finalPath) throw new Error("No unused recording filename was available.");
             if (value.mimeType.startsWith("image/")) {
               images.push({
                 localPath: finalPath,
@@ -504,9 +551,7 @@ export async function materializeArtifacts(
               `Recording size ${value.size} is invalid or exceeds the 2 GiB download limit.`
             );
           }
-          const downloadDir = await mkdtemp(join(saveTarget.dir, ".argent-download-"));
-          let finalPath: string | null = null;
-          try {
+          const finalPath = await saveDurableFile(saveTarget.dir, filename, async (partial) => {
             const res = await fetchFn(`${ctx.toolsUrl}/artifacts/${value.id}`, {
               headers: authHeaders,
               signal: ctx.signal,
@@ -515,29 +560,16 @@ export async function materializeArtifacts(
               await res.body?.cancel().catch(() => {});
               throw new Error(`Artifact download failed with HTTP ${res.status}.`);
             }
-            const partial = join(downloadDir, "recording.part");
             await writeCappedResponse(res, partial, value.size);
-            finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
-              link(partial, p)
-            ).catch(async () => {
-              const completed = join(downloadDir, filename);
-              await rename(partial, completed);
-              return completed;
+          });
+          if (value.mimeType.startsWith("image/")) {
+            images.push({
+              localPath: finalPath,
+              data: await readFile(finalPath),
+              mimeType: value.mimeType,
             });
-            if (!finalPath) throw new Error("No unused recording filename was available.");
-            if (value.mimeType.startsWith("image/")) {
-              images.push({
-                localPath: finalPath,
-                data: await readFile(finalPath),
-                mimeType: value.mimeType,
-              });
-            }
-            return finalPath;
-          } finally {
-            if (!finalPath || dirname(finalPath) !== downloadDir) {
-              await rm(downloadDir, { recursive: true, force: true }).catch(() => {});
-            }
           }
+          return finalPath;
         } catch (err) {
           if (value.kind === "screen-recording" && !ctx.signal?.aborted) {
             const reason = err instanceof Error ? err.message : String(err);
