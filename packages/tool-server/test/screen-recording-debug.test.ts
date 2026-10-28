@@ -285,6 +285,7 @@ it.skipIf(!hasEncoder)(
       );
       expect(raw.status, raw.stderr.toString()).toBe(0);
       const frameBytes = 34 * 32 * 3;
+      expect(raw.stdout.length / frameBytes).toBe(result.frames.length);
       const pixel = [...raw.stdout.subarray(frameBytes * 62, frameBytes * 62 + 3)];
       expect(pixel.every((channel) => channel > 240)).toBe(true);
       expect((await readFile(file)).length).toBeGreaterThan(0);

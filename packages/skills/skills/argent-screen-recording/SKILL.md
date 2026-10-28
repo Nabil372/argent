@@ -14,6 +14,8 @@ Choose `mode: "light"` (default) for compact bug-report or PR clips. Choose `mod
 
 Debug uses host arrival times, not native device presentation timestamps, and cannot recover frames omitted by the stream. Disabling `trimStatic` in light mode still samples at 30 fps.
 
+When extracting debug frames, use `ffmpeg -i recording.mp4 -fps_mode passthrough frame-%06d.png` to avoid resampling. Inspect each frame’s PTS for timing; `r_frame_rate` is a guessed rate.
+
 ---
 
 ## 2. Critical: never leave a recording running
