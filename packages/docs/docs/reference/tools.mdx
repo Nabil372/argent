@@ -292,10 +292,9 @@ For `stub` without `panelKind`, Argent finds the kind of the next panel from the
 - All paths exist: an open panel.
 - One path that does not exist yet: a save panel.
 
-Argent gives a sandboxed app access to the chosen path:
+Argent gives a sandboxed app access to each chosen path, and only when a panel takes the answer, as a panel does. For a save panel, this is the file, not its folder.
 
-- For an open panel: each chosen file or folder.
-- For a save panel: the folder of the file.
+A prepared answer that the next panel cannot take does not answer it, and the panel opens as usual. Examples are several paths for a panel with a single selection, or a folder for a panel that takes only files.
 
 Argent does not check a path against the file types that the panel allows (`allowedContentTypes` in the result of `list`).
 
@@ -307,6 +306,7 @@ Argent does not check a path against the file types that the panel allows (`allo
 - A path for an open panel does not exist.
 - The folder for a save panel does not exist.
 - The path for a save panel is a folder without an extension. Argent accepts a document package, such as `Notes.rtfd`.
+- The panel cannot take the path: a folder for a panel that takes only files, or a file for a panel that takes only folders. A document package counts as a file.
 
 ### `menu-bar`
 

@@ -229,7 +229,7 @@ describe("file-panel", () => {
     expect(issueSandboxExtension).not.toHaveBeenCalled();
   });
 
-  it("choose saves over a document package and grants the folder that holds it", async () => {
+  it("choose saves over a document package and grants only the package", async () => {
     tracked.sandboxed = true;
     const pkg = path.join(sandbox, "Notes.rtfd");
     fs.mkdirSync(pkg);
@@ -238,11 +238,13 @@ describe("file-panel", () => {
       kind: "save",
       paths: [pkg],
     });
-    expect(granted()).toEqual([sandbox]);
-    expect(nonListCalls(calls).at(-1)).toEqual({
-      method: "Panel.complete",
-      params: { path: pkg, panel: 42 },
-    });
+    expect(granted()).toEqual([pkg]);
+    expect(nonListCalls(calls)).toEqual([
+      {
+        method: "Panel.complete",
+        params: { path: pkg, tokens: [`token-for:${pkg}`], panel: 42 },
+      },
+    ]);
   });
 
   it("expands a leading ~/ to the home folder", async () => {
@@ -258,24 +260,20 @@ describe("file-panel", () => {
   });
 
   it.each([
-    ["the file of an open panel", { ...openPanel, allowsMultiple: true }, () => [fileA, fileB]],
-    ["the folder of a save panel", savePanel, () => [path.join(sandbox, "new.txt")]],
-  ])("gives a sandboxed app %s before the panel completes", async (_label, panel, paths) => {
+    ["the files of an open panel", { ...openPanel, allowsMultiple: true }, () => [fileA, fileB]],
+    ["only the new file of a save panel", savePanel, () => [path.join(sandbox, "new.txt")]],
+  ])("gives a sandboxed app %s with the answer", async (_label, panel, paths) => {
     tracked.sandboxed = true;
     const { invoke, calls } = harness([panel]);
     const chosen = paths();
     await invoke({ action: "choose", paths: chosen });
-    const targets = panel.kind === "save" ? [sandbox] : chosen;
-    expect(granted()).toEqual(targets);
+    expect(granted()).toEqual(chosen);
     expect(nonListCalls(calls)).toEqual([
-      ...targets.map((t) => ({
-        method: "Sandbox.consumeExtension",
-        params: { token: `token-for:${t}` },
-      })),
       {
         method: "Panel.complete",
         params: {
           ...(chosen.length === 1 ? { path: chosen[0] } : { paths: chosen }),
+          tokens: chosen.map((t) => `token-for:${t}`),
           panel: panel.number,
         },
       },
@@ -298,13 +296,17 @@ describe("file-panel", () => {
     fs.mkdirSync(path.join(sandbox, "real"));
     fs.writeFileSync(path.join(sandbox, "real", "c.txt"), "c");
     fs.symlinkSync(path.join(sandbox, "real"), link);
-    const { invoke, calls } = harness([openPanel]);
-    await invoke({ action: "choose", path: path.join(link, "c.txt") });
+    const { invoke, calls } = harness([openPanel, savePanel]);
+    await invoke({ action: "choose", path: path.join(link, "c.txt"), panel: 41 });
     expect(granted()).toEqual([path.join(sandbox, "real", "c.txt")]);
-    expect(nonListCalls(calls).at(-1)).toEqual({
+    expect(nonListCalls(calls).at(-1)).toMatchObject({
       method: "Panel.complete",
       params: { path: path.join(link, "c.txt"), panel: 41 },
     });
+    // A file to save does not exist yet: the grant names it in the resolved folder.
+    issueSandboxExtension.mockClear();
+    await invoke({ action: "choose", path: path.join(link, "new.txt"), panel: 42 });
+    expect(granted()).toEqual([path.join(sandbox, "real", "new.txt")]);
   });
 
   it("does not complete the panel when the sandbox token cannot be issued", async () => {
@@ -347,15 +349,19 @@ describe("file-panel", () => {
       [fileA, { readOnly: false }],
       [fileB, { readOnly: false }],
     ]);
-    expect(calls.map((c) => c.method)).toEqual([
-      "Sandbox.consumeExtension",
-      "Sandbox.consumeExtension",
-      "Panel.stub",
+    expect(calls).toEqual([
+      {
+        method: "Panel.stub",
+        params: {
+          mode: "answer",
+          paths: [fileA, fileB],
+          tokens: [`token-for:${fileA}`, `token-for:${fileB}`],
+        },
+      },
     ]);
-    expect(calls.at(-1)!.params).toEqual({ mode: "answer", paths: [fileA, fileB] });
   });
 
-  it("stub infers a save panel for a new path and grants only its folder", async () => {
+  it("stub infers a save panel for a new path and grants only that file", async () => {
     tracked.sandboxed = true;
     const { invoke, calls } = harness();
     const newFile = path.join(sandbox, "new.txt");
@@ -364,11 +370,13 @@ describe("file-panel", () => {
       mode: "answer",
       panelKind: "save",
     });
-    expect(granted()).toEqual([sandbox]);
-    expect(calls.at(-1)).toEqual({
-      method: "Panel.stub",
-      params: { mode: "answer", path: newFile },
-    });
+    expect(granted()).toEqual([newFile]);
+    expect(calls).toEqual([
+      {
+        method: "Panel.stub",
+        params: { mode: "answer", path: newFile, tokens: [`token-for:${newFile}`] },
+      },
+    ]);
   });
 
   it("stub with a home folder grants that folder, not the folder above it", async () => {
@@ -384,7 +392,7 @@ describe("file-panel", () => {
     expect(granted()).toEqual([home]);
   });
 
-  it("stub grants the resolved target of a link, not the link's folder", async () => {
+  it("stub grants the resolved target of a link, not the link", async () => {
     tracked.sandboxed = true;
     const elsewhere = path.join(sandbox, "elsewhere");
     fs.mkdirSync(elsewhere);
@@ -396,11 +404,11 @@ describe("file-panel", () => {
     await invoke({ action: "stub", path: link });
     expect(granted()).toEqual([target]);
     issueSandboxExtension.mockClear();
-    // Saved over the link, the file is written next to its target.
+    // Saved over the link, the file written is its target.
     await expect(invoke({ action: "stub", path: link, panelKind: "save" })).resolves.toMatchObject({
       panelKind: "save",
     });
-    expect(granted()).toEqual([elsewhere]);
+    expect(granted()).toEqual([target]);
   });
 
   it.each([
@@ -432,7 +440,7 @@ describe("file-panel", () => {
       mode: "answer",
       panelKind: "save",
     });
-    expect(granted()).toEqual([sandbox]);
+    expect(granted()).toEqual([pkg]);
   });
 
   it("stub without panelKind answers an existing folder as an open panel and grants only that folder", async () => {

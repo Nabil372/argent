@@ -56,9 +56,8 @@ const zodSchema = z.object({
     .enum(["open", "save"])
     .optional()
     .describe(
-      "For stub with stubMode answer: the kind of the next panel, which decides the path checks and, for a sandboxed app, " +
-        "what the app may access. Default: open when every path exists (access to each path itself), save when the one " +
-        "path does not exist yet (access to its existing folder)."
+      "For stub with stubMode answer: the kind of the next panel, which decides the path checks. Default: open when " +
+        "every path exists, save when the one path does not exist yet."
     ),
   timeoutMs: z
     .number()
@@ -160,28 +159,36 @@ async function checkPathsFor(
       "file_panel_open_paths"
     );
   }
-  // A folder is not refused for a files-only panel: the panel takes a document
-  // package (.rtfd, .xcodeproj) as a file, and only the app can tell the two apart.
+  // The app refuses a folder for a files-only panel: only it can tell a folder
+  // from a document package (.rtfd, .xcodeproj), which the panel takes as a file.
   for (const p of paths) {
     if (!(await statOrNull(p))) throw invalid(`${p} does not exist.`, "file_panel_open_paths");
   }
 }
 
 /**
- * A sandboxed app can read and write only what the user chose. Argent gives the
- * app access to the chosen path before it answers the panel: the file or folder
- * itself for an open panel, the folder for a save. Read-only when the app may
- * only read the files a user chooses, as the panel would grant it.
+ * A sandboxed app can read and write only what the user chose. The app is given
+ * access to each chosen path, as the panel would give it, only when a panel
+ * takes the answer: these tokens go with the answer. Read-only when the app may
+ * only read the files a user chooses.
  */
-async function grantSandboxAccess(app: MacosAppApi, targets: string[]): Promise<void> {
+async function sandboxTokens(app: MacosAppApi, paths: string[]): Promise<{ tokens?: string[] }> {
   const tracked = getTrackedMacosApp(app.bundleId);
-  if (!tracked?.sandboxed) return;
-  // The sandbox checks the resolved path (/tmp is /private/tmp), so the grant names it.
-  const resolved = await Promise.all(targets.map((t) => fs.realpath(t).catch(() => t)));
+  if (!tracked?.sandboxed) return {};
+  // The sandbox checks the resolved path (/tmp is /private/tmp), so the grant names
+  // it. A file to save does not exist yet: its folder is resolved.
+  const resolved = await Promise.all(
+    paths.map((p) =>
+      fs
+        .realpath(p)
+        .catch(async () => path.join(await fs.realpath(path.dirname(p)), path.basename(p)))
+    )
+  );
+  const tokens: string[] = [];
   for (const target of new Set(resolved)) {
-    const token = await issueSandboxExtension(target, { readOnly: tracked.userSelectedReadOnly });
-    await app.call("Sandbox.consumeExtension", { token });
+    tokens.push(await issueSandboxExtension(target, { readOnly: tracked.userSelectedReadOnly }));
   }
+  return { tokens };
 }
 
 /** One path goes as `path`, several as `paths`, as the app takes them. */
@@ -189,20 +196,6 @@ const pathParams = (paths: string[]) => (paths.length === 1 ? { path: paths[0] }
 
 async function listPanels(app: MacosAppApi): Promise<MacosPanel[]> {
   return (await app.call<{ panels?: MacosPanel[] }>("Panel.list")).panels ?? [];
-}
-
-/**
- * What a save to `target` needs: the folder the file is written in. For an
- * existing link that is the folder of the file it points to.
- */
-async function saveFolder(target: string): Promise<string> {
-  const resolved = await fs.realpath(target).catch(() => null);
-  return path.dirname(resolved ?? target);
-}
-
-/** What a sandboxed app is given for a panel of `kind` answered with `paths`. */
-async function grantTargets(kind: MacosPanel["kind"], paths: string[]): Promise<string[]> {
-  return kind === "save" ? [await saveFolder(paths[0]!)] : paths;
 }
 
 /**
@@ -258,8 +251,11 @@ async function choose(
   const paths = requestedPaths(params, "choose");
   const panel = await waitForPanel(app, params, ctx?.signal);
   await checkPathsFor(panel, paths);
-  await grantSandboxAccess(app, await grantTargets(panel.kind, paths));
-  await app.call("Panel.complete", { ...pathParams(paths), panel: panel.number });
+  await app.call("Panel.complete", {
+    ...pathParams(paths),
+    ...(await sandboxTokens(app, paths)),
+    panel: panel.number,
+  });
   return { chosen: true, panel: panel.number, kind: panel.kind, paths };
 }
 
@@ -287,10 +283,10 @@ async function stub(app: MacosAppApi, params: Params): Promise<Result> {
     }
   }
   await checkPathsFor({ kind: panelKind }, paths);
-  await grantSandboxAccess(app, await grantTargets(panelKind, paths));
   const { armed } = await app.call<{ armed: boolean }>("Panel.stub", {
     mode,
     ...pathParams(paths),
+    ...(await sandboxTokens(app, paths)),
   });
   return { armed, mode, panelKind };
 }
@@ -309,10 +305,10 @@ export const filePanelTool: ToolDefinition<Params, Result> = {
   description: `Complete or cancel the open and save panels (file dialogs) of a Mac app from inside the app. A panel's file list is drawn by a system service outside the app, so describe cannot read it and gesture-tap cannot pick a file in it; this tool completes the panel the way the user's choice would, and the app stays in the background.
 Use when a click in a Mac app opens an open or save panel (list shows whether one is open), or before such a click, to answer the next panel without it ever appearing.
 Actions: list returns the open panels with their number, kind (open or save), title, folder and options. choose answers a panel with path, or paths for a multiple selection: an existing file or folder for an open panel, the file to write for a save panel; it waits up to timeoutMs for the panel to appear after the click. cancel cancels a panel. stub arms a one-shot answer (stubMode answer, with path) or a cancel (stubMode cancel) for the next panel the app presents; stubMode off disarms it.
-For stub, panelKind names the kind of the next panel; without it, paths that exist mean an open panel and one path that does not exist yet means a save panel.
-A sandboxed app that argent started is first given access to the chosen file or folder (open) or to the folder it is saved in (save), read-only when the app may only read the files a user chooses. argent does not check a path against the panel's allowed file types.
+For stub, panelKind names the kind of the next panel; without it, paths that exist mean an open panel and one path that does not exist yet means a save panel. A next panel that could not take the answer (several paths for a single selection, a folder for a panel of files) opens as usual.
+A sandboxed app that argent started is given access to the chosen paths only, as the panel gives it, read-only when the app may only read the files a user chooses. argent does not check a path against the panel's allowed file types.
 Returns { panels } for list, { chosen, panel, kind, paths } for choose, { cancelled, panel } for cancel, { armed, mode, panelKind } for stub.
-Fails if no panel appears within timeoutMs, if more than one panel is open and panel is not given, if a path is relative or does not exist (a save panel needs an existing folder), or if the Mac app is not running.`,
+Fails if no panel appears within timeoutMs, if more than one panel is open and panel is not given, if a path is relative or does not exist (a save panel needs an existing folder), if the panel cannot take it (a folder for a panel of files, a file for a panel of folders), or if the Mac app is not running.`,
   searchHint: "file panel dialog open save choose pick file folder nsopenpanel nssavepanel mac app",
   zodSchema,
   capability,

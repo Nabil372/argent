@@ -142,6 +142,7 @@ Each tool that does not support a Mac app fails with a `not supported on macos a
 - Argent cannot reconnect to a sandboxed app when its bundle id and the path of your home folder together have more than 59 characters. For example, with the home folder `/Users/anna`, the limit is 48 characters. Argent then reaches the app only through the connection of its start. After a restart of the Argent tool-server, quit the app, or start it again with `force`.
 - Only one menu can be open on a Mac at a time. A click somewhere else, by you or by another agent, can close a menu that the agent opened before the agent chooses an item.
 - Hover is not available. Mouse moves do not show tooltips or hover states.
+- A drag and drop works only inside the app. The agent cannot drag to another app, such as Finder, or drop from one.
 - Trackpad gestures are not available. The agent uses the zoom and rotate controls of the app instead of pinch and rotate.
 - Key events use the key codes of the US keyboard layout. An app that reads key codes sees the US key, also when the Mac uses a different layout.
 - The agent cannot reach a dialog that a different process draws. Examples are the permission prompts of macOS, the content of the share sheet, and the file list of an open or save panel.
