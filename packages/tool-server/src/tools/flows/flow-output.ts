@@ -701,9 +701,8 @@ function pathOf(frame: WalkFrame): Array<string | number> {
  * included: no string in it may hold a placeholder, because the tool resolves
  * one wherever it sits.
  *
- * An explicit stack, because a document may be 4096 levels deep and a
- * recursive walk that carries paths overflowed at 4472 to 4687. The path is
- * rebuilt from parent links only for the hit, so a deep document costs no
+ * An explicit stack, so a deep document never meets the call stack. The path
+ * is rebuilt from parent links only for the hit, so a deep document costs no
  * quadratic string building.
  */
 function placeholderInValue(value: unknown): { placeholder: string; path: string } | undefined {
@@ -737,8 +736,8 @@ function placeholderInValue(value: unknown): { placeholder: string; path: string
 /**
  * A deep copy of JSON data, so a tool that changes an object it was handed
  * cannot change the run's document. Iterative for the same reason as the walks
- * above: a document may nest 4096 levels, and `structuredClone` ran out of stack
- * at 1,817 on Node 20 and 2,386 on Node 26.
+ * above: `structuredClone` is recursive and ran out of stack at 1,817 levels on
+ * Node 20, too close to the 1024 a document may nest.
  */
 function copyJsonValue(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
@@ -813,9 +812,7 @@ function pathLabel(frame: WalkFrame): string {
  * document and hands it back, so a value rounded by an earlier step comes back
  * identical and is not that step's to warn about again.
  *
- * An explicit stack, for the same reason as {@link placeholderInValue}: a
- * recursive walk comparing two documents overflowed at 3,369 to 3,844 levels,
- * under the 4096 a document may nest.
+ * An explicit stack, for the same reason as {@link placeholderInValue}.
  */
 export function describeUnsafeIntegers(
   given: OutputDocument,

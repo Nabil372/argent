@@ -922,15 +922,13 @@ function validate(root) {
  * a getter or a `toJSON` that makes a fresh object each time — would otherwise
  * fill the heap before the parent could refuse it.
  */
-const MAX_OUTPUT_DEPTH = 4096;
+const MAX_OUTPUT_DEPTH = 1024;
 
 const MAX_PROBLEM_PATH_CHARS = 80;
 
 /**
- * Validates and copies the document with an explicit stack. Every script is
- * handed the run's whole document, so a `.mjs` step receives whatever depth an
- * earlier `.sh` step wrote — up to the parent's 4096 — and a recursive walk
- * overflowed at ~3450-3925 levels, failing a script that touched nothing.
+ * Validates and copies the document with an explicit stack: every script is
+ * handed the run's whole document, at any depth the parent accepts.
  *
  * Depth-first and in key order, so the first problem is the one a recursive
  * walk would report. Each value is read once and the copy is built from those

@@ -22,7 +22,7 @@ const GUARDED_KINDS = [...TEXT_KINDS, "arg"] as const;
 
 // MAX_OUTPUT_DEPTH in flow-script-executor.ts: the deepest document a script
 // step may return, its root object counting as level 1.
-const MAX_DOCUMENT_DEPTH = 4096;
+const MAX_DOCUMENT_DEPTH = 1024;
 
 const UNSAFE_NOTE =
   "past the largest integer a JSON number holds exactly (9007199254740991), so it may have " +
@@ -789,12 +789,12 @@ describe("describeUnsafeIntegers", () => {
 
 // ── depth ─────────────────────────────────────────────────────────────
 
-describe("flow-output — a document nested 4,096 levels deep", () => {
+describe("flow-output — a document nested 1,024 levels deep", () => {
   it("warns about an unsafe integer at the deepest level without overflowing", () => {
     const returned = nested(MAX_DOCUMENT_DEPTH, "12345678901234567891") as OutputDocument;
-    // "output" plus 4,096 ".a" is 8,198 characters; a path is cut at 200.
+    // "output" plus 1,024 ".a" is 2,054 characters; a path is cut at 200.
     expect(describeUnsafeIntegers({}, returned)).toBe(
-      `${("output" + ".a".repeat(MAX_DOCUMENT_DEPTH)).slice(0, 200)}…(+7998 chars) is ` +
+      `${("output" + ".a".repeat(MAX_DOCUMENT_DEPTH)).slice(0, 200)}…(+1854 chars) is ` +
         `12345678901234567000, ${UNSAFE_NOTE}`
     );
   });
@@ -803,19 +803,19 @@ describe("flow-output — a document nested 4,096 levels deep", () => {
     const document = { deep: nested(MAX_DOCUMENT_DEPTH, '"{{secret:X}}"') };
     expect(reject("{{output:deep}}", "arg", document)).toBe(
       "{{output:deep}} gave an object holding the secret placeholder {{secret:X}} at " +
-        `\`${".a".repeat(97)}…(+7998 chars)\`. ${PLACEHOLDER_NOTE}`
+        `\`${".a".repeat(97)}…(+1854 chars)\`. ${PLACEHOLDER_NOTE}`
     );
   });
 
   it("prints a deep object in an echo", () => {
-    // The root is level 1, so `a` holds the other 4,095.
+    // The root is level 1, so `a` holds the other 1,023.
     const inner = MAX_DOCUMENT_DEPTH - 1;
     expect(
       resolve("{{output:a}}", "echo", nested(MAX_DOCUMENT_DEPTH, "1") as OutputDocument).value
     ).toBe('{"a":'.repeat(inner) + "1" + "}".repeat(inner));
   });
 
-  // `structuredClone` is recursive in V8 and overflowed well below 4,096 levels.
+  // `structuredClone` is recursive in V8.
   it("copies a whole-field arg object nested as deep as a script may return", () => {
     const document = nested(MAX_DOCUMENT_DEPTH, "1") as OutputDocument;
     const resolution = resolveOutputField("{{output:a}}", "arg", document);
@@ -842,7 +842,7 @@ describe("sameJsonValue", () => {
     expect(sameJsonValue(null, {})).toBe(false);
   });
 
-  it("compares documents 4,096 levels deep without recursion", () => {
+  it("compares documents 1,024 levels deep without recursion", () => {
     const left = nested(MAX_DOCUMENT_DEPTH, "1");
     expect(sameJsonValue(left, nested(MAX_DOCUMENT_DEPTH, "1"))).toBe(true);
     expect(sameJsonValue(left, nested(MAX_DOCUMENT_DEPTH, "2"))).toBe(false);

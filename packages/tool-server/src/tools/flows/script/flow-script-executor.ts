@@ -1122,11 +1122,10 @@ export function mergedOutputProblem(document: Record<string, unknown>): string |
 /**
  * How deep a document may nest; the size cap alone allows ~500 000 levels. A
  * fixed number rather than a trial encode, so the verdict does not depend on the
- * host's Node: below where `JSON.stringify` (bare in `flow-add-script.ts`)
- * overflows on Node 24 and older. The runner's `walk` is iterative because every
- * script is handed the run's document, at any depth this admits.
+ * host: well below where the recursive `JSON.stringify` of Node 24 and older
+ * overflows on every platform (Windows x64 already does below 4096).
  */
-const MAX_OUTPUT_DEPTH = 4096;
+const MAX_OUTPUT_DEPTH = 1024;
 
 /** Enough of a path to place a value. */
 const MAX_PROBLEM_PATH_CHARS = 80;
