@@ -63,7 +63,8 @@ export function notAnsweredError(stage: string): FailureError {
 export function pageNotAnsweringError(stage: string): FailureError {
   return new FailureError(
     "The page did not answer, so fill changed nothing. A JavaScript dialog (alert, confirm or " +
-      "prompt) may be open, or the page is busy or has crashed: close any dialog, then retry. " +
+      "prompt) may be open, or the page is busy or has crashed. Argent cannot close a dialog: ask " +
+      "the user to close it, then retry. " +
       "If no dialog is open and it still does not answer, restart the app.",
     {
       error_code: FAILURE_CODES.FILL_NOT_VERIFIED,

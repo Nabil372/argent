@@ -59,6 +59,7 @@ export function buildChromiumFillScript(text: string): string {
     const doc = el.ownerDocument || document;
     const win = doc.defaultView || window;
     const tag = String(el.tagName).toLowerCase();
+    if (tag === "embed") return { status: "unsupported", detail: "focus is in an <embed>, which fill cannot reach" };
     const type = tag === "input" ? String(el.type || "text").toLowerCase() : null;
     if (type !== null && /^(date|time|month|week|datetime-local)$/.test(type)) {
       return { status: "unsupported", detail: "a " + type + " input holds a structured value" };
@@ -73,11 +74,11 @@ export function buildChromiumFillScript(text: string): string {
     if (tag === "input" && /[\\r\\n]/.test(text)) {
       return { status: "unsupported", detail: "a single-line input cannot hold a newline" };
     }
-    // Typed text stops at maxlength, which the value setter ignores. A
-    // textarea stores CRLF as one LF.
+    // A textarea or an editable element stores a CR or CRLF as one LF.
+    const want = text.replace(/\\r\\n?/g, "\\n");
+    // Typed text stops at maxlength, which the value setter ignores.
     const limited = tag === "textarea" || /^(text|search|url|tel|email|password)$/.test(type);
-    const length = tag === "textarea" ? text.replace(/\\r\\n/g, "\\n").length : text.length;
-    if (limited && el.maxLength >= 0 && length > el.maxLength) {
+    if (limited && el.maxLength >= 0 && want.length > el.maxLength) {
       return { status: "unsupported", detail: "the text is longer than its maxlength of " + el.maxLength };
     }
     // A number input holds only a valid number and an email input drops the
@@ -106,7 +107,9 @@ export function buildChromiumFillScript(text: string): string {
     const trimEnd = (s) => s.replace(/[\\u200b\\ufeff]/g, "").replace(/\\n+$/, "");
     const read = () =>
       control ? String(el.value == null ? "" : el.value) : trimEnd(String(el.innerText == null ? el.textContent || "" : el.innerText));
-    const matches = () => (control ? read() === text : read() === trimEnd(text));
+    // A number input showing text it cannot parse reads as "".
+    const badInput = () => el.validity != null && el.validity.badInput === true;
+    const matches = () => (control ? read() === want && !badInput() : read() === trimEnd(want));
     const settle = async () => {
       for (let i = 0; i < 10; i++) {
         await sleep(i === 0 ? 0 : 50);
@@ -116,10 +119,11 @@ export function buildChromiumFillScript(text: string): string {
     };
 
     const before = read();
-    // The browser fires input synchronously for an edit it performed.
+    // The browser fires input synchronously for an edit it performed. The
+    // window's capture phase sees it before a page listener can stop it.
     let edited = false;
     const onInput = () => { edited = true; };
-    el.addEventListener("input", onInput);
+    win.addEventListener("input", onInput, true);
     try {
       if (control) {
         try { el.select(); } catch (e) { /* no selection API */ }
@@ -132,7 +136,7 @@ export function buildChromiumFillScript(text: string): string {
       }
       try {
         if (text === "") {
-          if (read() !== "") doc.execCommand("delete");
+          if (read() !== "" || badInput()) doc.execCommand("delete");
         } else {
           doc.execCommand("insertText", false, text);
         }
@@ -141,7 +145,7 @@ export function buildChromiumFillScript(text: string): string {
         if (!control) throw e;
       }
     } finally {
-      el.removeEventListener("input", onInput);
+      win.removeEventListener("input", onInput, true);
     }
     let verified = await settle();
     // A refused edit fires no input and leaves the old text. Anything else is

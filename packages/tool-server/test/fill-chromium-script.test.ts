@@ -5,9 +5,10 @@ import { buildChromiumFillScript } from "../src/tools/fill/chromium";
  * Runs the real page script against a hand-built document. The mock carries
  * only what the script reads: the focused element (through an open shadow
  * root or a frame), its kind, `select()`, the document selection and
- * `execCommand`, which fires `input` on the element it edits, `createElement` for a detached input that applies the HTML
- * value sanitization of number and email inputs, and the window's native
- * value setters and Event.
+ * `execCommand`, which stores line breaks as LF outside an input and fires
+ * `input` through the window's capture listeners, `createElement` for a
+ * detached input that applies the HTML value sanitization of number and email
+ * inputs, and the window's native value setters and Event.
  */
 
 interface Page {
@@ -23,7 +24,7 @@ interface PageOptions {
   restore?: boolean;
   /** The browser changes inserted text, as Chromium punycodes an email input's domain. */
   rewrite?: (text: string) => string;
-  /** The edit's `input` never reaches the element, as when the page stops it in the capture phase. */
+  /** The edit's `input` never reaches fill's listener, as when an earlier window capture listener of the page stops it. */
   hideInput?: boolean;
 }
 
@@ -55,7 +56,18 @@ function makePage(options: PageOptions = {}): Page {
   class Event {
     constructor(readonly type: string) {}
   }
-  const win = { HTMLInputElement, HTMLTextAreaElement, Event };
+  // Only capture listeners: a listener on the field can stop the bubble phase.
+  const listeners = new Set<() => void>();
+  const win = {
+    HTMLInputElement,
+    HTMLTextAreaElement,
+    Event,
+    listeners,
+    addEventListener: (type: string, fn: () => void, capture?: boolean) =>
+      type === "input" && capture === true && listeners.add(fn),
+    removeEventListener: (type: string, fn: () => void, capture?: boolean) =>
+      type === "input" && capture === true && listeners.delete(fn),
+  };
   const body: any = { tagName: "BODY", isContentEditable: false, parentElement: null };
   const doc: any = {
     body,
@@ -86,25 +98,17 @@ function makePage(options: PageOptions = {}): Page {
       if (!el) return false;
       const key = "_value" in el ? "_value" : "innerText";
       const before = el[key];
-      if (command === "insertText") el[key] = options.rewrite ? options.rewrite(value!) : value;
-      else if (command === "delete") el[key] = "";
+      if (command === "insertText") {
+        const text = options.rewrite ? options.rewrite(value!) : value!;
+        el[key] = el.tagName === "INPUT" ? text : text.replace(/\r\n?/g, "\n");
+      } else if (command === "delete") el[key] = "";
       else return false;
-      if (!options.hideInput) for (const listener of el.listeners) listener();
+      if (!options.hideInput) for (const listener of win.listeners) listener();
       if (options.restore) setTimeout(() => (el[key] = before), 0);
       return true;
     },
   };
   return { doc, win, events };
-}
-
-/** The `input` listeners of a mock element; the edit calls them. */
-function listenable() {
-  const listeners = new Set<() => void>();
-  return {
-    listeners,
-    addEventListener: (type: string, fn: () => void) => type === "input" && listeners.add(fn),
-    removeEventListener: (type: string, fn: () => void) => type === "input" && listeners.delete(fn),
-  };
 }
 
 function control(page: Page, tag: "INPUT" | "TEXTAREA", props: Record<string, unknown> = {}) {
@@ -127,7 +131,6 @@ function control(page: Page, tag: "INPUT" | "TEXTAREA", props: Record<string, un
       page.events.push(event.type);
       return true;
     },
-    ...listenable(),
     ...props,
   });
   return el;
@@ -140,7 +143,6 @@ function editable(page: Page, props: Record<string, unknown> = {}) {
     innerText: "old text",
     parentElement: page.doc.body,
     ownerDocument: page.doc,
-    ...listenable(),
     ...props,
   };
 }
@@ -229,10 +231,10 @@ describe("fill page script", () => {
     await expect(runScript(page, "a@ąę.pl")).resolves.toEqual({ status: "ok", verified: false });
     expect(input._value).toBe("a@xn--2da4b.pl");
     expect(page.events).toEqual([]);
-    expect(input.listeners.size).toBe(0);
+    expect(page.win.listeners.size).toBe(0);
   });
 
-  it("keeps a rewrite whose input event the page stopped before it reached the field", async () => {
+  it("keeps a rewrite whose input event the page stopped before fill saw it", async () => {
     const page = makePage({ rewrite: (t) => t.toUpperCase(), hideInput: true });
     const input = control(page, "INPUT");
     page.doc.activeElement = input;
@@ -251,7 +253,7 @@ describe("fill page script", () => {
     await expect(runScript(page, "new")).resolves.toEqual({ status: "ok", verified: true });
     expect(input._value).toBe("new");
     expect(page.events).toEqual(["input", "change"]);
-    expect(input.listeners.size).toBe(0);
+    expect(page.win.listeners.size).toBe(0);
   });
 
   it.each([
@@ -273,14 +275,27 @@ describe("fill page script", () => {
         detail: "the text is longer than its maxlength of 3",
       });
       expect(field._value).toBe("old value");
+      expect(page.doc.selected).toBeNull();
     }
   );
+
+  it("refuses any text in a field with a maxlength of 0", async () => {
+    const page = makePage();
+    const input = control(page, "INPUT", { maxLength: 0, _value: "" });
+    page.doc.activeElement = input;
+    await expect(runScript(page, "a")).resolves.toEqual({
+      status: "unsupported",
+      detail: "the text is longer than its maxlength of 0",
+    });
+    expect(input._value).toBe("");
+  });
 
   it("counts each CRLF in a textarea as the one line break it stores", async () => {
     const page = makePage();
     const area = control(page, "TEXTAREA", { maxLength: 5 });
     page.doc.activeElement = area;
-    await expect(runScript(page, "a\r\nb\r\nc")).resolves.toMatchObject({ status: "ok" });
+    await expect(runScript(page, "a\r\nb\r\nc")).resolves.toEqual({ status: "ok", verified: true });
+    expect(area._value).toBe("a\nb\nc");
     area._value = "old value";
     await expect(runScript(page, "ab\r\ncde")).resolves.toEqual({
       status: "unsupported",
@@ -318,6 +333,7 @@ describe("fill page script", () => {
     page.doc.activeElement = input;
     await expect(runScript(page, text)).resolves.toEqual({ status: "unsupported", detail });
     expect(input._value).toBe("42");
+    expect(page.doc.selected).toBeNull();
   });
 
   it.each([
@@ -325,6 +341,7 @@ describe("fill page script", () => {
     ["a number input", "", NUMBER],
     ["an email input", "a@b.co", EMAIL],
     ["a multiple email input", "a@b.co,c@d.co", EMAILS],
+    ["a single email input", "a@b.co, c@d.co", EMAIL],
   ])("fills %s with %j", async (_n, text, props) => {
     const page = makePage();
     const input = control(page, "INPUT", { ...props, _value: "42" });
@@ -356,6 +373,51 @@ describe("fill page script", () => {
       });
     }
   );
+
+  it("refuses focus in an <embed>, whose document it cannot read", async () => {
+    const page = makePage();
+    page.doc.activeElement = { tagName: "EMBED" };
+    await expect(runScript(page, "x")).resolves.toEqual({
+      status: "unsupported",
+      detail: "focus is in an <embed>, which fill cannot reach",
+    });
+  });
+
+  it.each([
+    ["a textarea", (page: Page) => control(page, "TEXTAREA"), "_value"],
+    ["a contenteditable", (page: Page) => editable(page), "innerText"],
+  ] as const)("verifies %s that stores a CR or CRLF as LF", async (_n, make, key) => {
+    const page = makePage();
+    const field = make(page);
+    page.doc.activeElement = field;
+    await expect(runScript(page, "a\r\nb\rc")).resolves.toEqual({ status: "ok", verified: true });
+    expect(field[key]).toBe("a\nb\nc");
+  });
+
+  it("clears a number input that shows text it cannot parse", async () => {
+    const page = makePage();
+    const validity = { badInput: true };
+    const input = control(page, "INPUT", { type: "number", _value: "", validity });
+    page.doc.activeElement = input;
+    const execCommand = page.doc.execCommand;
+    page.doc.execCommand = (...args: [string, boolean, string?]) => {
+      if (args[0] === "delete") validity.badInput = false;
+      return execCommand(...args);
+    };
+    await expect(runScript(page, "")).resolves.toEqual({ status: "ok", verified: true });
+    expect(validity.badInput).toBe(false);
+  });
+
+  it("does not verify a number input that still shows text it cannot parse", async () => {
+    const page = makePage();
+    const input = control(page, "INPUT", {
+      type: "number",
+      _value: "",
+      validity: { badInput: true },
+    });
+    page.doc.activeElement = input;
+    await expect(runScript(page, "")).resolves.toEqual({ status: "ok", verified: false });
+  });
 
   it("answers no_focus for an <object> that shows an image, which has no document", async () => {
     const page = makePage();
@@ -454,7 +516,7 @@ describe("fill page script", () => {
     const div = editable(page);
     page.doc.activeElement = div;
     await expect(runScript(page, "x")).resolves.toEqual({ status: "error" });
-    expect(div.listeners.size).toBe(0);
+    expect(page.win.listeners.size).toBe(0);
   });
 
   it("answers no text for a password input", async () => {
