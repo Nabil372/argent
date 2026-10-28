@@ -11,6 +11,7 @@ import { startNativeProfilerIos } from "./platforms/ios";
 import { startNativeProfilerAndroid } from "./platforms/android";
 import { metroDeviceIdParam } from "../../../utils/debugger/device-id-param";
 import { nativeNetworkCaptureWarning } from "../../../utils/profiler-shared/network-capture-warning";
+import { trackProfilingRun } from "../../../utils/profiling-devices";
 
 const zodSchema = z.object({
   device_id: metroDeviceIdParam(
@@ -86,13 +87,17 @@ Fails if no app is running on the device, or the profiler cannot attach to the p
 
     // Dispatch on the session's platform, not the udid shape: tests pair a
     // synthetic platform with a fake udid that fails the iOS-UDID regex.
+    let started: Awaited<ReturnType<typeof startNativeProfilerAndroid>>;
+    let warning: string | undefined;
     if (api.platform === "ios") {
       await ensureDeps(["xcrun"]);
-      return startNativeProfilerIos(api, params);
+      started = await startNativeProfilerIos(api, params);
+    } else {
+      await ensureDeps(["adb"]);
+      started = await startNativeProfilerAndroid(api, params);
+      warning = nativeNetworkCaptureWarning(params.device_id);
     }
-    await ensureDeps(["adb"]);
-    const started = await startNativeProfilerAndroid(api, params);
-    const warning = nativeNetworkCaptureWarning(params.device_id);
+    trackProfilingRun(device.id, api);
     return warning ? { ...started, warning } : started;
   },
 };
