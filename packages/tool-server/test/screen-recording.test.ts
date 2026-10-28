@@ -2244,7 +2244,9 @@ describe("debug finalization safeguards", () => {
     await expect(stopCapture(api)).rejects.toThrow("already stopped");
     expect(await stopCapture(api, file)).toBe(result);
     await fs.rm(file);
-    await expect(stopCapture(api, file)).rejects.toThrow("no video file exists");
+    await expect(stopCapture(api, file)).rejects.toThrow(
+      "The completed recording is no longer available"
+    );
     expect(child.stdin.end).toHaveBeenCalledOnce();
     fakeStream();
     const next = fakeChild();
@@ -2275,7 +2277,9 @@ describe("debug finalization safeguards", () => {
     await expect(stop()).rejects.toThrow("already stopped");
     expect(artifacts.list()).toHaveLength(1);
     await fs.rm(outputFile);
-    await expect(stop(outputFile)).rejects.toThrow("no video file exists");
+    await expect(stop(outputFile)).rejects.toThrow(
+      "The completed recording is no longer available"
+    );
     expect(artifacts.list()).toHaveLength(1);
   });
 
