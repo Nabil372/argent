@@ -19,7 +19,18 @@
  * - device   — udid / serial when the artifact is device-scoped.
  */
 
-import { copyFile, mkdir, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  link,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from "node:path";
@@ -232,9 +243,7 @@ async function writeCappedResponse(res: Response, file: string, size: number): P
       await output.close().catch(() => {});
       await rm(file, { force: true }).catch(() => {});
     }
-    if (output || (err as NodeJS.ErrnoException).code !== "EEXIST") {
-      await reader.cancel().catch(() => {});
-    }
+    await reader.cancel().catch(() => {});
     throw err;
   } finally {
     reader.releaseLock();
@@ -494,23 +503,33 @@ export async function materializeArtifacts(
               `Recording size ${value.size} is invalid or exceeds the 2 GiB download limit.`
             );
           }
-          const res = await fetchFn(`${ctx.toolsUrl}/artifacts/${value.id}`, {
-            headers: authHeaders,
-            signal: ctx.signal,
-          });
-          if (!res.ok) throw new Error(`Artifact download failed with HTTP ${res.status}.`);
-          const finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
-            writeCappedResponse(res, p, value.size)
-          );
-          if (!finalPath) throw new Error("No unused recording filename was available.");
-          if (value.mimeType.startsWith("image/")) {
-            images.push({
-              localPath: finalPath,
-              data: await readFile(finalPath),
-              mimeType: value.mimeType,
+          const downloadDir = await mkdtemp(join(saveTarget.dir, ".argent-download-"));
+          try {
+            const res = await fetchFn(`${ctx.toolsUrl}/artifacts/${value.id}`, {
+              headers: authHeaders,
+              signal: ctx.signal,
             });
+            if (!res.ok) {
+              await res.body?.cancel().catch(() => {});
+              throw new Error(`Artifact download failed with HTTP ${res.status}.`);
+            }
+            const partial = join(downloadDir, "recording.part");
+            await writeCappedResponse(res, partial, value.size);
+            const finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
+              link(partial, p)
+            );
+            if (!finalPath) throw new Error("No unused recording filename was available.");
+            if (value.mimeType.startsWith("image/")) {
+              images.push({
+                localPath: finalPath,
+                data: await readFile(finalPath),
+                mimeType: value.mimeType,
+              });
+            }
+            return finalPath;
+          } finally {
+            await rm(downloadDir, { recursive: true, force: true });
           }
-          return finalPath;
         } catch (err) {
           if (value.kind === "screen-recording" && !ctx.signal?.aborted) {
             const reason = err instanceof Error ? err.message : String(err);

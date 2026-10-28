@@ -861,7 +861,13 @@ describe("materializeArtifacts durable destination", () => {
     };
     const { result } = await materializeArtifacts(
       { video: h },
-      { toolsUrl: "http://remote:3001", fetchImpl: fakeFetch({ viddup: MP4 }) }
+      {
+        toolsUrl: "http://remote:3001",
+        fetchImpl: vi.fn(
+          async () =>
+            new Response(Buffer.from(MP4), { headers: { "Content-Length": String(MP4.length) } })
+        ),
+      }
     );
 
     const out = (result as { video: string }).video;
@@ -1014,7 +1020,12 @@ describe("materializeArtifacts durable destination", () => {
     );
     controller.enqueue(Buffer.from("part"));
     const file = join(projectRoot, ".argent/recordings", "streamed.mp4");
-    await vi.waitFor(async () => expect((await stat(file)).size).toBe(4));
+    const dir = join(projectRoot, ".argent/recordings");
+    await vi.waitFor(async () => {
+      const staging = (await readdir(dir)).find((name) => name.startsWith(".argent-download-"))!;
+      expect((await stat(join(dir, staging, "recording.part"))).size).toBe(4);
+    });
+    expect(await absent(file)).toBe(true);
     controller.enqueue(Buffer.from("rest"));
     controller.close();
     expect((await downloading).result).toEqual({ video: file });
@@ -1166,7 +1177,12 @@ describe("materializeArtifacts durable destination", () => {
       );
       const completed = downloading;
       controller.enqueue(Buffer.from("part"));
-      await vi.waitFor(async () => expect((await stat(file)).size).toBe(4));
+      const dir = join(projectRoot, ".argent/recordings");
+      await vi.waitFor(async () => {
+        const staging = (await readdir(dir)).find((name) => name.startsWith(".argent-download-"))!;
+        expect((await stat(join(dir, staging, "recording.part"))).size).toBe(4);
+      });
+      expect(await absent(file)).toBe(true);
       controller.enqueue(Buffer.from("rest"));
       expect((await completed).result).toMatchObject({
         video: null,
