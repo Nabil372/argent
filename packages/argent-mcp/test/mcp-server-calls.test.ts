@@ -223,6 +223,12 @@ describe("startMcpServer tool calls", () => {
     ]);
   });
 
+  it("sends instructions that point to no file only Claude Code has", () => {
+    // Every client's model reads the instructions; only Claude Code loads .claude/rules.
+    expect(client.getInstructions()).toMatch(/^Argent/);
+    expect(client.getInstructions()).not.toContain(".claude/");
+  });
+
   it("renders a run report the same whether called as flow-execute or e2e-execute", async () => {
     const byAlias = await client.callTool({ name: "flow-execute", arguments: {} });
     const byId = await client.callTool({ name: "e2e-execute", arguments: {} });
