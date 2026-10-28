@@ -87,6 +87,7 @@ export type ServiceRef = string | { urn: string; options?: Record<string, unknow
 
 export interface InvokeToolOptions {
   signal?: AbortSignal;
+  onRecordingStop?: (deviceId: string, outputFile: string) => () => void;
   /**
    * Resolution outcome for each declared {@link ToolDefinition.fileInputs} target
    * the caller sent as a file-input wrapper, keyed by target arg name. Populated

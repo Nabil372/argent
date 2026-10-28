@@ -1,3 +1,4 @@
+import { invokeSubTool } from "../src/utils/sub-invoke";
 import {
   registerActiveScreenRecording,
   clearActiveScreenRecording,
@@ -13,7 +14,7 @@ import {
   FAILURE_CODES,
   FailureError,
   ToolExecutionError,
-  type Registry,
+  Registry,
   type InvokeToolOptions,
 } from "@argent/registry";
 
@@ -135,10 +136,12 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       let signal: AbortSignal | undefined;
       const registry = stubRegistry(async (options) => {
         signal = options?.signal;
+        const releaseStop = options?.onRecordingStop?.("device", "/server/recording.mp4");
         enter();
         clearActiveScreenRecording("device");
         await pending;
         completed = true;
+        releaseStop?.();
         return { video: "saved.mp4" };
       });
       const def = registry.getTool("test-tool")!;
@@ -195,6 +198,113 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     handle.dispose();
     finish();
     expect((await response).body).toEqual({ data: { video: "saved.mp4" } });
+  });
+
+  it("keeps admission recovery paths after recording teardown clears reminders", async () => {
+    registerActiveScreenRecording("device", Date.now(), 60, "/server/original.mp4");
+    handle = createHttpApp(stubRegistry(async () => ({})));
+    handle.dispose();
+    clearActiveScreenRecording("device");
+    const response = await supertest(handle.app)
+      .post("/tools/screen-recording-stop")
+      .send({ udid: "device" })
+      .expect(503);
+    expect(response.body.error).toContain("/server/original.mp4");
+    expect(response.body.error).toContain("This call was not started");
+  });
+
+  it.each(["resolve", "invoke"])(
+    "normalizes an admitted call interrupted at registry %s",
+    async (operation) => {
+      const registry = new Registry();
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      let resume!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        resume = resolve;
+      });
+      registry.registerTool({
+        id: "lazy",
+        services: () => ({}),
+        execute: async () => {
+          enter();
+          await pending;
+          return operation === "resolve"
+            ? registry.resolveService("Service:only")
+            : registry.invokeTool("missing");
+        },
+      });
+      handle = createHttpApp(registry);
+      const response = supertest(handle.app)
+        .post("/tools/lazy")
+        .send({})
+        .then((res) => res);
+      await entered;
+      registry.beginShutdown();
+      handle.dispose();
+      resume();
+      const result = await response;
+      expect(result.status).toBe(503);
+      expect(result.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+      expect(result.body.error).toContain("The tool may have run");
+      expect(result.body.error).toContain("Check its effect before running it again");
+      expect(result.body.error).not.toContain("This call was not started");
+    }
+  );
+
+  it("preserves nested recording-stop context while a flow is interrupted", async () => {
+    const registry = new Registry();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    let completed = false;
+    registry.registerTool({
+      id: "screen-recording-stop",
+      services: () => ({}),
+      execute: async (_services, _args, ctx) => {
+        signal = ctx?.signal;
+        const release = ctx?.onRecordingStop?.("device", "/server/nested.mp4");
+        enter();
+        await pending;
+        release?.();
+        completed = true;
+        return { video: "saved.mp4" };
+      },
+    });
+    registry.registerTool({
+      id: "e2e-execute",
+      longRunning: true,
+      services: () => ({}),
+      execute: async (_services, _args, ctx) =>
+        invokeSubTool(registry, ctx, "screen-recording-stop", {}),
+    });
+    handle = createHttpApp(registry);
+    const response = supertest(handle.app)
+      .post("/tools/e2e-execute")
+      .set("Accept", "application/x-ndjson")
+      .send({})
+      .buffer(true)
+      .parse(collectText)
+      .then((res) => res);
+    await entered;
+    registry.beginShutdown();
+    handle.dispose();
+    const result = parseLines((await response).body as string)[0];
+    expect(result.error_code).toBe(FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN);
+    expect(result.error).toContain("/server/nested.mp4");
+    expect(result.error).toContain("The tool may have run");
+    expect(signal?.aborted).toBe(false);
+    expect(completed).toBe(false);
+    finish();
+    await vi.waitFor(() => expect(completed).toBe(true));
   });
 
   it("streams each emitProgress event as a line, then the terminal result", async () => {

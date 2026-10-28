@@ -40,6 +40,7 @@ export async function invokeSubTool<T = unknown>(
   const recordChildInvocation = ctx?.recordChildInvocation;
   const flowStack = extra?.flowStack ?? ctx?.flowStack;
   const forwarded = {
+    ...(ctx?.onRecordingStop ? { onRecordingStop: ctx.onRecordingStop } : {}),
     ...(extra?.fileInputs ? { fileInputs: extra.fileInputs } : {}),
     ...(flowStack ? { flowStack } : {}),
   };

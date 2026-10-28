@@ -108,39 +108,32 @@ function isToolExposed(
 function serverShutdownError(
   toolId?: string,
   args?: unknown,
-  capturedOutput?: string
+  details: { admitted?: boolean; outputFiles?: string[] } = {}
 ): FailureError {
-  const recording = toolId === "screen-recording-stop";
   const suppliedOutput =
     args && typeof args === "object" && "outputFile" in args && typeof args.outputFile === "string"
       ? args.outputFile
       : undefined;
-  const deviceId = extractDeviceArg(args);
-  const outputFile =
-    suppliedOutput ??
-    capturedOutput ??
-    (recording
-      ? getActiveScreenRecordings().find((entry) => entry.deviceId === deviceId)?.outputFile
-      : undefined) ??
-    "the outputFile returned by screen-recording-start";
-  return new FailureError(
-    recording
-      ? `The tool-server is shutting down. Recording finalization may continue, but this response does not confirm a saved video. Check ${outputFile} on the tool-server after encoding finishes. A restart loses result retrieval state.`
-      : "The tool-server is shutting down. Wait for it to exit before reconnecting. This call was not retried automatically.",
-    {
-      error_code: recording
-        ? FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
-        : FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN,
-      failure_stage: "http_shutdown",
-      failure_area: "http",
-      error_kind: "unknown",
-    }
-  );
-}
-
-function rejectDuringShutdown(res: Response, toolId?: string, args?: unknown): void {
-  const error = serverShutdownError(toolId, args);
-  res.status(503).json({ error: error.message, ...errorSignalFields(error) });
+  const outputFiles = details.outputFiles?.length
+    ? [...new Set(details.outputFiles)]
+    : suppliedOutput
+      ? [suppliedOutput]
+      : [];
+  const recording = toolId === "screen-recording-stop" || outputFiles.length > 0;
+  const admission = details.admitted
+    ? "The tool may have run and may still finish. Check its effect before running it again."
+    : "This call was not started.";
+  const guidance = recording
+    ? `Recording finalization may continue, but this response does not confirm a saved video. Check ${outputFiles.join(", ") || "the outputFile returned by screen-recording-start"} on the tool-server after encoding finishes. A restart loses result retrieval state.`
+    : "Reconnect after the server exits. This call was not retried automatically.";
+  return new FailureError(`The tool-server is shutting down. ${admission} ${guidance}`, {
+    error_code: recording
+      ? FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      : FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN,
+    failure_stage: "http_shutdown",
+    failure_area: "http",
+    error_kind: "unknown",
+  });
 }
 
 function findDependencyMissing(err: unknown): DependencyMissingError | null {
@@ -475,6 +468,17 @@ function takeToolNote(data: unknown): string | undefined {
 export function createHttpApp(registry: Registry, options?: HttpAppOptions): HttpAppHandle {
   const app = express();
   let disposed = false;
+  let shutdownRecordings = new Map<string, string>();
+  function rejectDuringShutdown(res: Response, toolId?: string, args?: unknown): void {
+    const outputFile =
+      toolId === "screen-recording-stop"
+        ? shutdownRecordings.get(extractDeviceArg(args) ?? "")
+        : undefined;
+    const error = serverShutdownError(toolId, args, {
+      outputFiles: outputFile ? [outputFile] : [],
+    });
+    res.status(503).json({ error: error.message, ...errorSignalFields(error) });
+  }
   // 48mb: file-input wrappers may inline base64 file content when the client is
   // remote. Bounds the whole encoded request; the decoded per-file ceiling is
   // enforced in file-inputs.ts.
@@ -487,7 +491,10 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // orphans from aborted or failed calls.
   const uploads = new Map<string, UploadEntry & { expireAt: number; bytes: number }>();
   const activeUploads = new Set<() => void>();
-  const pendingCalls = new Set<() => void>();
+  const pendingCalls = new Set<{
+    interrupt: () => void;
+    recordings: Set<{ deviceId: string; outputFile: string; stopping: boolean }>;
+  }>();
   // Settled bytes plus bytes of streams still in flight, so the cap holds against
   // a burst of parallel uploads instead of only settled ones.
   let inFlightUploadBytes = 0;
@@ -1087,24 +1094,34 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         res.flushHeaders();
       }
 
-      const recordingOutput =
-        name === "screen-recording-stop"
-          ? getActiveScreenRecordings().find((entry) => entry.deviceId === deviceArg)?.outputFile
-          : undefined;
+      const recordings = new Set<{ deviceId: string; outputFile: string; stopping: boolean }>();
+      const shutdownFailure = () =>
+        serverShutdownError(name, parsedData, {
+          admitted: true,
+          outputFiles: [...recordings].map((recording) => recording.outputFile),
+        });
       let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
       let interrupt!: () => void;
       const interrupted = new Promise<never>((_resolve, reject) => {
         interrupt = () => {
           shutdownTimer = setTimeout(() => {
-            reject(serverShutdownError(name, parsedData, recordingOutput));
-            if (name !== "screen-recording-stop") controller.abort();
+            reject(shutdownFailure());
+            if (![...recordings].some((recording) => recording.stopping)) controller.abort();
           }, 1_500);
         };
       });
-      pendingCalls.add(interrupt);
+      const pendingCall = { interrupt, recordings };
+      pendingCalls.add(pendingCall);
       try {
         const invocation = registry.invokeTool(name, parsedData, {
           signal: controller.signal,
+          onRecordingStop: (deviceId, outputFile) => {
+            const recording = { deviceId, outputFile, stopping: true };
+            recordings.add(recording);
+            return () => {
+              recording.stopping = false;
+            };
+          },
           ...(resolvedFileInputs ? { fileInputs: resolvedFileInputs } : {}),
           // The argent client marks every call it sends over a link. A false
           // mark makes the recorder stricter for that caller and keeps its
@@ -1175,6 +1192,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           res.json({ data, ...notePayload, ...profilingPayload });
         }
       } catch (err: unknown) {
+        if (getFailureSignal(err)?.error_code === FAILURE_CODES.REGISTRY_SHUTTING_DOWN) {
+          err = shutdownFailure();
+        }
         /**
          * Attribution, applied once here rather than at ~30 throw sites. A
          * failure on a provider-supplied device names the provider and points
@@ -1272,7 +1292,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           .status(500)
           .json({ error: attribute(formatErrorForAgent(err)), ...errorSignalFields(err) });
       } finally {
-        pendingCalls.delete(interrupt);
+        pendingCalls.delete(pendingCall);
         clearTimeout(shutdownTimer);
         if (keepAlive) clearInterval(keepAlive);
         if (streamKeepAlive) clearInterval(streamKeepAlive);
@@ -1294,7 +1314,16 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      for (const interrupt of pendingCalls) interrupt();
+      shutdownRecordings = new Map(
+        getActiveScreenRecordings().flatMap((recording) =>
+          recording.outputFile ? [[recording.deviceId, recording.outputFile] as const] : []
+        )
+      );
+      for (const call of pendingCalls) {
+        for (const recording of call.recordings)
+          shutdownRecordings.set(recording.deviceId, recording.outputFile);
+        call.interrupt();
+      }
       idleTimer.dispose();
       clearInterval(uploadSweeper);
       for (const cancel of activeUploads) cancel();

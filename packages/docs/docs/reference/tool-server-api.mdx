@@ -195,7 +195,7 @@ The tool-server sends headers before invoking the tool, with `Cache-Control: no-
 
 The client sends a call with a `members` field only one time. The MCP server sets no fetch timeout for these calls or long-running tools. For any streamed call, a connection failure after headers arrive does not resend the call. The error says that the tool possibly ran, for example `The connection to the tool-server closed before e2e-execute finished (fetch failed: other side closed). The tool may have run; check its effect before you run it again.`
 
-During shutdown, `GET /tools`, `POST /tools/:name`, and `POST /upload` reject new requests with HTTP 503. Pending tool calls get a terminal shutdown error after a short grace. Reconnect after the server exits. Argent does not retry these calls automatically.
+During shutdown, `GET /tools`, `POST /tools/:name`, and `POST /upload` reject new requests with HTTP 503. Pending calls can fail immediately during teardown. Other pending calls get a terminal shutdown error when the short grace expires. Reconnect after the server exits. Argent does not retry these calls automatically.
 
 ## What the tool-server does with the members
 
