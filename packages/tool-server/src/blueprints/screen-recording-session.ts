@@ -304,7 +304,11 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
           if (hadUnretrievedCapture) {
             const outputExists = abandonedOutput
               ? await fs.stat(abandonedOutput).then(
-                  (stat) => stat.size > 0,
+                  async (stat) => {
+                    if (stat.size === 0)
+                      await fs.rm(abandonedOutput, { force: true }).catch(() => {});
+                    return stat.size > 0;
+                  },
                   () => false
                 )
               : false;

@@ -456,7 +456,10 @@ describe("screen-recording session blueprint", () => {
     // service), then call `screen-recording-stop`. `Registry._teardown` nulls
     // the node's instance, so that stop resolves a BRAND NEW session — modelled
     // here by building a second one for the same device.
-    async function reapDuringCapture(hasOutput = true): Promise<{
+    async function reapDuringCapture(
+      hasOutput = true,
+      size = 64
+    ): Promise<{
       output: string;
       fresh: ScreenRecordingSessionApi;
     }> {
@@ -467,7 +470,7 @@ describe("screen-recording session blueprint", () => {
       fakeChild().exitOnStdinEnd();
       await startAndSettle(instance.api);
       const output = instance.api.outputFile!;
-      if (hasOutput) await fs.writeFile(output, Buffer.alloc(64, 1));
+      if (hasOutput) await fs.writeFile(output, Buffer.alloc(size, 1));
 
       await instance.dispose();
 
@@ -492,12 +495,16 @@ describe("screen-recording session blueprint", () => {
       );
     });
 
-    it("does not advertise an output path when disposal saved no video", async () => {
-      const { output, fresh } = await reapDuringCapture(false);
-      const err = await stopCapture(fresh).catch((e: unknown) => e);
-      expect((err as Error).message).toContain("No recording output was saved");
-      expect((err as Error).message).not.toContain(output);
-    });
+    it.each([false, true])(
+      "does not advertise or retain an empty disposed output (exists: %s)",
+      async (exists) => {
+        const { output, fresh } = await reapDuringCapture(exists, 0);
+        await expect(fs.access(output)).rejects.toThrow();
+        const err = await stopCapture(fresh).catch((e: unknown) => e);
+        expect((err as Error).message).toContain("No recording output was saved");
+        expect((err as Error).message).not.toContain(output);
+      }
+    );
 
     it("tells the owner when the teardown hit a CAPPED capture awaiting retrieval", async () => {
       // `hadUnretrievedCapture` has three arms and only `recordingActive` was
@@ -1932,23 +1939,34 @@ describe("debug finalization safeguards", () => {
     expect((await stopping).encodingComplete).toBe(true);
   });
 
-  it.each([false, true])(
-    "does not leave a teardown breadcrumb for a concurrent stop (capped: %s)",
-    async (capped) => {
+  it.each([
+    { capped: false, mode: "light" },
+    { capped: true, mode: "light" },
+    { capped: false, mode: "debug" },
+    { capped: true, mode: "debug" },
+  ] as const)(
+    "waits for a concurrent $mode stop without a teardown breadcrumb (capped: $capped)",
+    async ({ capped, mode }) => {
       const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
         device: iosDevice,
       } as never);
       fakeStream();
       const child = fakeChild();
-      await startAndSettle(instance.api, { mode: "debug", timeLimitSeconds: 5 });
+      await startAndSettle(instance.api, { mode, timeLimitSeconds: 5 });
       if (capped) await vi.advanceTimersByTimeAsync(5_000);
       await fs.writeFile(instance.api.outputFile!, Buffer.alloc(64, 1));
       const stopping = stopCapture(instance.api);
-      await instance.api.debugCapture!.finish();
-      const disposing = instance.dispose();
+      await instance.api.debugCapture?.finish();
+      let disposed = false;
+      const disposing = instance.dispose().then(() => {
+        disposed = true;
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(disposed).toBe(false);
       expect(instance.api.stopping).not.toBeNull();
+      expect(child.kill).not.toHaveBeenCalled();
       child.exit(0);
-      expect((await stopping).encodingComplete).toBe(true);
+      expect((await stopping).encodingComplete).toBe(mode === "debug" ? true : undefined);
       await disposing;
       const err = await stopCapture(await makeSession(iosDevice)).catch((error: unknown) => error);
       expect(getFailureSignal(err)?.error_code).toBe(
