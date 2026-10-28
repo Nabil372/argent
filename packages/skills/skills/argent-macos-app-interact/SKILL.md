@@ -48,7 +48,6 @@ A click that opens an open or save panel shows a file list that `describe` canno
 - Identifiers: AppKit accessibility identifier, SwiftUI `.accessibilityIdentifier()`, web `data-testid` (else `id`), React Native `testID` (also on a plain `View` or `Text`).
 - Hint `The Mac is locked` or `fallback walk`: clicks and typing still work, elements can be missing (an open context menu among them), and a `hidden` check cannot pass. While locked, screenshots and `snapshot` steps can fail: ask the user to unlock when you need a screenshot or a target is missing.
 - Hint `did not answer`: `describe` again.
-- Elements outside the app window (a menu past the window edge) are not in the tree.
 - An action with no effect: check that the window is not minimized; a minimized window takes no input. Ask the user to restore it.
 
 ## E2E tests

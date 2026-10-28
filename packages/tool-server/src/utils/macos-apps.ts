@@ -558,6 +558,8 @@ export interface MacosAppInfo {
   };
   /** An Electron app or a Chromium browser, from the frameworks it ships. */
   chromium?: "electron" | "browser";
+  /** `LSUIElement` or `LSBackgroundOnly`: the app has no Dock icon and no menu bar. */
+  uiElement: boolean;
 }
 
 // The framework a Chromium browser ships: "Google Chrome Framework", "Microsoft Edge
@@ -651,10 +653,12 @@ export async function inspectMacosApp(appPath: string): Promise<MacosAppInfo> {
     );
   }
 
-  const [bundleId, executableName, bundleName] = await Promise.all([
+  const [bundleId, executableName, bundleName, uiElement, backgroundOnly] = await Promise.all([
     plistValue(plist, "CFBundleIdentifier"),
     plistValue(plist, "CFBundleExecutable"),
     plistValue(plist, "CFBundleName"),
+    plistValue(plist, "LSUIElement"),
+    plistValue(plist, "LSBackgroundOnly"),
   ]);
   if (!bundleId) throw badBundle(`${plist} has no CFBundleIdentifier.`);
   if (!isMacosBundleId(bundleId)) {
@@ -690,6 +694,7 @@ export async function inspectMacosApp(appPath: string): Promise<MacosAppInfo> {
     executable,
     ...parseCodesignDisplay(codesign),
     ...(chromium ? { chromium } : {}),
+    uiElement: [uiElement, backgroundOnly].some((v) => v !== null && /^(true|yes|1)$/i.test(v)),
   };
 }
 

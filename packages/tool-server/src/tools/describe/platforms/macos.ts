@@ -18,12 +18,12 @@ import {
  * which is where React Native `Text` and `View` testIDs are) and `Web.tree` for
  * each web view in that tree.
  *
- * Frames arrive as fractions of the app window, title bar included, and are not
- * clamped: an element of another window (a sheet, a popover, a menu) or one a
- * scroll view has scrolled away can lie outside 0-1, and the frames of scrolled
- * away rows often still fall inside the window. So every frame is clipped by
- * the window and by each enclosing scroll area and web view, and what is left
- * with no area is dropped.
+ * Frames arrive as fractions of the app window, title bar included, grown to
+ * hold its sheets, popovers, the app-modal alert and open menus. They are not
+ * clamped: an element of another window or one a scroll view has scrolled away
+ * can lie outside 0-1, and the frames of scrolled away rows often still fall
+ * inside it. So every frame is clipped by that area, its window and each
+ * enclosing scroll area and web view, and what is left with no area is dropped.
  */
 
 // Longer than the library's own limits, so its error, not ours, names the cause.
@@ -538,6 +538,8 @@ function isContent({ d }: MacosNode): boolean {
  * `marked` that an ancestor already carries `offscreen`.
  */
 function clipTree(node: MacosNode, clip: NormRect, scrolled: boolean, marked: boolean): void {
+  // A sheet or a popover hangs over its window and can reach past it.
+  if (node.d.role === "AXSheet" || node.d.role === "AXPopover") clip = WINDOW_SQUARE;
   if (node.rect) {
     const v = intersect(node.rect, clip);
     node.visible = hasArea(v) ? v : null;
@@ -753,8 +755,8 @@ export function projectMacosDescribeTree(read: MacosTreeRead): DescribeTreeData 
     tree,
     outsideWindow.count > 0
       ? [
-          `${outsideWindow.count} element(s) lie outside the app window (a menu or a popover) and ` +
-            "were omitted: input reaches only the window's area.",
+          `${outsideWindow.count} element(s) lie outside the app window and were omitted: ` +
+            "input reaches only the window and its sheets, alerts and menus.",
         ]
       : []
   );

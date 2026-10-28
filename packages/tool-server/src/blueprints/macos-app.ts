@@ -670,26 +670,37 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
 
   /**
    * The handshake often comes before the first window is on screen, and a
-   * click before it finds no window. Waits for one visible, not minimized
-   * window. An app may start without one, so running out of time is a note,
-   * not a failure; an app that quits meanwhile is a failure.
+   * click before it finds no window. Waits for the window argent drives the
+   * app through: visible, not minimized, one that can be the main window.
+   * Running out of time is a note when the app shows no window, as it may open
+   * one later, and a refusal when it shows only panels or borderless windows
+   * or has no menu bar. An app that quits meanwhile is a failure.
    */
   const waitForFirstWindow = async (
     ch: LibraryChannel,
     pid: number,
     logPath: string,
-    timeoutMs: number
-  ): Promise<string | undefined> => {
+    timeoutMs: number,
+    uiElement: boolean
+  ): Promise<{ note?: string; refusal?: string }> => {
     const deadline = Date.now() + timeoutMs;
     for (;;) {
+      let shown = false;
       try {
         const listed = (await ch.request("Window.list", {}, 2_000)) as {
-          windows?: Array<{ isVisible?: unknown; isMiniaturized?: unknown }>;
+          windows?: Array<{
+            kind?: unknown;
+            isReference?: unknown;
+            isVisible?: unknown;
+            isMiniaturized?: unknown;
+          }>;
         };
-        const windows = Array.isArray(listed?.windows) ? listed.windows : [];
-        if (windows.some((w) => w.isVisible === true && w.isMiniaturized !== true)) {
-          return undefined;
-        }
+        const windows = (Array.isArray(listed?.windows) ? listed.windows : []).filter(
+          (w) => w.isVisible === true && w.isMiniaturized !== true
+        );
+        if (windows.some((w) => w.isReference === true)) return {};
+        // An open panel at the start leads to a document window.
+        shown = windows.some((w) => w.kind !== "file-panel");
       } catch (err) {
         const code = errorCode(err);
         if (code === FAILURE_CODES.MACOS_APP_CONNECTION_LOST && !pidIsAlive(pid)) {
@@ -703,14 +714,25 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
         }
         // Anything but a slow answer will not change by asking again.
         if (code !== FAILURE_CODES.MACOS_APP_RPC_TIMEOUT) {
-          return `argent could not read the window list of ${bundleId}: ${errorMessage(err)}`;
+          return {
+            note: `argent could not read the window list of ${bundleId}: ${errorMessage(err)}`,
+          };
         }
       }
       if (Date.now() + POLL_MS > deadline) {
-        return (
-          `${bundleId} started, but showed no window within ${Math.round(timeoutMs / 1000)} s. ` +
-          `Taps and screenshots need a window: open one in the app, or read ${logPath}.`
-        );
+        if (shown || uiElement) {
+          return {
+            refusal:
+              `${bundleId} shows no window that argent can drive, so argent quit it. argent ` +
+              `drives a Mac app through its standard windows, not a menu bar app or an app ` +
+              `that shows only panels or borderless windows.`,
+          };
+        }
+        return {
+          note:
+            `${bundleId} started, but showed no window within ${Math.round(timeoutMs / 1000)} s. ` +
+            `Taps and screenshots need a window: open one in the app, or read ${logPath}.`,
+        };
       }
       await sleep(POLL_MS);
     }
@@ -1031,12 +1053,22 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
       return tookOver ? { ...result, note: tookOver } : result;
     }
     adopt(ch);
-    const noWindow = await waitForFirstWindow(
+    const { note: noWindow, refusal: noDrivableWindow } = await waitForFirstWindow(
       ch,
       pid,
       logPath,
-      opts.windowTimeoutMs ?? WINDOW_TIMEOUT_MS
+      opts.windowTimeoutMs ?? WINDOW_TIMEOUT_MS,
+      info.uiElement
     );
+    if (noDrivableWindow) {
+      await terminate({ pid, executable: info.executable });
+      throw macosFailure(
+        noDrivableWindow,
+        FAILURE_CODES.MACOS_APP_BUNDLE_INVALID,
+        "macos_app_launch_window",
+        "unsupported"
+      );
+    }
     const note = [tookOver, noWindow, listen ? undefined : noListenSocketNote(bundleId)]
       .filter(Boolean)
       .join(" ");

@@ -142,6 +142,18 @@ describe("macOS describe adapter: projection of the probe app", () => {
     expect(menus.map((m) => m.children.map((c) => c.label))).toContainEqual(["Copy"]);
   });
 
+  it("keeps the controls of a sheet that hangs below its window", async () => {
+    const tree = probeTree();
+    const root = windowRoot(tree);
+    root.normalizedFrame = rect(0, 0, 1, 0.6);
+    const save = axNode("AXButton", rect(0.6, 0.9, 0.1, 0.04), { title: "Save" });
+    (root.children as unknown[]).push(axNode("AXSheet", rect(0.2, 0.05, 0.6, 0.9), {}, [save]));
+    const { data } = await describeFixture([tree]);
+    const frame = byText(data.tree, "Save")!.frame;
+    expect(frame.y).toBe(0.9);
+    expect(frame.height).toBeCloseTo(0.04);
+  });
+
   it("drops a node whose frame is not finite, keeping its children", async () => {
     const tree = probeTree();
     const children = windowRoot(tree).children as Array<Record<string, unknown>>;

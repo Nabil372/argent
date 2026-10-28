@@ -3,8 +3,8 @@
 // descriptor and on the listening socket, and turns away a second client while
 // one is connected, as the library does.
 // `--mode=<m>` picks a misbehaviour: crash, silent, bad-protocol,
-// ignore-terminate, windowless, minimized. Its one window appears 200 ms after
-// the handshake, as a real app's first window comes after its launch.
+// ignore-terminate, windowless, minimized, panel-only. Its one window appears
+// 200 ms after the handshake, as a real app's first window comes after its launch.
 //
 // Network capture: like the real library, it reports requests as CDP events
 // only after a `Control` activateNetworkInspection. `Net.request` sends one
@@ -118,7 +118,20 @@ function handle(socket, msg) {
 
 function windows() {
   if (mode === "windowless" || Date.now() - startedAt < 200) return [];
-  return [{ number: 1, kind: "window", isVisible: true, isMiniaturized: mode === "minimized" }];
+  if (mode === "panel-only") {
+    return [
+      { number: 1, kind: "panel", isVisible: true, isMiniaturized: false, isReference: false },
+    ];
+  }
+  return [
+    {
+      number: 1,
+      kind: "window",
+      isVisible: true,
+      isMiniaturized: mode === "minimized",
+      isReference: true,
+    },
+  ];
 }
 
 /**

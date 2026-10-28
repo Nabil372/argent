@@ -124,7 +124,7 @@ let executable = "";
 let registry: Registry;
 let tools: Record<string, ToolDefinition<any, any>>;
 
-function writeBundle(dir: string, bundleId: string): string {
+function writeBundle(dir: string, bundleId: string, extraPlist = ""): string {
   const app = path.join(dir, "Fake.app");
   fs.mkdirSync(path.join(app, "Contents", "MacOS"), { recursive: true });
   fs.writeFileSync(
@@ -135,7 +135,7 @@ function writeBundle(dir: string, bundleId: string): string {
 <key>CFBundleIdentifier</key><string>${bundleId}</string>
 <key>CFBundleExecutable</key><string>FakeApp</string>
 <key>CFBundleName</key><string>Fake</string>
-<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundlePackageType</key><string>APPL</string>${extraPlist}
 </dict></plist>
 `
   );
@@ -444,6 +444,20 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
       expect(app.isConnected()).toBe(true);
     }
   );
+
+  it.each([
+    ["shows only a panel", "panel-only", ""],
+    ["has no menu bar and no window", "windowless", "<key>LSUIElement</key><true/>"],
+  ])("refuses an app that %s, and quits it", async (_name, mode, extraPlist) => {
+    const bundle = writeBundle(path.join(root, `apps-${mode}`), BUNDLE_ID, extraPlist);
+    const app = await macosApp();
+    const failed = await app
+      .launch({ appPath: bundle, args: [`--mode=${mode}`], windowTimeoutMs: 500 })
+      .catch((e: unknown) => e);
+    expect((failed as Error).message).toMatch(/shows no window that argent can drive/);
+    expect(codeOf(failed)).toBe(FAILURE_CODES.MACOS_APP_BUNDLE_INVALID);
+    expect(fakeAppPids(path.join(bundle, "Contents", "MacOS", "FakeApp"))).toEqual([]);
+  });
 
   it("call() surfaces the library's errors and times out a request that gets no answer", async () => {
     await run("boot-device", { macosAppPath: appPath });
@@ -1232,6 +1246,7 @@ function appInfo(hardenedRuntime: boolean, keys: string[], teamId?: string): Mac
     bundleId: "com.x",
     name: "X",
     executable: "/x.app/Contents/MacOS/X",
+    uiElement: false,
     ...parseCodesignDisplay({
       stdout: entitlements(...keys),
       stderr: (hardenedRuntime ? STDERR_RUNTIME : "flags=0x2(adhoc)\n") + team,

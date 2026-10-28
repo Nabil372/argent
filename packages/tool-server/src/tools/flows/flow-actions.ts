@@ -765,14 +765,7 @@ async function scrollIncrement(
           : direction === "right"
             ? { deltaX: dist }
             : { deltaX: -dist };
-    try {
-      return toolWarning(await invokeOnDevice(env, "gesture-scroll", { x: cx, y: cy, ...delta }));
-    } catch (err) {
-      // A wheel over nothing that scrolls moves nothing on Chromium; a Mac app
-      // refuses it. Both mean the same: the next read ends the scroll.
-      if (err instanceof Error && NO_SCROLLABLE_VIEW.test(err.message)) return undefined;
-      throw err;
-    }
+    return toolWarning(await invokeOnDevice(env, "gesture-scroll", { x: cx, y: cy, ...delta }));
   }
 
   // To reveal content below the fold the finger travels UP (toY < fromY), etc.
@@ -885,7 +878,19 @@ async function scrollToVisible(
     }
     prevFp = fp;
 
-    warning ??= await scrollIncrement(env, axisDirection, region);
+    try {
+      warning ??= await scrollIncrement(env, axisDirection, region);
+    } catch (err) {
+      if (!(err instanceof Error && NO_SCROLLABLE_VIEW.test(err.message))) throw err;
+      if (frame) return { frame, ...warnedBy(warning) };
+      return {
+        reason:
+          `nothing scrolls at the centre of ${within ? describeSelector(within) : "the screen"}, ` +
+          `so ${describeSelector(target)} cannot be scrolled into view; name its scroll ` +
+          "container in within:",
+        ...warnedBy(warning),
+      };
+    }
   }
   return {
     reason: `${describeSelector(target)} not found after ${MAX_SCROLL_ITERATIONS} scroll attempts`,

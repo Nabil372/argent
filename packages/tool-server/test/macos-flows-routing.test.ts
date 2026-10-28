@@ -93,7 +93,7 @@ describe("scroll-to on a Mac app", () => {
     }
   );
 
-  it("ends the scroll over nothing that scrolls, as a wheel over nothing does on Chromium", async () => {
+  it("ends the scroll over nothing that scrolls, and says to name the container", async () => {
     currentTree = () =>
       screen([
         n({
@@ -110,7 +110,7 @@ describe("scroll-to on a Mac app", () => {
     );
     expect(result.steps[0]).toMatchObject({
       status: "fail",
-      reason: expect.stringMatching(/reached the end of the scroll without finding/),
+      reason: expect.stringMatching(/^nothing scrolls at the centre of the screen, .* in within:$/),
     });
     expect(result.calls.map((c) => c.tool)).toEqual(["gesture-scroll"]);
   });
