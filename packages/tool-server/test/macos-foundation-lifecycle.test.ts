@@ -112,7 +112,7 @@ import {
   type MacosAppInfo,
 } from "../src/utils/macos-apps";
 
-const BUNDLE_ID = "com.argent.fake";
+const BUNDLE_ID = `com.argent.fake${process.pid}`;
 const STAGED_BOOTSTRAP =
   /\/\.argent\/macos\/lib\/[0-9a-f]{16}\/libArgentInjectionBootstrap\.dylib$/;
 const DEVICE_ID = `macos-app-${BUNDLE_ID}`;
