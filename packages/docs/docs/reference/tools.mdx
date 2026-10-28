@@ -114,6 +114,8 @@ Set `showTouches` in either mode to control touch markers. Debug requires `trimS
 
 Debug saves JPEGs in the server’s temporary directory before encoding. This can use substantial disk space. Capture ends early with a warning if writes fail or cannot keep up.
 
+Debug capture is not crash-safe. A hard tool-server kill can lose unencoded frames. An encode already started can finish on the server, but its interrupted stop call cannot deliver the artifact. The start result’s `outputFile` gives the server-side path to check.
+
 Debug uses host arrival timestamps, not device presentation timestamps. It cannot recover frames omitted by the stream. It encodes at stop, so retrieval can take longer.
 
 Linked recording downloads have a 2 GiB limit. Larger recordings remain on the tool-server and return a retrieval error with their location.

@@ -12,7 +12,7 @@ One recording per device at a time; different devices can record concurrently. R
 
 Choose `mode: "light"` (default) for compact bug-report or PR clips. Choose `mode: "debug"` for flicker, animation gaps, or frame-by-frame inspection. Debug keeps every delivered frame without trimming or a watermark; touch markers default off, but `showTouches: true` enables them.
 
-Debug uses host arrival times, not native device presentation timestamps, and cannot recover frames omitted by the stream. Disabling `trimStatic` in light mode still samples at 30 fps.
+Debug uses host arrival times, not native device presentation timestamps, and cannot recover frames omitted by the stream. Debug capture is not crash-safe: a hard tool-server kill can lose unencoded frames. Disabling `trimStatic` in light mode still samples at 30 fps.
 
 When extracting debug frames, use `ffmpeg -i recording.mp4 -fps_mode passthrough frame-%06d.png` to avoid resampling. Inspect each frame’s PTS for timing; `r_frame_rate` is a guessed rate.
 
