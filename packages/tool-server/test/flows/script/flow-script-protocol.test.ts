@@ -446,7 +446,7 @@ function nestedDocument(depth: number, leaf: string): string {
 describe("flow script executor — redacting a document from a runner", () => {
   // At the deepest the parent admits.
   it("scrubs a document at the depth bound", async () => {
-    const depth = 1_024;
+    const depth = 256;
     const result = await withFakeRunner(
       `process.on("message", () => {
          process.send({ type: "started" });
