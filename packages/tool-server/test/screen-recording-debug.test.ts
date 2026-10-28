@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Writable } from "node:stream";
 import { PNG } from "pngjs";
-import type { DeviceInfo } from "@argent/registry";
+import { getFailureSignal, FAILURE_CODES, type DeviceInfo } from "@argent/registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { screenRecordingSessionBlueprint } from "../src/blueprints/screen-recording-session";
 import { verifyDebugEncoder, verifyDebugVideo } from "../src/tools/screen-recording/encoder";
@@ -453,9 +453,12 @@ it.skipIf(!hasEncoder || process.platform === "win32")(
     await fs.writeFile(wrapper, `#!${process.execPath}\nsetTimeout(() => {}, 30000);\n`, {
       mode: 0o755,
     });
-    await expect(verifyDebugEncoder(wrapper, jpeg([255, 0, 0]))).rejects.toThrow(
-      "preflight timed out after 10 seconds"
-    );
+    const error = await verifyDebugEncoder(wrapper, jpeg([255, 0, 0])).catch((err: Error) => err);
+    expect((error as Error).message).toContain("preflight timed out after 10 seconds");
+    expect(getFailureSignal(error)).toMatchObject({
+      error_code: FAILURE_CODES.SCREEN_RECORDING_START_TIMEOUT,
+      error_kind: "timeout",
+    });
   },
   15_000
 );

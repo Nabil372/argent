@@ -104,10 +104,12 @@ export async function verifyDebugEncoder(ffmpeg: string, jpeg: Buffer): Promise<
         ? "Debug encoder preflight timed out after 10 seconds. The host may be busy; retry when load is lower."
         : `ffmpeg could not encode the first debug frame: ${error.message}`,
       {
-        error_code: FAILURE_CODES.SCREEN_RECORDING_START_EXITED,
+        error_code: timedOut
+          ? FAILURE_CODES.SCREEN_RECORDING_START_TIMEOUT
+          : FAILURE_CODES.SCREEN_RECORDING_START_EXITED,
         failure_stage: "screen_recording_encoder_ready",
         failure_area: "tool_server",
-        error_kind: "subprocess",
+        error_kind: timedOut ? "timeout" : "subprocess",
         ...subprocessFailureMetadata(err, "ffmpeg"),
       },
       { cause: error }
