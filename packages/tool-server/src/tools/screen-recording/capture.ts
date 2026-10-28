@@ -547,6 +547,7 @@ async function startCaptureLocked(
       await fs.rm(frameDirectory, { recursive: true, force: true }).catch(() => {});
     if (logoFile) await fs.rm(logoFile, { force: true }).catch(() => {});
     await fs.rm(outputFile, { force: true }).catch(() => {});
+    assertNotDisposed(api, "screen_recording_start");
     throw err;
   }
   // A late exec error after readiness would otherwise be an unhandled 'error'.
@@ -571,6 +572,7 @@ async function startCaptureLocked(
   api.trimStatic = params.trimStatic;
   api.framesWritten = 0;
   api.captureProcess = child;
+  api.pendingChild = null;
   api.frameStream = stream;
   api.activeScreen = params.followPanel?.initial.screen ?? null;
   api.panelSwitches = 0;
@@ -654,6 +656,7 @@ async function startCaptureLocked(
     api.pointerDisable = params.pointer.disable;
     api.pointerFailed = !(await params.pointer.enable());
   }
+  assertNotDisposed(api, "screen_recording_start");
 
   api.recordingTimeout = setTimeout(() => {
     api.recordingTimeout = null;

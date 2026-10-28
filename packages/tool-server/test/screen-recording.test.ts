@@ -327,6 +327,73 @@ describe("screen-recording session blueprint", () => {
     }
   );
 
+  it.each(["light", "debug"] as const)(
+    "rejects disposal during %s touch setup without killing the owned encoder",
+    async (mode) => {
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      const child = fakeChild();
+      child.exitOnStdinEnd();
+      let enabled!: (value: boolean) => void;
+      const pointer = {
+        enable: vi.fn(
+          () =>
+            new Promise<boolean>((resolve) => {
+              enabled = resolve;
+            })
+        ),
+        disable: vi.fn(async () => {}),
+      };
+      const starting = startCapture(instance.api, {
+        streamUrl: STREAM_URL,
+        timeLimitSeconds: 30,
+        watermark: false,
+        trimStatic: false,
+        mode,
+        pointer,
+      });
+      const rejected = expect(starting).rejects.toThrow("torn down");
+      await vi.waitFor(() => expect(instance.api.pendingChild).not.toBeNull());
+      await vi.advanceTimersByTimeAsync(READY_GRACE_MS);
+      expect(pointer.enable).toHaveBeenCalledOnce();
+      expect(instance.api.pendingChild).toBeNull();
+      const output = instance.api.outputFile!;
+      await fs.writeFile(output, Buffer.alloc(64, 1));
+      await instance.dispose();
+      expect(child.kill).not.toHaveBeenCalled();
+      enabled(true);
+      await rejected;
+      expect(instance.api.recordingTimeout).toBeNull();
+      expect(getActiveScreenRecordings()).toHaveLength(0);
+      expect((await fs.stat(output)).size).toBeGreaterThan(0);
+    }
+  );
+
+  it("reports teardown when disposal kills the encoder before readiness expires", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    fakeStream();
+    const child = fakeChild();
+    child.kill.mockImplementation(() => {
+      child.exit(null, "SIGKILL");
+      return true;
+    });
+    const starting = startCapture(instance.api, {
+      streamUrl: STREAM_URL,
+      timeLimitSeconds: 30,
+      watermark: false,
+      trimStatic: false,
+    });
+    const rejected = expect(starting).rejects.toThrow("torn down");
+    await vi.waitFor(() => expect(instance.api.pendingChild).not.toBeNull());
+    await instance.dispose();
+    await rejected;
+    expect(getActiveScreenRecordings()).toHaveLength(0);
+  });
+
   it("rejects platforms that cannot record", async () => {
     try {
       await screenRecordingSessionBlueprint.factory({}, iosDevice, {
