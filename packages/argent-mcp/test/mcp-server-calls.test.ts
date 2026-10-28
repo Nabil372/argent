@@ -483,42 +483,24 @@ describe("startMcpServer screen capture after an interaction", () => {
     expect(text).toContain("--- Elements after action (describe) ---");
   });
 
-  it("settles and appends the screen and the tree after a wait", async () => {
-    // Unmet: the tree was read, the element just was not there.
-    waitResult = { success: false, elapsed: 5002, cause: "unmet" };
+  // `unreadable` as well: the wait also reports it when its reads were only
+  // slow, or on an Apple TV, where `describe` still reads the tree.
+  it.each(["unmet", "unreadable"])(
+    "settles and appends the screen and the tree after a wait that ends %s",
+    async (cause) => {
+      waitResult = { success: false, elapsed: 5002, cause };
 
-    const result = await wait();
+      const result = await wait();
 
-    const calls = toolCalls();
-    expect(calls.slice(0, 2)).toEqual(["/tools/await-ui-element", "/tools/await-screen-idle"]);
-    // Sent together, in either order, once the screen settled.
-    expect(calls.slice(2).sort()).toEqual(["/tools/describe", "/tools/screenshot"]);
-    const text = textOf(result);
-    expect(text).toContain("--- Screen after action ---");
-    expect(text).toContain(AUTO_DESCRIBE_HEADER);
-  });
-
-  it("skips the tree after a wait that could not read the tree", async () => {
-    waitResult = {
-      success: false,
-      elapsed: 5002,
-      note: "last tree fetch failed: tree fetch did not complete within the 5000ms wait budget",
-      cause: "unreadable",
-    };
-
-    const result = await wait();
-
-    expect(result.isError).toBeFalsy();
-    expect(toolCalls()).toEqual([
-      "/tools/await-ui-element",
-      "/tools/await-screen-idle",
-      "/tools/screenshot",
-    ]);
-    const text = textOf(result);
-    expect(text).toContain('"cause": "unreadable"');
-    expect(text).toContain("--- Screen after action ---");
-    expect(text).not.toContain(AUTO_DESCRIBE_HEADER);
-  });
+      const calls = toolCalls();
+      expect(calls.slice(0, 2)).toEqual(["/tools/await-ui-element", "/tools/await-screen-idle"]);
+      // Sent together, in either order, once the screen settled.
+      expect(calls.slice(2).sort()).toEqual(["/tools/describe", "/tools/screenshot"]);
+      const text = textOf(result);
+      expect(text).toContain("--- Screen after action ---");
+      expect(text).toContain(AUTO_DESCRIBE_HEADER);
+    }
+  );
 
   it("drops a tree read that outlasts the capture budget, and sends it once", async () => {
     describeHangs = true;

@@ -15,7 +15,6 @@ import {
   normalizeToolName,
   shouldAutoScreenshot,
   getAutoScreenshotDelayMs,
-  waitFoundTreeUnreadable,
 } from "../src/auto-capture.js";
 
 // ---------------------------------------------------------------------------
@@ -196,24 +195,6 @@ describe("shouldAutoDescribe", () => {
     expect(shouldAutoDescribe("mcp__argent__describe")).toBe(false);
     expect(shouldAutoDescribe("screenshot")).toBe(false);
     expect(shouldAutoDescribe("list-devices")).toBe(false);
-  });
-});
-
-describe("waitFoundTreeUnreadable", () => {
-  const unreadable = { success: false, elapsed: 5002, cause: "unreadable" };
-
-  it("is true for an await-ui-element result that never read the tree", () => {
-    expect(waitFoundTreeUnreadable("await-ui-element", unreadable)).toBe(true);
-    expect(waitFoundTreeUnreadable("mcp__argent__await-ui-element", unreadable)).toBe(true);
-  });
-
-  it("is false for any other outcome of the wait, and for any other tool", () => {
-    for (const cause of ["unmet", "cancelled", undefined]) {
-      expect(waitFoundTreeUnreadable("await-ui-element", { success: false, cause })).toBe(false);
-    }
-    expect(waitFoundTreeUnreadable("await-ui-element", { success: true, elapsed: 10 })).toBe(false);
-    expect(waitFoundTreeUnreadable("await-ui-element", null)).toBe(false);
-    expect(waitFoundTreeUnreadable("gesture-tap", unreadable)).toBe(false);
   });
 });
 

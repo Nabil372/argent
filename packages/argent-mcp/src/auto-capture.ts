@@ -124,18 +124,6 @@ export function shouldAutoDescribe(toolName: string): boolean {
 }
 
 /**
- * True for an `await-ui-element` result whose wait never got a usable read of
- * the element tree (`cause: "unreadable"`). `describe` reads the same tree, so
- * after such a wait it would only wait out the capture cap.
- */
-export function waitFoundTreeUnreadable(toolName: string, result: unknown): boolean {
-  return (
-    normalizeToolName(toolName) === "await-ui-element" &&
-    (result as { cause?: unknown } | null)?.cause === "unreadable"
-  );
-}
-
-/**
  * Marker of a server-side secret placeholder (`{{secret:NAME}}`, resolved by
  * the tool-server before typing). Copy of SECRET_PLACEHOLDER_MARKER in
  * packages/tool-server/src/utils/secrets.ts, which argent-mcp does not depend

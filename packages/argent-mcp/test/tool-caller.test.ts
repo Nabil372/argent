@@ -329,6 +329,18 @@ describe("createToolCaller", () => {
     expect(reconnect).not.toHaveBeenCalled();
   });
 
+  it("stops waiting for a reconnect at the caller's signal", async () => {
+    // `fast` drops its first connection. A local reconnect can wait seconds
+    // for a new tool-server; this one never ends.
+    const { callTool, reconnect } = caller({ reconnect: vi.fn(() => new Promise<void>(() => {})) });
+
+    await expect(callTool("fast", {}, { signal: AbortSignal.timeout(100) })).rejects.toThrow(
+      "aborted"
+    );
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(postsTo("/tools/fast")).toHaveLength(1);
+  });
+
   it("retries the request and calls reconnect after the first failure", async () => {
     const { callTool, reconnect } = caller();
 

@@ -35,7 +35,6 @@ import {
   getAutoScreenshotDelayMs,
   autoDescribeEnabled,
   shouldAutoDescribe,
-  waitFoundTreeUnreadable,
   AUTO_DESCRIBE_HEADER,
   CAPTURE_TIMEOUT_MS,
   PROFILING_CAPTURE_SKIPPED_NOTE,
@@ -310,11 +309,7 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
 
       const udid = getUdidFromArgs(params.arguments);
       const wantScreenshot = autoScreenshotOn && shouldAutoScreenshot(params.name);
-      // A wait that never read the tree means a describe would not either.
-      const wantTree =
-        autoDescribeOn &&
-        shouldAutoDescribe(params.name) &&
-        !waitFoundTreeUnreadable(params.name, result);
+      const wantTree = autoDescribeOn && shouldAutoDescribe(params.name);
       if (udid && (wantScreenshot || wantTree) && containsSecretPlaceholder(params.arguments)) {
         // The tool-server typed the *resolved* secret; a screenshot of a
         // non-secure-entry field would hand the plaintext back to the model as
