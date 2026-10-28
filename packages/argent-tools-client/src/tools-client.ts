@@ -358,9 +358,12 @@ async function forwardedSecrets(args: unknown): Promise<Map<string, string> | un
       for (const nested of Object.values(value)) await visit(nested);
       return;
     }
+    // Only a call that runs the file sends its closure as `members`; a tool
+    // that merely reads a test types none of its placeholders.
+    if (!Array.isArray(wire.members)) return;
     const yaml = [
       ...(/\.ya?ml$/i.test(wire.path ?? "") ? [wire] : []),
-      ...(wire.members ?? []).filter((member) => member.role === "flow"),
+      ...wire.members.filter((member) => member.role === "flow"),
     ];
     for (const file of yaml) {
       let text: string | undefined;

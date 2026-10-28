@@ -321,10 +321,10 @@ describe("forward-secrets", () => {
   const wire = (fields: Record<string, unknown>) => ({ __argentFileInput: true, ...fields });
   const base64 = (text: string) => Buffer.from(text).toString("base64");
 
-  it("reads names from YAML file inputs and flow members only", async () => {
-    writeFileSync(join(project, ".argent", "secrets.env"), "A=1\nB=2\nC=3\nD=4\nE=5\nF=6\n");
+  it("reads names from the YAML file inputs a call runs and their flow members only", async () => {
+    writeFileSync(join(project, ".argent", "secrets.env"), "A=1\nB=2\nC=3\nD=4\nE=5\nF=6\nG=7\n");
     await client().callTool("keyboard", {
-      yml: wire({ path: "/p/login.yml", content: base64('text: "{{secret:A}}"') }),
+      yml: wire({ path: "/p/login.yml", content: base64('text: "{{secret:A}}"'), members: [] }),
       upper: wire({
         path: "/p/LOGIN.YAML",
         content: base64('text: "{{secret:B}}"'),
@@ -339,7 +339,9 @@ describe("forward-secrets", () => {
           },
         ],
       }),
-      text: wire({ path: "/p/notes.txt", content: base64('text: "{{secret:F}}"') }),
+      text: wire({ path: "/p/notes.txt", content: base64('text: "{{secret:F}}"'), members: [] }),
+      // A tool that only reads a test, such as e2e-read-prerequisite, sends no members.
+      read: wire({ path: "/p/read.yaml", content: base64('text: "{{secret:G}}"') }),
     });
     expect(lastSecrets()).toEqual({ A: "1", B: "2", C: "3" });
   });
@@ -376,7 +378,7 @@ describe("forward-secrets", () => {
     const yaml = `# was {{secret:OLD}}\n${yamlStringify({ steps: [{ type: { text } }] }, { blockQuote: false })}`;
     expect(yaml).not.toContain("{{secret:API_KEY}}");
     await client().callTool("keyboard", {
-      flow: wire({ path: "/p/login.yaml", content: base64(yaml) }),
+      flow: wire({ path: "/p/login.yaml", content: base64(yaml), members: [] }),
     });
     expect(lastSecrets()).toEqual({ API_KEY: "s3cr3t" });
   });
@@ -387,7 +389,7 @@ describe("forward-secrets", () => {
       'steps: &s\n  - type: { into: { id: pw }, text: "{{secret:API_KEY}}" }\n' +
       "  - when: { visible: { text: Retry } }\n    steps: *s\n";
     await client().callTool("keyboard", {
-      flow: wire({ path: "/p/retry.yaml", content: base64(yaml) }),
+      flow: wire({ path: "/p/retry.yaml", content: base64(yaml), members: [] }),
     });
     expect(lastSecrets()).toEqual({ API_KEY: "s3cr3t" });
   }, 10_000);

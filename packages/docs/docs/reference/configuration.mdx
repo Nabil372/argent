@@ -176,7 +176,7 @@ argent enable forward-secrets
 With the flag on, the client does these steps for each call to a linked tool-server:
 
 1. The client finds each `{{secret:NAME}}` placeholder in the call. This includes the e2e test file, its `run:` fragments and its nested e2e tests.
-2. The client resolves each name with the sources in the table above, on the client computer. The project root is the working directory of the client.
+2. The client resolves each name with the sources in the table above, on the client computer. The client finds the project root from its own working directory.
 3. The client sends each value that it finds with the call, in the `x-argent-client-secrets` request header.
 
 The tool-server uses these values before its own sources. The tool-server resolves a name that the client does not define with its own sources. The tool-server does not store the values. A value that `paste` pastes stays on the clipboard of the device, as for a secret of the tool-server.
