@@ -791,6 +791,34 @@ describe("materializeArtifacts durable destination", () => {
     expect((result as { warning: string }).warning).not.toContain("retry screen-recording-stop");
   });
 
+  it("does not blame the download cap when a large local recording destination is refused", async () => {
+    const file = join(hostDir, "large.mp4");
+    const output = await fs.open(file, "w");
+    await output.truncate(3 * 1024 ** 3);
+    await output.close();
+    await mkdir(join(projectRoot, ".argent"));
+    await symlink(hostDir, join(projectRoot, ".argent/recordings"));
+    const { result } = await materializeArtifacts(
+      {
+        video: {
+          ...handle("large-local", "large.mp4", "video/mp4"),
+          kind: "screen-recording",
+          size: 3 * 1024 ** 3,
+          hostPath: file,
+          saveDir: ".argent/recordings",
+        },
+      },
+      { toolsUrl: "http://remote:3001", fetchImpl: vi.fn() }
+    );
+    expect((result as { warning: string }).warning).toContain(
+      "resolves outside its allowed location"
+    );
+    expect((result as { warning: string }).warning).toContain(
+      "Fix client storage or directory errors"
+    );
+    expect((result as { warning: string }).warning).not.toContain("2 GiB download limit");
+  });
+
   it("refuses a size:0 durable download — an unverifiable body is never persisted", async () => {
     // A durable file survives temp-cache GC, so a length that can't be checked
     // (size 0) must not be persisted. A remote server that announces size:0 and
@@ -1067,18 +1095,26 @@ describe("materializeArtifacts durable destination", () => {
     }
   );
 
-  it.each(["ENOTSUP", "EPERM"])(
-    "keeps a completed download when hard-link publication fails with %s",
-    async (code) => {
+  it.each([
+    { code: "ENOTSUP", local: false },
+    { code: "EPERM", local: false },
+    { code: "ENOTSUP", local: true },
+    { code: "EPERM", local: true },
+  ])(
+    "keeps a completed recording when all links fail with $code (local: $local)",
+    async ({ code, local }) => {
+      const source = join(hostDir, "fallback.mp4");
+      await writeFile(source, Buffer.from(MP4));
       const linking = vi
         .spyOn(fs, "link")
-        .mockRejectedValueOnce(Object.assign(new Error("unsupported link"), { code }));
+        .mockRejectedValue(Object.assign(new Error("unsupported link"), { code }));
       try {
         const { result } = await materializeArtifacts(
           {
             video: {
               ...handle("fallback", "fallback.mp4", "video/mp4"),
               kind: "screen-recording",
+              ...(local ? { hostPath: source } : {}),
               size: MP4.length,
               saveDir: ".argent/recordings",
             },
