@@ -103,20 +103,16 @@ describe("macosClick", () => {
 });
 
 describe("macosTypeText - the keyboard split", () => {
-  it("sends US characters as key down/up, runs of others as one insertText, in order, awaiting each reply", async () => {
+  it("sends US characters as one keystroke each, runs of others as one insertText, in order, awaiting each reply", async () => {
     const { app, calls, overlapped } = fakeMacosApp();
     const count = await macosTypeText(app, "Ab café ✓x", { delayMs: 0 });
     expect(count).toBe(10);
-    const keys = (chars: string) =>
-      [...chars].flatMap((c) => [
-        ["Input.key", "down", c],
-        ["Input.key", "up", c],
-      ]);
-    expect(calls.map((c) => [c.method, c.params.type ?? null, c.params.text])).toEqual([
+    const keys = (chars: string) => [...chars].map((c) => ["Input.key", c]);
+    expect(calls.map((c) => [c.method, c.params.text])).toEqual([
       ...keys("Ab caf"),
-      ["Input.insertText", null, "é"],
+      ["Input.insertText", "é"],
       ...keys(" "),
-      ["Input.insertText", null, "✓"],
+      ["Input.insertText", "✓"],
       ...keys("x"),
     ]);
     expect(overlapped()).toBe(false);
@@ -133,12 +129,13 @@ describe("macosTypeText - the keyboard split", () => {
   it("presses Enter for a newline and Tab for a tab", async () => {
     const { app, calls } = fakeMacosApp();
     await macosTypeText(app, "a\nb\tc", { delayMs: 0 });
-    expect(calls.map((c) => [c.params.type, c.params.key ?? c.params.text])).toEqual(
-      ["a", "enter", "b", "tab", "c"].flatMap((k) => [
-        ["down", k],
-        ["up", k],
-      ])
-    );
+    expect(calls.map((c) => c.params.key ?? c.params.text)).toEqual([
+      "a",
+      "enter",
+      "b",
+      "tab",
+      "c",
+    ]);
   });
 
   it("stops on a library error", async () => {
@@ -155,11 +152,11 @@ describe("macosTypeText - the keyboard split", () => {
     const { app, calls } = fakeMacosApp();
     const typing = macosTypeText(app, "ab");
     await vi.advanceTimersByTimeAsync(0);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(49);
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(50);
     await typing;
   });

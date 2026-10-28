@@ -313,11 +313,9 @@ describe("keyboard and paste on a Mac app", () => {
       keys: 1,
     });
     expect(calls.map((c) => [c.method, c.params])).toEqual([
-      ["Input.key", { type: "down", text: "a" }],
-      ["Input.key", { type: "up", text: "a" }],
+      ["Input.key", { text: "a" }],
       ["Input.insertText", { text: "é" }],
-      ["Input.key", { type: "down", text: "a", modifiers: ["command"] }],
-      ["Input.key", { type: "up", text: "a", modifiers: ["command"] }],
+      ["Input.key", { text: "a", modifiers: ["command"] }],
     ]);
     expect(urns.every((u) => u === MAC_URN)).toBe(true);
   });
@@ -461,7 +459,7 @@ describe("run-sequence on a Mac app", () => {
     );
     expect(calls.map((c) => c.method)).toEqual([
       ...Array<string>(3).fill("Input.mouse"),
-      ...Array<string>(4).fill("Input.key"),
+      ...Array<string>(2).fill("Input.key"),
     ]);
     expect(urns.every((u) => u === MAC_URN)).toBe(true);
   });

@@ -239,17 +239,19 @@ export function parseMacosKey(spec: string): {
   );
 }
 
+/**
+ * One request per keystroke, down and up: the app performs a shortcut after its
+ * reply, so Command-Q quits it with no request left to fail.
+ */
 async function pressKey(
   app: MacosAppApi,
   press: { key?: string; text?: string; modifiers: MacosModifier[] }
 ): Promise<void> {
-  const shared = {
+  await app.call("Input.key", {
     key: press.key,
     text: press.text,
     modifiers: press.modifiers.length > 0 ? press.modifiers : undefined,
-  };
-  await app.call("Input.key", { type: "down", ...shared });
-  await app.call("Input.key", { type: "up", ...shared });
+  });
 }
 
 /** Presses one `keyboard` key spec (see `parseMacosKey`). */
@@ -285,7 +287,7 @@ export async function macosInsertText(app: MacosAppApi, text: string): Promise<v
 }
 
 /**
- * Types `text` in order: a printable ASCII character as a key down and up (the
+ * Types `text` in order: a printable ASCII character as a keystroke (the
  * library adds Shift), a newline as Enter, a tab as Tab, and every run of other
  * characters (accents, symbols, emoji) as one insertion. Each request is
  * awaited before the next. Returns the number of characters typed.
