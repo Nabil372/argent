@@ -28,15 +28,9 @@ export function readConfigObject(
 }
 
 /**
- * Why the document of `scope` could not be read, or `undefined` when there is
- * nothing to say — the file is absent, or it read and parsed.
- *
- * {@link readConfigObject} answers an empty document either way, which is right
- * for a key that has a default and silent for one that does not: a `chmod`, or
- * a hand edit that left the JSON broken, makes every key in the file read as
- * unset, and the caller cannot tell that from a file nobody has written
- * yet. Nothing here changes what any key resolves to; it lets a caller SAY the
- * configuration was lost.
+ * Why the document of `scope` could not be read, or `undefined` when the file is
+ * absent or parsed. {@link readConfigObject} answers an empty document either
+ * way, so this is how a caller can say the configuration was lost.
  */
 export function configDocumentProblem(
   scope: FlagScope = "global",

@@ -286,10 +286,8 @@ describe("argent config — a rejected value says what to type instead", () => {
     expect(err).toContain("Example: argent config set lens.agent claude");
   });
 
-  // The confidence test runs through `validateWrite` where a key has one.
-  // `scripts.bash` keeps whatever it is GIVEN so its own resolver can name a
-  // wrong value, so `parse` accepts `["bin/bash"]` and would have "confirmed"
-  // a wrapping the write gate then refuses — a suggested command that fails.
+  // `scripts.bash`'s reader keeps whatever it is given, so its `parse` accepts
+  // `["bin/bash"]`; a suggestion is checked against the write gate instead.
   it("suggests no wrapping for a key whose reader keeps a value its writer refuses", () => {
     expect(() => config(["set", "scripts.bash", "bin/bash"])).toThrow(ExitError);
 

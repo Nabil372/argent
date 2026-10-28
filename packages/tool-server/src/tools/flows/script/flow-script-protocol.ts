@@ -8,14 +8,10 @@
  * so that a limit can apply while draining rather than after a whole message
  * has been serialized.
  *
- * The runner has two modes, and `interpreter` is what picks one. In `node` mode
- * it rides in as an `--import` preload in front of the script itself, and the
- * document crosses this channel in both directions. In `bash` mode it is the
- * entry module and spawns bash as its own child, so bash reads and writes the
- * document in the file the executor seeds and names in the request - bash has
- * no IPC channel, and the runner closes its own to what it starts. After bash
- * exits the runner reads the file back and returns the document on this
- * channel.
+ * `interpreter` picks the runner's mode. In `node` mode it preloads in front of
+ * the script and the document crosses this channel both ways. In `bash` mode it
+ * spawns bash, which reads and writes the document in the file the request names;
+ * the runner reads it back after bash exits and returns it here.
  */
 
 export const SCRIPT_MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -58,19 +54,11 @@ interface ScriptExecuteBashRequest extends ScriptExecuteCommon {
   scriptPath: string;
   /** `$ARGENT_OUTPUT`: the document, in and out. Created by the parent. */
   outputFile: string;
-  /**
-   * What the parent seeded {@link outputFile} with. The runner compares the
-   * document it reads back against this, and only then can say the script wrote
-   * nowhere the parent looked.
-   */
+  /** What the parent seeded {@link outputFile} with, to tell whether the script wrote it. */
   outputJson: string;
   /**
-   * The parent's OWN time limit - {@link ScriptExecuteCommon.deadlineMs} minus
-   * the stall margin the child's watchdog sits behind it. The runner needs it
-   * because it has one wait of its own: when bash dies by a signal it holds the
-   * answer briefly, in case the same signal is still on its way to the group.
-   * Bounded by nothing, that wait outlived the parent's timer on a short step,
-   * and a signalled bash was reported as a time limit that was never exceeded.
+   * The parent's own time limit, so the runner's wait for a group signal never
+   * outlives the parent's timer.
    */
   timeoutMs: number;
 }
@@ -106,14 +94,9 @@ const FAILURE_TYPES: readonly ScriptFailureType[] = [
 ];
 
 /**
- * The two the runner can only reach in bash mode, where it spawns its own child
- * and so is the side that learns bash could not be started or was killed by a
- * signal. Refused in node mode, where the parent reaches both conclusions
- * itself: there the script runs INSIDE the runner with the protocol descriptor
- * open, and `spawn` is a kind the step reports as "nothing ran, so there is
- * nothing to clean up" — an answer a script that has already done its work must
- * not be able to write for itself. Bash cannot: the runner hands its own child
- * a null device in that slot.
+ * Failures only the bash-mode runner can report, since it spawns bash itself.
+ * Refused in node mode, where the script runs inside the runner and must not be
+ * able to forge a `spawn` ("nothing ran") answer for itself.
  */
 const BASH_ONLY_FAILURE_TYPES: readonly ScriptFailureType[] = ["spawn", "signal"];
 

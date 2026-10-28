@@ -6,26 +6,22 @@ import {
   exchangeDirPrefix,
   FlowScriptExecutor,
 } from "../../../src/tools/flows/script/flow-script-executor";
-import { createScriptWorkspace } from "../../helpers/flow-script-workspace";
+import { createScriptWorkspace, type ScriptWorkspace } from "../../helpers/flow-script-workspace";
 import { resolveHostBash } from "../../helpers/host-bash";
 
 /**
  * The sweep of abandoned exchange directories, which a process runs on a bash
- * step and then not again until its interval has passed — so it needs a test
- * file of its own, where no earlier bash step has already taken a turn. vitest
- * isolates the module registry per file, which is what makes that hold.
- *
- * It exists for the orphan case: when the tool server dies mid-step the
- * lifeline kills the runner and nobody reaches the exchange directory, and the
- * document in it may hold values derived from a secret.
- *
- * The root is this file's own rather than `os.tmpdir()`: that one holds the
- * exchange directories of every other argent install on the machine, so what a
- * sweep does there is not a fact about these fixtures.
+ * step and then not again until its interval has passed, so it needs a file of
+ * its own where no earlier bash step took a turn. It exists for the orphan a
+ * dead tool server leaves, whose document may hold values derived from a
+ * secret. The root is this file's own: `os.tmpdir()` is shared with other
+ * installs.
  */
 let noBash: string | undefined;
+let exchangeRoot: string;
 
 beforeAll(async () => {
+  exchangeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-sweep-root-"));
   const found = await resolveHostBash();
   if (!("path" in found)) noBash = found.problem;
 });
@@ -34,53 +30,59 @@ beforeEach((ctx) => {
   if (noBash) ctx.skip(`this host has no bash to run a .sh step with: ${noBash}`);
 });
 
-let exchangeRoot: string;
-
-beforeAll(() => {
-  exchangeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "argent-sweep-root-"));
-});
-
 afterAll(() => fs.rmSync(exchangeRoot, { recursive: true, force: true }));
 
-describe("a bash step's sweep of the exchange root", () => {
-  // One test for the judging, because the first bash step of the process is
-  // where every directory planted before it is judged.
-  it("judges each exchange directory by the bound its own step wrote", async () => {
-    const ws = createScriptWorkspace("bash-sweep");
-    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+afterEach(() => vi.restoreAllMocks());
 
-    // A name this executor never wrote, carrying no bound of its own. Its age
-    // is all there is to read, and an age cannot say what time limit the step
-    // that made it was given — so it is left alone rather than judged by this
-    // install's own bound.
+const workspaces: ScriptWorkspace[] = [];
+afterEach(() => {
+  while (workspaces.length) workspaces.pop()!.cleanup();
+});
+
+/** One executor whose bash steps sweep `root`, and a step that passes. */
+function stepper(options: { root?: string; intervalMs?: number } = {}) {
+  const ws = createScriptWorkspace("bash-sweep");
+  workspaces.push(ws);
+  const runs = new FlowScriptExecutor({
+    concurrency: 2,
+    maxTimeoutMs: 60_000,
+    exchangeRoot: options.root ?? exchangeRoot,
+    ...(options.intervalMs === undefined ? {} : { exchangeSweepIntervalMs: options.intervalMs }),
+  });
+  return (source = `printf '{"ok":true}' > "$ARGENT_OUTPUT"`, timeoutMs?: number) =>
+    runs.execute({
+      scriptPath: ws.write("step.sh", source),
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    });
+}
+
+/** An exchange directory named the way a step whose bound is `boundAt` names it. */
+function planted(boundAt: number, document?: string): string {
+  const dir = fs.mkdtempSync(path.join(exchangeRoot, `${exchangeDirPrefix()}${boundAt}-`));
+  if (document) fs.writeFileSync(path.join(dir, "output.json"), document);
+  return dir;
+}
+
+const DERIVED = '{"token":"derived-from-a-secret"}';
+
+describe("a bash step's sweep of the exchange root", () => {
+  // One test, because the first bash step of the process is where every
+  // directory planted before it is judged.
+  it("judges each exchange directory by the bound its own step wrote", async () => {
+    const longAgo = new Date(Date.now() - 60 * 60 * 1000);
+    // No bound in the name: an age cannot say what limit its step had.
     const unstamped = fs.mkdtempSync(path.join(exchangeRoot, exchangeDirPrefix()));
     fs.utimesSync(unstamped, longAgo, longAgo);
-
-    // A step of another install, still running, whose own time limit is longer
-    // than anything this install would allow. A directory's mtime does advance
-    // when a file is created inside it, but it can never carry the OWNER's
-    // bound, which is the whole reason the name does.
-    const stamped = (owned: number): string =>
-      fs.mkdtempSync(path.join(exchangeRoot, `${exchangeDirPrefix()}${Date.now() + owned}-`));
-    const liveElsewhere = stamped(60 * 60 * 1000);
+    // Another install's step, still within a limit longer than this one allows.
+    const liveElsewhere = planted(Date.now() + 60 * 60 * 1000);
     fs.utimesSync(liveElsewhere, longAgo, longAgo);
-    // And one whose own bound has passed, which is abandoned however new the
-    // directory is.
-    const finishedElsewhere = stamped(-1_000);
-    fs.writeFileSync(
-      path.join(finishedElsewhere, "output.json"),
-      '{"token":"derived-from-a-secret"}'
-    );
+    // Past its own bound, however new the directory is.
+    const finishedElsewhere = planted(Date.now() - 1_000, DERIVED);
 
     try {
-      const script = ws.write("sweep.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
-      const result = await new FlowScriptExecutor({
-        concurrency: 2,
-        maxTimeoutMs: 60_000,
-        exchangeRoot,
-      }).execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
-
-      expect(result.ok).toBe(true);
+      expect((await stepper()()).ok).toBe(true);
       expect(fs.existsSync(finishedElsewhere)).toBe(false);
       expect(fs.existsSync(unstamped)).toBe(true);
       expect(fs.existsSync(liveElsewhere)).toBe(true);
@@ -88,24 +90,15 @@ describe("a bash step's sweep of the exchange root", () => {
       for (const dir of [unstamped, liveElsewhere, finishedElsewhere]) {
         fs.rmSync(dir, { recursive: true, force: true });
       }
-      ws.cleanup();
     }
   }, 30_000);
 
-  // The throttle bounds how OFTEN the root is read, not what one read costs -
-  // and in production that root is `os.tmpdir()`, shared with every process on
-  // the host and bounded by nothing. A whole-directory read builds one array of
-  // every name on the main thread however it was scheduled, so the sweep of a
-  // large root stalled the tool server's event loop: no MCP request, device
-  // socket or timer ran during it. A handle read in small batches leaves the
-  // loop between them.
-  //
-  // Not on Windows: its timers tick at about 15.6 ms, above the bound itself, so
-  // a 5 ms heartbeat cannot resolve that bound there.
+  // In production the root is `os.tmpdir()`, bounded by nothing; a
+  // whole-directory read builds one array of every name on the main thread.
+  // Not on Windows, whose ~15.6 ms timer tick is above the bound itself.
   it.skipIf(process.platform === "win32")(
     "sweeps a large root without stalling the event loop",
     async () => {
-      const ws = createScriptWorkspace("bash-sweep-stall");
       const crowded = fs.mkdtempSync(path.join(os.tmpdir(), "argent-sweep-crowded-"));
       for (let i = 0; i < 40_000; i += 1) fs.mkdirSync(path.join(crowded, `junk-${i}`));
 
@@ -117,87 +110,37 @@ describe("a bash step's sweep of the exchange root", () => {
         last = now;
       }, 5);
       try {
-        const script = ws.write("crowded.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
-        const result = await new FlowScriptExecutor({
-          concurrency: 2,
-          maxTimeoutMs: 60_000,
-          exchangeRoot: crowded,
-        }).execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
-
-        expect(result.ok).toBe(true);
-        // 21-22 ms on this machine before, 0 after, with this case run alone; the
-        // margin is for a loaded one.
+        expect((await stepper({ root: crowded })()).ok).toBe(true);
         expect(worstBlockMs).toBeLessThan(12);
       } finally {
         clearInterval(heartbeat);
         fs.rmSync(crowded, { recursive: true, force: true });
-        ws.cleanup();
       }
     },
     120_000
   );
 
-  // The bound a directory carries has to be a whole number of milliseconds,
-  // because the sweep reads it back with `/^(\d+)-/` and a `.` matches nothing
-  // there. `flow-script-step-parse.test.ts` pins `timeout: 1500.5` as a legal
-  // step and `clampTimeout` returns a wanted value un-rounded, so the
-  // fractional value really reaches the name - and a directory named
-  // `argent-flow-script-<n>.5-XXXXXX` would be passed over forever, keeping an
-  // `output.json` that may hold values derived from a secret under the shared
-  // `os.tmpdir()`.
+  // The sweep reads the bound back with `/^(\d+)-/`, and a legal
+  // `timeout: 1500.5` would otherwise name a directory it passes over forever.
   it("stamps a fractional time limit as a whole millisecond", async () => {
-    const ws = createScriptWorkspace("bash-fractional");
-    try {
-      // The step reports its own exchange directory, which is otherwise removed
-      // before anything outside the executor could look at it.
-      const script = ws.write(
-        "fractional.sh",
-        `printf '{"dir":"%s"}' "$(dirname "$ARGENT_OUTPUT")" > "$ARGENT_OUTPUT.t"
-         mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`
-      );
-      const result = await new FlowScriptExecutor({
-        concurrency: 2,
-        maxTimeoutMs: 60_000,
-        exchangeRoot,
-      }).execute({
-        scriptPath: script,
-        interpreter: "bash",
-        projectRoot: ws.dir,
-        timeoutMs: 1500.5,
-      });
+    const result = await stepper()(
+      `printf '{"dir":"%s"}' "$(dirname "$ARGENT_OUTPUT")" > "$ARGENT_OUTPUT.t"
+       mv "$ARGENT_OUTPUT.t" "$ARGENT_OUTPUT"`,
+      1500.5
+    );
 
-      expect(result.ok).toBe(true);
-      const name = path.basename(String(result.output?.dir));
-      expect(name.startsWith(exchangeDirPrefix())).toBe(true);
-      expect(name.slice(exchangeDirPrefix().length)).toMatch(/^\d+-/);
-    } finally {
-      ws.cleanup();
-    }
+    expect(result.ok).toBe(true);
+    const name = path.basename(String(result.output?.dir));
+    expect(name.startsWith(exchangeDirPrefix())).toBe(true);
+    expect(name.slice(exchangeDirPrefix().length)).toMatch(/^\d+-/);
   }, 30_000);
 
-  // The orphan a crashed tool server leaves is stamped with a moment in the
-  // FUTURE — its dead owner's whole time limit still ahead of it — so the next
-  // server's first bash step reads it as live and passes over it. A process
-  // that swept exactly once then left it for good, which is neither what the
-  // sweep's docstring promises nor what the document in it deserves.
+  // An owner that died with its bound still ahead leaves a directory that reads
+  // as live at first; a later sweep has to come back for it.
   it("comes back for a directory whose owner died with its bound still ahead", async () => {
-    const ws = createScriptWorkspace("bash-resweep");
-    const orphan = fs.mkdtempSync(
-      path.join(exchangeRoot, `${exchangeDirPrefix()}${Date.now() + 800}-`)
-    );
-    fs.writeFileSync(path.join(orphan, "output.json"), '{"token":"derived-from-a-secret"}');
-
+    const orphan = planted(Date.now() + 800, DERIVED);
     try {
-      const script = ws.write("resweep.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
-      const runs = new FlowScriptExecutor({
-        concurrency: 2,
-        maxTimeoutMs: 60_000,
-        exchangeRoot,
-        exchangeSweepIntervalMs: 50,
-      });
-      const step = (): Promise<{ ok: boolean }> =>
-        runs.execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
-
+      const step = stepper({ intervalMs: 50 });
       expect((await step()).ok).toBe(true);
       expect(fs.existsSync(orphan)).toBe(true);
 
@@ -207,121 +150,65 @@ describe("a bash step's sweep of the exchange root", () => {
       expect(fs.existsSync(orphan)).toBe(false);
     } finally {
       fs.rmSync(orphan, { recursive: true, force: true });
-      ws.cleanup();
     }
   }, 30_000);
 
-  // The throttle is the whole of the "a single read a minute rather than one
-  // per step" bound the sweep's docstring claims, and in production the root is
-  // `os.tmpdir()` - shared with every process on the host and bounded by
-  // nothing, where one read cost 48 ms of blocked event loop on a machine
-  // holding 88 000 entries. Counted at `opendir`, which is the read.
+  // The throttle is what bounds reads of a shared root to one per interval.
+  // Counted at `opendir`, which is the read.
   it("reads the root once however many steps run inside the interval", async () => {
-    const ws = createScriptWorkspace("bash-throttle");
     const opendir = vi.spyOn(fs.promises, "opendir");
-    try {
-      const script = ws.write("throttle.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
-      const runs = new FlowScriptExecutor({
-        concurrency: 2,
-        maxTimeoutMs: 60_000,
-        exchangeRoot,
-        exchangeSweepIntervalMs: 60_000,
-      });
-      for (let step = 0; step < 4; step += 1) {
-        const result = await runs.execute({
-          scriptPath: script,
-          interpreter: "bash",
-          projectRoot: ws.dir,
-        });
-        expect(result.ok).toBe(true);
-      }
+    const step = stepper({ intervalMs: 60_000 });
+    for (let i = 0; i < 4; i += 1) expect((await step()).ok).toBe(true);
 
-      const reads = opendir.mock.calls.filter(([target]) => target === exchangeRoot);
-      expect(reads.length).toBeLessThanOrEqual(1);
-    } finally {
-      opendir.mockRestore();
-      ws.cleanup();
-    }
+    const reads = opendir.mock.calls.filter(([target]) => target === exchangeRoot);
+    expect(reads.length).toBeLessThanOrEqual(1);
   }, 60_000);
 
-  // The sweep takes anything whose name carries the executor's prefix and a
-  // past stamp. A link planted under such a name is removed as a link: the
-  // directory it points to is not the sweep's, and the recursive `rm` the
-  // batched remove replaced never followed it either. POSIX only, because a
+  // A link planted under the prefix is removed as a link, never followed. A
   // symbolic link on Windows needs a privilege the CI runner lacks.
   it.skipIf(process.platform === "win32")(
     "removes a planted link, never what it points to",
     async () => {
-      const ws = createScriptWorkspace("bash-sweep-link");
       const victim = fs.mkdtempSync(path.join(os.tmpdir(), "argent-sweep-victim-"));
       fs.writeFileSync(path.join(victim, "keep.txt"), "not the sweep's");
       const link = path.join(exchangeRoot, `${exchangeDirPrefix()}${Date.now() - 1_000}-planted`);
       fs.symlinkSync(victim, link);
       try {
-        // Past the interval, so this step's own sweep is not the throttled one.
+        // Past the interval, so this step's sweep is not the throttled one.
         await new Promise((resolve) => setTimeout(resolve, 5));
-        const script = ws.write("link.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
-        const result = await new FlowScriptExecutor({
-          concurrency: 2,
-          maxTimeoutMs: 60_000,
-          exchangeRoot,
-          exchangeSweepIntervalMs: 1,
-        }).execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
-
-        expect(result.ok).toBe(true);
+        expect((await stepper({ intervalMs: 1 })()).ok).toBe(true);
         expect(fs.readFileSync(path.join(victim, "keep.txt"), "utf8")).toBe("not the sweep's");
         expect(() => fs.lstatSync(link)).toThrow();
       } finally {
         fs.rmSync(link, { force: true });
         fs.rmSync(victim, { recursive: true, force: true });
-        ws.cleanup();
       }
     },
     30_000
   );
 
-  // A step never outlives its own sweep: `runOne` waits on it, so the root is
-  // readable the moment `execute` resolves and a document a dead owner left is
-  // gone by then rather than shortly after. Without the wait a small root still
-  // passed, because `rm` won the race - so the sweep's own removal is slowed
-  // here, which is the only thing that tells the two apart.
+  // `runOne` waits on its sweep. The sweep's own removal is slowed, because
+  // without the wait a small root still passes when `rm` wins the race.
   it("has finished its sweep by the time the step resolves", async () => {
-    const ws = createScriptWorkspace("bash-await-sweep");
-    const abandoned = fs.mkdtempSync(
-      path.join(exchangeRoot, `${exchangeDirPrefix()}${Date.now() - 1_000}-`)
-    );
-    fs.writeFileSync(path.join(abandoned, "output.json"), '{"token":"derived-from-a-secret"}');
+    const abandoned = planted(Date.now() - 1_000, DERIVED);
     const realRm = fs.promises.rm;
-    const rm = vi
-      .spyOn(fs.promises, "rm")
-      .mockImplementation(async (target: Parameters<typeof realRm>[0], options) => {
-        // The abandoned directory alone: the step removes its own exchange
-        // through `fs.promises.rm` too, and slowing that as well let the sweep
-        // finish first with or without the wait.
+    vi.spyOn(fs.promises, "rm").mockImplementation(
+      async (target: Parameters<typeof realRm>[0], options) => {
+        // The abandoned directory alone: slowing the step's own removal too
+        // let the sweep finish first with or without the wait.
         if (String(target).startsWith(abandoned)) {
           await new Promise((resolve) => setTimeout(resolve, 250));
         }
         return realRm(target, options);
-      });
+      }
+    );
     try {
-      // Past the interval, so this step's own sweep is not the throttled one.
       await new Promise((resolve) => setTimeout(resolve, 5));
-      const script = ws.write("await-sweep.sh", `printf '{"ok":true}' > "$ARGENT_OUTPUT"`);
-      const result = await new FlowScriptExecutor({
-        concurrency: 2,
-        maxTimeoutMs: 60_000,
-        exchangeRoot,
-        exchangeSweepIntervalMs: 1,
-      }).execute({ scriptPath: script, interpreter: "bash", projectRoot: ws.dir });
-
-      expect(result.ok).toBe(true);
+      expect((await stepper({ intervalMs: 1 })()).ok).toBe(true);
       expect(fs.existsSync(abandoned)).toBe(false);
     } finally {
-      rm.mockRestore();
+      vi.restoreAllMocks();
       fs.rmSync(abandoned, { recursive: true, force: true });
-      ws.cleanup();
     }
   }, 30_000);
 });
-
-afterEach(() => vi.restoreAllMocks());

@@ -287,9 +287,7 @@ function suggestCorrectedSet(
   if (!(err instanceof ConfigValidationError)) return null;
   const def = getConfigDefinition(key);
   if (!def) return null;
-  // A successful check of the wrapped value is the confidence test, through the
-  // same validator the write itself used — a key whose `parse` deliberately
-  // keeps whatever it is given would otherwise "confirm" every wrapping.
+  // A successful write-check of the wrapped value is the confidence test.
   const wrapped = (def.validateWrite ?? def.parse)([rawValue]);
   if (wrapped === undefined) return null;
   const scopeFlag = scope ? ` --scope ${scope}` : "";

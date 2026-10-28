@@ -28,80 +28,42 @@ let idleResources = [];
 
 let runnerIsSending = false;
 
-/**
- * Set before anything can act on it, and read only by `exitOnParentDisconnect`.
- * In bash mode the process this file runs in has a child that nothing else will
- * reap once it is gone, so its exits are not interchangeable with node mode's.
- */
+/** Bash mode leaves a child bash that nobody else reaps; read by `exitOnParentDisconnect`. */
 let bashMode = false;
 
 /**
  * The signals a script can aim at its own process group, which this process
- * leads in bash mode. Held in `heldSignals` rather than acted on: see
- * `holdGroupSignals`.
- *
- * SIGQUIT is here for the case the other three do not have: GNU bash 5.x
- * IGNORES it in a non-interactive shell and Node's default kills on it, so a
- * `kill -QUIT 0` used to end this process and leave bash running - the exact
- * failure `holdGroupSignals` exists to prevent. The parent then reported "the
- * script process was killed by SIGQUIT … it did not stop itself", both halves
- * false: bash was not killed, and the script's own line is what killed the
- * runner. Apple's bash 3.2, the other fallback candidate, dies on SIGQUIT
- * instead, so the two bashes disagreed here as well.
+ * leads in bash mode; held rather than acted on (see `holdGroupSignals`).
+ * SIGQUIT too: Node's default kills on it while GNU bash ignores it.
  */
 const GROUP_SIGNALS = ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"];
 
 const heldSignals = new Set();
 
 /**
- * What a stray carriage return is named on disk. Windows is the one platform
- * where a CRLF checkout happens, and there bash is msys2 — a Cygwin fork, which
- * cannot put an ASCII control character in a file name and transposes it into
- * the private-use block instead. So the file the shell created is
- * `output.json` + U+F00D there and `output.json` + U+000D everywhere else, and
- * a check for only one of them misses on the very platform it is for.
+ * A stray carriage return as it lands in a file name: U+000D, or U+F00D under
+ * msys2 bash on Windows, which maps control characters into the private-use area.
  */
 const STRAY_SUFFIXES = ["\r", "\uF00D"];
 
 /**
- * How the exchange file is opened. `O_NONBLOCK` closes the window the check in
- * `irregularFileKind` leaves: a named pipe put there between the `stat` and the
- * `open` answers at once instead of parking this thread on a writer that never
- * comes. It is a no-op on a regular file, and absent on a platform that has no
- * such flag.
+ * `O_NONBLOCK` so a named pipe swapped in after `irregularFileKind`'s `stat`
+ * cannot block the open; a no-op on a regular file.
  */
 const READ_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
 
-/**
- * How the exchange file is decoded. `fatal` because the alternative is
- * `toString("utf8")`, which substitutes U+FFFD for every invalid sequence:
- * silent, unequal to what the script wrote, and three bytes wide where the
- * input was one. See `readOutputFile`.
- */
+/** Strict, so invalid UTF-8 is refused rather than replaced; see `readOutputFile`. */
 const STRICT_UTF8 = new TextDecoder("utf8", { fatal: true });
 
 /**
- * How long bash's death by a signal waits for the SAME signal to arrive here,
- * before it is read as one from outside the group. `kill 0` reaches every
- * member of the group at one syscall, so the signal is already pending on this
- * process when bash's exit is seen; what varies is when libuv's own signal
- * watcher next gets a turn. Measured at up to 17 ms on a loaded machine, and
- * held under the parent's own stop grace so a runner that is waiting still
- * answers before the parent's SIGKILL lands on the group.
+ * How long bash's death by a signal waits for the same signal to arrive here
+ * before it is read as one from outside the group. Under the parent's stop grace.
  */
 const GROUP_SIGNAL_SETTLE_MS = 1_000;
 
 /**
- * How much of the step's own time limit the wait above leaves alone. The
- * parent's timer is armed as it forks this process, which is only reached
- * tens of milliseconds later, and the verdict has to travel back before that
- * timer fires: past it the parent seals the interruption and discards a
- * terminal message that was already correct.
- *
- * Without this, the whole legal range up to about 1050 ms sat under the settle:
- * a bash killed by SIGTERM at five milliseconds under a 500 ms limit was
- * reported as "did not finish within its 500ms time limit" at 565 ms - a limit
- * that was never exceeded, about the one fact that explains the failure.
+ * How much of the step's time limit the wait above leaves alone, so the verdict
+ * reaches the parent before its timer fires and reports a timeout instead.
  */
 const GROUP_SIGNAL_SETTLE_GUARD_MS = 250;
 
@@ -129,12 +91,8 @@ const realExit = process.exit.bind(process);
  * `process.channel` is a property a script may replace, and a wrong descriptor
  * would put the verdict into some other file. See `sendSynchronously`.
  *
- * None on Windows. libuv frames each message on a Windows IPC pipe with a
- * header of its own - the room it keeps for passing a handle - so a raw line
- * written past it is a frame the parent cannot read: the parent's end closes,
- * this side sees `disconnect`, and in bash mode that stops the step's whole
- * process tree before the verdict the write was for. The queued `process.send`
- * is what frames it there.
+ * None on Windows, where libuv frames each IPC message with its own header, so a
+ * raw line would be unreadable; there the queued `process.send` frames it.
  */
 const channelHandle = /** @type {{ fd?: number } | undefined} */ (
   /** @type {unknown} */ (process.channel)
@@ -154,26 +112,14 @@ const decodeJson = JSON.parse;
 const runnerListeners = [];
 
 /**
- * Set by the deadline watchdog before it starts to stop this process's tree. On
- * Windows that stop is `taskkill /t`, which takes the tree one process at a
- * time, so bash can die before this thread does - and this thread would then
- * report bash's forced exit as the script's own code 1. The step overran its
- * time limit, which is the parent's to say; see `finish`.
+ * Set by the deadline watchdog before it stops this tree, so a bash killed first
+ * by Windows' one-at-a-time `taskkill /t` is not reported as exit code 1.
  */
 const deadlineFired = new Int32Array(new SharedArrayBuffer(4));
 
-/**
- * Every pattern and separator the functions below read, declared ABOVE the
- * activation call rather than beside its reader.
- *
- * `await prepare()` suspends this module's evaluation, and in bash mode
- * `prepare` never returns — it parks in `never()` — so a `const` written after
- * that line stays in its temporal dead zone for the life of the process.
- * `errorMessage` is reached from bash mode's very first failure (a bash that
- * would not start), and reading `CAUSED_BY` from there threw a ReferenceError
- * that replaced the report with an exit code 1 the parent could only call
- * `protocol`. Node mode had the same hazard on its own decode-failure path.
- */
+// Every pattern the functions below read is declared above the activation call:
+// in bash mode `prepare` never returns, so a `const` declared after it stays in
+// its temporal dead zone for the life of the process.
 const POSIX_ERRNO_RE = /^E[A-Z]+$/;
 
 /** Node's module loader, ESM and CommonJS alike. */
@@ -276,11 +222,8 @@ async function prepare() {
 }
 
 /**
- * Bash mode: bash is an ordinary child of this process, and this process leads
- * the group both watchdogs kill — so the parent's tree stop, the deadline
- * watchdog's kill and the lifeline watchdog's kill all reach bash, and the
- * parent classifies a bash step through exactly the `classifyOutcome` a `.mjs`
- * step goes through.
+ * Bash mode: bash is an ordinary child in the group this process leads, so every
+ * stop reaches it and the parent classifies it as it does a `.mjs` step.
  */
 function runBash(request) {
   bashMode = true;
@@ -292,51 +235,26 @@ function runBash(request) {
   keepListener("disconnect", exitOnParentDisconnect);
 
   let child;
-  // In this process, 4 is the lifeline and 5 is the protocol channel, and the
-  // parent leaves 3 empty. A bash `echo … >&5` landing on the protocol channel
-  // would be parsed by Node inside its own read callback in the parent, and a
-  // forged `result` line would be a forged verdict. Node marks every descriptor
-  // it inherited close-on-exec at startup, so `"ignore"` in those slots happens
-  // to close them — but that is a runtime startup detail, not a contract this
-  // may rest on. Three null devices make the guarantee this process's own, on
-  // every platform. One descriptor in three slots would be closed three times
-  // in the child, which works and should not be relied on.
+  // fds 3-5 point at the null device: in this process 4 is the lifeline and 5 the
+  // protocol channel, so a bash `echo … >&5` could otherwise forge a verdict.
+  // Node's close-on-exec of inherited fds is a startup detail, not a contract.
   const nulls = [];
   try {
     for (let slot = 0; slot < 3; slot++) nulls.push(fs.openSync(os.devNull, "r+"));
-    // Before the spawn, and written straight to the channel rather than queued
-    // behind a turn of the loop. `spawn` forks and execs, so the script's first
-    // line runs while this process is still returning from the call — and a
-    // script that kills the runner there ("`kill -9 $PPID`", or a group kill)
-    // beat every later placement about one run in fifty, leaving the parent to
-    // report a script that had already run as one that never started.
-    //
-    // Claiming it early costs nothing: a spawn that then fails sends a terminal
-    // `spawn` failure, which the parent prefers over this, and a runner that
-    // dies between the two is reported as the signal it was — the answer that
-    // tells the caller its script may have left work behind, which is the
-    // conservative one.
+    // Announced before the spawn, straight to the channel: the script's first
+    // line can kill this process (`kill -9 $PPID`) before a queued message goes
+    // out. A spawn that then fails still sends its own terminal failure.
     announceStarted();
     child = spawn(request.interpreterPath, [request.scriptPath], {
-      // The parent chose it, and it built this process's environment: the
-      // allowlist, minus the activation flag this file deleted before anything
-      // else ran, minus the `NODE_CHANNEL_FD` Node removes at its own startup.
-      // The exchange name is all this side adds.
+      // The environment the parent built; the exchange name is all this side adds.
       cwd: process.cwd(),
       env: {
         ...process.env,
         ARGENT_OUTPUT: request.outputFile,
       },
-      // `bash <file>`, never `shell: true` and never the shebang: a path with a
-      // space or a `$` must reach bash as one argument, the file needs no
-      // execute bit, and honouring a `#!` would run an interpreter other than
-      // the one the step resolved, reports and lets an operator pin. No `-e` or
-      // `-u` either — strictness is the script's own `set -euo pipefail`.
-      //
-      // stdin is the null device, so a `read` gets end of file; there is no
-      // caller to answer it. stdout and stderr are this process's pipes, which
-      // the parent captures as the step's log - and whose stderr gives the line
-      // it adds to the reason of a non-zero exit.
+      // `bash <file>`, never `shell: true` or the shebang, so the path is one
+      // argument, no execute bit is needed and the resolved bash is the one that
+      // runs. stdin is the null device; stdout/stderr go to the parent's capture.
       stdio: ["ignore", "inherit", "inherit", ...nulls],
       // bash joins this process's group on POSIX; on Windows the parent's
       // `taskkill /t` on this process walks to it.
@@ -357,16 +275,9 @@ function runBash(request) {
 
   child.on("error", (err) => finish(spawnFailure(request, err)));
   child.on("exit", (code, signal) => {
-    // One of the two is always non-null for a process that really ran, so both
-    // null is a spawn that failed — and Node says `exit` "may or may not"
-    // follow `error` there. Reading it as an exit code of 0 would send the
-    // parent a document nothing wrote; the `error` handler above is what
-    // reports it, and the deadline watchdog bounds a spawn that reported
-    // neither.
+    // Both null is a spawn that failed, which the `error` handler reports.
     if (code === null && signal === null) return;
-    // A signal that reached bash reached this process in the same instant when
-    // it was aimed at the group, and `heldSignals` is what the report names it
-    // by — so the answer waits for it to arrive.
+    // A group signal reaches this process too; wait for it so the report names it.
     if (signal) {
       whenGroupSignalHeld(
         signal,
@@ -379,27 +290,9 @@ function runBash(request) {
 }
 
 /**
- * Take the group's signals away from Node's default, which is to end this
- * process. `trap 'kill 0' EXIT` is the standard bash idiom for reaping
- * background jobs, and `kill 0` means "signal my own process group" — the group
- * this process leads and bash joined, so it arrives here too. Ended here, the
- * runner dies before it can read `$ARGENT_OUTPUT` or send a verdict, and the
- * parent reports the SIGTERM on ITS child as an unexplained one: "the script
- * process was killed … it did not stop itself", about a process the script
- * never chose to run.
- *
- * Held rather than answered, because bash received the same signal and its own
- * exit is the verdict either way. Nothing is left holding the process open: the
- * parent's stop escalates to a SIGKILL on the group, and the deadline watchdog
- * bounds the run from inside.
- *
- * The EXIT trap is the only spelling this can see. A `kill 0` in the BODY of
- * the script — with bash still to run the rest of it — reaches bash alone:
- * measured on macOS, neither this process nor a plain `sleep` in the same group
- * received the signal, and the same `kill 0` under a `trap "" TERM` that makes
- * bash survive it reached both. So the signal a script sends itself is only
- * observable here when it does not kill its own sender, and `bashOutcome` says
- * so in the message it prints for the case this set is empty for.
+ * Take the group's signals away from Node's default of ending this process:
+ * `trap 'kill 0' EXIT` signals the whole group, and the runner must survive to
+ * read `$ARGENT_OUTPUT` and send a verdict. Bash's own exit is the verdict.
  */
 function holdGroupSignals() {
   for (const signal of GROUP_SIGNALS) {
@@ -412,14 +305,8 @@ function holdGroupSignals() {
 }
 
 /**
- * What is left of the settle above once the step's own time limit is taken into
- * account. The wait is worth having only while the answer can still reach the
- * parent: past its timer the parent seals the interruption and reports a
- * timeout instead, so a wait that outlives the timer trades a right answer for
- * a wrong one. A limit too short to spare any of it reports at once, which is
- * the classification the signal alone would have given.
- *
- * A request without a finite `timeoutMs` gets the whole settle.
+ * What is left of the settle above once the step's time limit is taken into
+ * account: past the parent's timer, an answer only turns into a timeout.
  */
 function groupSignalBudget(request, startedAt) {
   if (!Number.isFinite(request.timeoutMs)) return GROUP_SIGNAL_SETTLE_MS;
@@ -428,19 +315,9 @@ function groupSignalBudget(request, startedAt) {
 }
 
 /**
- * Run `report` once `signal` is one this process holds, or once the window
- * above has passed without it.
- *
- * One turn of the loop was not enough. The signal and the child's exit both
- * arrive through libuv's signal pipe and the exit routinely wins, so a
- * `setImmediate` — a callback in the SAME iteration — read `heldSignals` before
- * the holding handler had run. `trap 'kill 0' EXIT` is the idiom the split
- * exists for, and it landed on either side of the fail/error line from run to
- * run: about one run in thirty on an idle machine, more under load.
- *
- * A listener rather than a poll, so the wait ends the instant the signal lands.
- * The holding listener was registered first and so runs first, which is what
- * leaves `heldSignals` correct for the report this hands off to.
+ * Run `report` once `signal` is one this process holds, or once the window above
+ * has passed. A listener, since the child's exit routinely arrives before the
+ * signal; the holding listener was registered first, so `heldSignals` is current.
  */
 function whenGroupSignalHeld(signal, report, budgetMs = GROUP_SIGNAL_SETTLE_MS) {
   if (heldSignals.has(signal) || !GROUP_SIGNALS.includes(signal) || budgetMs <= 0) {
@@ -464,10 +341,8 @@ function whenGroupSignalHeld(signal, report, budgetMs = GROUP_SIGNAL_SETTLE_MS) 
 }
 
 /**
- * `started`, on the channel before this call returns - except on Windows,
- * where there is no descriptor to write it to (see `channelFd`) and it is only
- * queued. `process.send` only queues, and the window between the queueing and the write is exactly what a
- * script's first line can end this process inside of.
+ * `started`, on the channel before this call returns (only queued on Windows,
+ * which has no descriptor; see `channelFd`).
  */
 function announceStarted() {
   if (sendSynchronously({ type: "started" })) return;
@@ -487,25 +362,14 @@ function spawnFailure(request, err) {
 }
 
 /**
- * A non-zero exit status is the whole verdict. A `128+N` status is bash
- * reporting a foreground command killed by signal N, and it is read as the
- * script's own exit code — the script chose to run that command and could have
- * handled its status — so it stays a `fail` and the message does not try to
- * decode it. A signal on THIS child is a different thing, read below by whether
- * this process received it too.
+ * A non-zero exit status is the whole verdict, `128+N` included: the script ran
+ * that command and could have handled its status. A signal on bash itself is
+ * read by whether this process received it too.
  */
 function bashOutcome(request, code, signal) {
   if (signal) {
-    // A signal this process received too went to the group rather than to bash,
-    // and the group is the step's own: nothing outside it knows the number but
-    // the parent, which no longer takes this process's answer once it signals.
-    // That is the script's answer, not something the host did to it, so it is
-    // an `exit` — the kind that reads "it stopped its own process".
-    //
-    // The document is not read on this path, so the message says what the STEP
-    // does rather than what the file holds: a script that finished its write
-    // before the signal arrived left a complete document, and telling its
-    // author it was never written sends them to the wrong line.
+    // A signal this process received too went to the group, which is the step's
+    // own, so it is the script's answer: an `exit`. The document is not read here.
     if (heldSignals.has(signal)) {
       return {
         type: "failure",
@@ -524,10 +388,8 @@ function bashOutcome(request, code, signal) {
       message:
         `The script was killed by ${signal} before it exited ` +
         `(bash: ${request.interpreterPath}).` +
-        // The other spelling of the mistake above. A `kill 0` in the body of
-        // the script kills bash and reaches nothing else — not this process,
-        // which is what the branch above reads a group signal by — so the two
-        // causes arrive here identically and the message names both.
+        // A `kill 0` in the script's body kills bash alone, so it arrives here
+        // the same way and the message names both causes.
         (GROUP_SIGNALS.includes(signal)
           ? " A `kill 0` in the body of the script ends bash the same way and is not " +
             "distinguishable from this: signal each job's own pid instead."
@@ -536,9 +398,7 @@ function bashOutcome(request, code, signal) {
   }
   const status = code ?? 0;
   if (status !== 0) {
-    // Why it exited is on stderr, which this process never reads: bash writes
-    // straight into the pipe the parent captures, so the parent is the side
-    // that adds a line from there to this one.
+    // The reason is on stderr, which the parent captures and appends.
     return {
       type: "failure",
       failureType: "exit",
@@ -548,10 +408,8 @@ function bashOutcome(request, code, signal) {
     };
   }
   const read = readOutputFile(request.outputFile, request.maxOutputBytes);
-  // Only where there is something to explain: the document Argent read is the
-  // one it seeded, or there is no document at all. A script that writes
-  // `$ARGENT_OUTPUT` correctly and also happens to leave a `\r` sibling behind
-  // is not a CRLF script, and its document is not the parent's to throw away.
+  // Only when the document is missing or still the seed: a stray `\r` sibling
+  // beside a document the script did write is not a CRLF problem.
   if (read.error || read.json === request.outputJson) {
     const strayed = carriageReturnProblem(request);
     if (strayed) return { type: "failure", failureType: "output", message: strayed };
@@ -562,23 +420,9 @@ function bashOutcome(request, code, signal) {
 }
 
 /**
- * The one CRLF symptom that is silent. A `.sh` checked out with CRLF line
- * endings carries the carriage return into the last word of every line, so
- * `> "$ARGENT_OUTPUT"` writes `output.json\r` and the file the parent reads is
- * still the one it seeded: exit code 0, and a document nothing wrote. The name
- * is the proof — the parent created this file and nobody else may name one
- * with a carriage return after it.
- *
- * Asked only where the document is missing or unchanged, because this explains
- * THAT and nothing else: a stray sibling beside a document the script really
- * wrote is not this.
- *
- * A fully CRLF script reaches this as readily as a mixed-ending one. It dies
- * early only when it HAS a `set -euo pipefail\r` line - and what that costs is
- * the bash's own: exit 2 under GNU bash 5.3 (`set: pipefail: invalid option
- * name`) and exit 1 under the Apple bash 3.2 the docs point macOS users at.
- * Without such a line it runs to completion, leaves the stray sibling and exits
- * 0, which is exactly the case this function is for.
+ * The one silent CRLF symptom: a CRLF `.sh` writes to `output.json\r`, leaving
+ * the seeded document in place and exiting 0. A name with a carriage return
+ * after it is the proof.
  */
 function carriageReturnProblem(request) {
   if (!strayedByCarriageReturn(request.outputFile)) return null;
@@ -617,12 +461,8 @@ function exitCodeHint(status) {
 }
 
 /**
- * The document, after exit 0. One bounded read of `maxOutputBytes + 1` bytes:
- * the text becomes one IPC message the parent deserializes whole, and a `stat`
- * first would leave the read itself unbounded against a descendant still
- * writing. The parent parses and validates it exactly as it does a `.mjs`
- * script's — `encodeOutput` is for a live JavaScript value and JSON text is not
- * one.
+ * The document, after exit 0, in one bounded read of `maxOutputBytes + 1` bytes;
+ * the parent parses and validates it.
  */
 function readOutputFile(file, maxOutputBytes) {
   const irregular = irregularFileKind(file);
@@ -663,22 +503,8 @@ function readOutputFile(file, maxOutputBytes) {
           "command writing it runs, so write to a sibling and `mv` it into place",
       };
     }
-    // Decoded strictly, never with replacement. `toString("utf8")` turns an
-    // invalid byte sequence into U+FFFD and nothing downstream re-validates -
-    // `commitOutput` in the parent checks the size, `JSON.parse`, object-ness
-    // and an own `__proto__`, none of which notices a substituted character -
-    // so bytes the script wrote were silently rewritten and the step was a
-    // pass, with the corrupted value flowing into flow state for later steps to
-    // read and compare against. A `.mjs` step cannot reach that state, because
-    // there the document is a live JavaScript value.
-    //
-    // It is also what puts the two sides of the size bound in the same unit.
-    // This read is bounded in FILE bytes and the parent bounds the document in
-    // post-decode UTF-8 bytes, and those agree only for text that decodes
-    // unchanged: a replacement character is three bytes where the input was
-    // one, so a file accepted here at exactly the limit was over it by the time
-    // the parent measured, and the step was refused for a size the script did
-    // not write.
+    // Decoded strictly: replacement characters would silently corrupt the value
+    // and make the size here (file bytes) disagree with the parent's.
     try {
       return { json: STRICT_UTF8.decode(buffer.subarray(0, read)) };
     } catch {
@@ -697,14 +523,8 @@ function readOutputFile(file, maxOutputBytes) {
 }
 
 /**
- * What is at `file`, when it is not the regular file the parent created there.
- * Asked BEFORE the open so the report names what is there: `READ_FLAGS` keeps
- * the open from blocking on a named pipe with no writer, but the read then
- * finds nothing and the step would be told the file is empty.
- *
- * The link is followed: the parent's own file is a regular one, so a symlink
- * here is the script's, and one pointing at a regular file is a document like
- * any other. `stat` never blocks, whatever it lands on.
+ * What is at `file` when it is not a regular file, asked before the open so the
+ * report names it. A symlink is followed: one to a regular file is a document.
  */
 function irregularFileKind(file) {
   let stat;
@@ -889,10 +709,8 @@ function acknowledge(args) {
  * Only reached while the event loop is still turning; a synchronous infinite
  * loop never gets here, which is what the lifeline watchdog thread is for.
  *
- * In bash mode a bare exit would leave bash — and everything bash started —
- * running under a runner that is gone, so this takes the group first. The two
- * lines repeat the lifeline watchdog's `stop`, which is a module constant on the
- * worker's own thread and so cannot be called from here.
+ * In bash mode it takes the group down first, as the lifeline watchdog does, so
+ * bash is not left running under a runner that is gone.
  */
 function exitOnParentDisconnect() {
   if (!bashMode) {
@@ -917,13 +735,7 @@ function never() {
   return new Promise(() => {});
 }
 
-/**
- * The protocol carries no version field, so an absent `interpreter` means the
- * shape the executor sent before bash mode existed - node. The loader resolves
- * whichever runner sits beside the compiled executor, so an older parent really
- * can reach this file; the day no installed argent still sends that shape, this
- * default can go.
- */
+/** An absent `interpreter` is an older executor's request, which means node. */
 function parseRequest(raw) {
   if (typeof raw !== "object" || raw === null) return null;
   if (raw.type !== "execute") return null;
@@ -1237,9 +1049,7 @@ function safeStringify(value) {
 function finish(response) {
   if (finished) return;
   finished = true;
-  // The deadline watchdog is stopping this tree: whatever bash's exit said, the
-  // step overran its limit, and the parent's own timer, due before this one,
-  // answers for it.
+  // The deadline watchdog is stopping this tree; the parent's timer answers for it.
   if (Atomics.load(deadlineFired, 0) === 1) return;
   const bounded = boundFailureText(response);
   const exit = () => realExit(0);

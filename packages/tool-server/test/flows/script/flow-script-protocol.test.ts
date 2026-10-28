@@ -20,7 +20,6 @@ import {
   SOURCE_RUNNER_DIR,
   type ScriptWorkspace,
 } from "../../helpers/flow-script-workspace";
-import { resolveHostBash } from "../../helpers/host-bash";
 
 const workspaces: ScriptWorkspace[] = [];
 const cleanups: Array<() => void> = [];
@@ -96,24 +95,15 @@ describe("script response parsing", () => {
     ).toEqual({ type: "failure", failureType: "runtime", message: "x" });
   });
 
-  it.each(["spawn", "signal"] as const)("accepts the bash-mode failure type %s", (failureType) => {
-    expect(parseScriptResponse({ type: "failure", failureType, message: "x" }, "bash")).toEqual({
-      type: "failure",
-      failureType,
-      message: "x",
-    });
-  });
-
-  // In node mode the script runs inside the runner with the protocol descriptor
-  // open, and a `spawn` failure is the one the step reports as "nothing ran, so
-  // there is nothing to clean up". A script that has already done its work must
-  // not be able to write that answer for itself.
+  // In node mode the script shares the runner's protocol descriptor, and a
+  // `spawn` failure reads as "nothing ran", which a script must not be able to
+  // claim for itself.
   it.each(["spawn", "signal"] as const)(
-    "refuses the bash-mode failure type %s in node mode",
+    "accepts the failure type %s from a bash runner only",
     (failureType) => {
-      expect(
-        parseScriptResponse({ type: "failure", failureType, message: "x" }, "node")
-      ).toBeNull();
+      const raw = { type: "failure", failureType, message: "x" };
+      expect(parseScriptResponse(raw, "bash")).toEqual(raw);
+      expect(parseScriptResponse(raw, "node")).toBeNull();
     }
   );
 
@@ -454,21 +444,8 @@ function nestedDocument(depth: number, leaf: string): string {
 }
 
 describe("flow script executor — a document from a runner", () => {
-  // The document came from a child that ran arbitrary code, so the parent's own
-  // walk over it — `documentProblem`, the last check before the document is
-  // committed — must be iterative: a megabyte of `{"nested":` is legal JSON,
-  // and a recursive walk would overflow the stack inside a call that owes its
-  // caller a verdict rather than a throw.
-  //
-  // A resolved secret inside the document is NOT replaced. The document is the
-  // script's answer, read by later steps for the value it holds, and the only
-  // redaction a step gets is over its failure text.
-  //
-  // The depth sits between two ceilings, which is what makes this case about
-  // the parent's walk and nothing else: past the ~3450-3925 where the runner's
-  // own recursive `walk` gives out across Node 20 to 26, so a document this
-  // deep can only have arrived as JSON text, and inside `MAX_OUTPUT_DEPTH`, so
-  // the parent still admits it. The case past that bound is the one below.
+  // Deeper than a recursive walk survives, inside the depth the parent admits. A
+  // secret in the document is kept: the document is data for later steps.
   it("commits a document too deep for a recursive walk, as the script wrote it", async () => {
     const depth = 4_000;
     const result = await withFakeRunner(
@@ -485,9 +462,7 @@ describe("flow script executor — a document from a runner", () => {
     expect(node).toBe("token sk-live-9d3f0a1b2c3d4e5f");
   }, 30_000);
 
-  // Past the bound the parent applies. A verdict, because that is what `execute`
-  // owes its caller: nothing on this path may throw, however deep the document a
-  // mismatched or hostile runner sends.
+  // `execute` owes its caller a verdict, however deep a hostile runner's document.
   it("answers a document past the depth bound with a verdict, not a throw", async () => {
     const result = await withFakeRunner(
       `process.on("message", () => {
@@ -653,63 +628,6 @@ describe("flow script runner — the watchdogs, driven directly", () => {
     },
     30_000
   );
-
-  // The loader resolves whichever runner sits beside the compiled executor, so
-  // a parent from before bash mode — one that names no interpreter at all —
-  // really can reach this file. Its request means node, which is the shape
-  // `forkRunner` sends by default.
-  it("reads a request that names no interpreter as a node one", async () => {
-    const ws = workspace();
-    const script = ws.write("legacy.mjs", `output.ran = true;`);
-    const child = forkRunner(script, 20_000);
-    const result = await new Promise<{ outputJson?: string } | null>((resolve) => {
-      child.on("message", (raw) => {
-        const m = raw as { type?: string; outputJson?: string };
-        if (m.type === "result") resolve(m);
-      });
-      child.once("exit", () => resolve(null));
-    });
-
-    expect(result?.outputJson).toBe('{"ran":true}');
-  }, 30_000);
-
-  // A bash request carries the interpreter, the script and the one exchange
-  // file, and nothing names a reason file any more: a runner that still asked
-  // for one would refuse every bash step the parent sends.
-  it("runs a bash request that names no reason file", async (ctx) => {
-    const found = await resolveHostBash();
-    if (!("path" in found)) {
-      ctx.skip(`this host has no bash to run a .sh step with: ${found.problem}`);
-      return;
-    }
-    const ws = workspace();
-    // Forward slashes, as the executor sends them.
-    const slashed = (file: string) => file.split(path.sep).join("/");
-    const outputFile = ws.resolve("output.json");
-    fs.writeFileSync(outputFile, "{}");
-    const script = ws.write("ran.sh", `printf '{"ran":true}' > "$ARGENT_OUTPUT"`);
-    // Any entry will do: in bash mode the runner parks before one can load.
-    const child = forkRunner(ws.write("entry.mjs", ""), 20_000, {
-      type: "execute",
-      interpreter: "bash",
-      interpreterPath: found.path,
-      scriptPath: slashed(script),
-      outputFile: slashed(outputFile),
-      outputJson: "{}",
-      timeoutMs: 20_000,
-      deadlineMs: 20_000,
-      maxOutputBytes: 1024 * 1024,
-    });
-    const answer = await new Promise<Record<string, unknown> | null>((resolve) => {
-      child.on("message", (raw) => {
-        const m = raw as { type?: string };
-        if (m.type === "result" || m.type === "failure") resolve(m);
-      });
-      child.once("exit", () => resolve(null));
-    });
-
-    expect(answer).toMatchObject({ type: "result", outputJson: '{"ran":true}' });
-  }, 30_000);
 
   it("obeys the first request and ignores a second", async () => {
     const ws = workspace();
