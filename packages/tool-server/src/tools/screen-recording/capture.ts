@@ -5,7 +5,12 @@ import { spawn } from "child_process";
 import type { LivePanel } from "../../utils/foldable";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
 import type { ScreenRecordingSessionApi } from "../../blueprints/screen-recording-session";
-import { encodedFrameCount, finalizeEncoder, verifyDebugEncoder } from "./encoder";
+import {
+  encodedFrameCount,
+  encoderDiagnostics,
+  finalizeEncoder,
+  verifyDebugEncoder,
+} from "./encoder";
 import {
   clearActiveScreenRecording,
   markScreenRecordingFinalized,
@@ -532,7 +537,7 @@ async function startCaptureLocked(
     stderrRef.text = (stderrRef.text + chunk.toString("utf8")).slice(-4_000);
     if (params.mode === "debug" && api.outputFile === outputFile && api.lastExitInfo) {
       api.lastExitInfo.framesEncoded = encodedFrameCount(stderrRef.text);
-      api.lastExitInfo.stderr = clip(stderrRef.text);
+      api.lastExitInfo.stderr = encoderDiagnostics(stderrRef.text);
     }
   });
   // An EPIPE on a dead encoder must not crash the tool-server.
@@ -622,7 +627,9 @@ async function startCaptureLocked(
       code,
       signal,
       ...(api.debugCapture ? { framesEncoded: encodedFrameCount(stderrRef.text) } : {}),
-      ...(stderrRef.text ? { stderr: clip(stderrRef.text) } : {}),
+      ...(stderrRef.text
+        ? { stderr: api.debugCapture ? encoderDiagnostics(stderrRef.text) : clip(stderrRef.text) }
+        : {}),
     };
     api.captureProcess = null;
     if (code === 0 && signal === null) {

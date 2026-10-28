@@ -1,6 +1,7 @@
 import { execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 import { FAILURE_CODES, FailureError, subprocessFailureMetadata } from "@argent/registry";
+import { clip } from "./session-guards";
 import { waitForChildExit } from "../../utils/profiler-shared/lifecycle";
 
 const execFileAsync = promisify(execFile);
@@ -112,4 +113,19 @@ export async function verifyDebugEncoder(ffmpeg: string, jpeg: Buffer): Promise<
       { cause: error }
     );
   }
+}
+
+export function encoderDiagnostics(stderr: string): string {
+  return clip(
+    stderr
+      .split("\n")
+      .filter(
+        (line) =>
+          !/^(?:frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(?:_us|_ms)?|dup_frames|drop_frames|speed|progress)=/.test(
+            line
+          )
+      )
+      .join("\n"),
+    2_000
+  );
 }

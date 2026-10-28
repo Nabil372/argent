@@ -1877,6 +1877,30 @@ describe("debug finalization safeguards", () => {
     }
   );
 
+  it.each([false, true])(
+    "preserves the failing frame path after final encoder progress (missing: %s)",
+    async (missing) => {
+      const api = await makeSession(iosDevice);
+      fakeStream();
+      const child = fakeChild();
+      child.exitOnStdinEnd(1);
+      await startAndSettle(api, { mode: "debug" });
+      if (!missing) await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+      const frame = "/tmp/recording/200.jpg";
+      child.stderr.emit(
+        "data",
+        Buffer.from(
+          `[concat] Impossible to open 'file:${frame}'\n[in#0/concat] Terminating thread with return code -2\nframe=40\nfps=1.0\nstream_0_0_q=12\nbitrate=1\ntotal_size=400\nout_time_us=3000000\nout_time_ms=3000000\nout_time=00:00:03.000\ndup_frames=0\ndrop_frames=0\nspeed=1.0x\nprogress=end\n`
+        )
+      );
+      const result = await stopCapture(api).catch((error: Error) => error);
+      const message = result instanceof Error ? result.message : result.warning!;
+      expect(message).toContain(`Impossible to open 'file:${frame}'`);
+      expect(message).not.toContain("progress=end");
+      expect(message).not.toContain("out_time_us=");
+    }
+  );
+
   it("lets a high-rate capture encode slower than real time", async () => {
     const api = await makeSession(iosDevice);
     const stream = fakeStream();
