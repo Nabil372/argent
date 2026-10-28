@@ -88,6 +88,33 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     expect(registry.invokeTool).not.toHaveBeenCalled();
   });
 
+  it("rejects before tool lookup, validation or failure telemetry after shutdown", async () => {
+    const registry = stubRegistry(async () => ({ ok: true }));
+    const recordFailure = vi.fn();
+    handle = createHttpApp(registry, { recordFailure });
+    handle.dispose();
+    const response = await supertest(handle.app).post("/tools/missing").send({}).expect(503);
+    expect(response.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+    expect(registry.getTool).not.toHaveBeenCalled();
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  it("reports shutdown health and recording recovery without promising a retry", async () => {
+    const registry = stubRegistry(async () => ({ ok: true }));
+    handle = createHttpApp(registry);
+    handle.dispose();
+    const health = await supertest(handle.app).get("/tools").expect(503);
+    expect(health.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+    const stop = await supertest(handle.app)
+      .post("/tools/screen-recording-stop")
+      .send({ udid: "device", outputFile: "/server/recording.mp4" })
+      .expect(503);
+    expect(stop.body.error_code).toBe(FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN);
+    expect(stop.body.error).toContain("/server/recording.mp4");
+    expect(stop.body.error).toContain("restart loses result retrieval state");
+    expect(stop.body.error).not.toContain("Retry after");
+  });
+
   it("streams each emitProgress event as a line, then the terminal result", async () => {
     const registry = stubRegistry(async (options) => {
       options?.emitProgress?.({ index: 0, status: "pass" });

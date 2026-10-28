@@ -8,6 +8,7 @@ import { isFlagEnabled } from "@argent/configuration-core";
 import { randomUUID, createHash } from "node:crypto";
 import {
   FAILURE_CODES,
+  FailureError,
   E2E_DIR_CLIENT_HEADER,
   LINKED_CALL_HEADER,
   describeParamIssues,
@@ -102,6 +103,32 @@ function isToolExposed(
   if (def.featureFlag && !isFlagEnabled(def.featureFlag)) return false;
   if (def.hideWhen?.()) return false;
   return true;
+}
+
+function serverShutdownError(toolId?: string, args?: unknown): FailureError {
+  const recording = toolId === "screen-recording-stop";
+  const outputFile =
+    args && typeof args === "object" && "outputFile" in args && typeof args.outputFile === "string"
+      ? args.outputFile
+      : "the outputFile returned by screen-recording-start";
+  return new FailureError(
+    recording
+      ? `The tool-server is shutting down. Recording finalization may continue, but this response does not confirm a saved video. Check ${outputFile} on the tool-server after encoding finishes. A restart loses result retrieval state.`
+      : "The tool-server is shutting down. Wait for it to exit before reconnecting. This call was not retried automatically.",
+    {
+      error_code: recording
+        ? FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+        : FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN,
+      failure_stage: "http_shutdown",
+      failure_area: "http",
+      error_kind: "unknown",
+    }
+  );
+}
+
+function rejectDuringShutdown(res: Response, toolId?: string, args?: unknown): void {
+  const error = serverShutdownError(toolId, args);
+  res.status(503).json({ error: error.message, ...errorSignalFields(error) });
 }
 
 function findDependencyMissing(err: unknown): DependencyMissingError | null {
@@ -447,6 +474,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // Consumed by the first tool call that references them; the TTL sweeper clears
   // orphans from aborted or failed calls.
   const uploads = new Map<string, UploadEntry & { expireAt: number; bytes: number }>();
+  const activeUploads = new Set<() => void>();
   // Settled bytes plus bytes of streams still in flight, so the cap holds against
   // a burst of parallel uploads instead of only settled ones.
   let inFlightUploadBytes = 0;
@@ -599,6 +627,10 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // The client tars a file or dir and streams it here before the tool call.
   // express.json() ignores the body (application/gzip), so we pipe it to disk.
   app.post("/upload", (req: Request, res: Response) => {
+    if (disposed) {
+      rejectDuringShutdown(res);
+      return;
+    }
     idleTimer.touch();
     if (pendingUploadBytes() >= maxPendingUploadBytes) {
       res.status(507).json({
@@ -623,11 +655,17 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     };
 
     const abort = (status: number, message: string): void => {
+      activeUploads.delete(cancelUpload);
       releaseInFlight();
       ws.destroy();
-      rm(tarPath, { force: true }).catch(() => {});
+      ws.once("close", () => {
+        void rm(tarPath, { force: true }).catch(() => {});
+      });
       if (!res.headersSent) res.status(status).json({ error: message });
     };
+
+    const cancelUpload = () => abort(503, serverShutdownError().message);
+    activeUploads.add(cancelUpload);
 
     const digest = createHash("sha256");
     req.on("data", (chunk: Buffer) => {
@@ -654,12 +692,19 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     // pipe() leaves ws open if the client disconnects mid-upload.
     req.on("close", () => {
       if (req.readableEnded) return;
+      activeUploads.delete(cancelUpload);
       releaseInFlight();
       ws.destroy();
       rm(tarPath, { force: true }).catch(() => {});
     });
     ws.on("finish", () => {
+      activeUploads.delete(cancelUpload);
       releaseInFlight();
+      if (disposed) {
+        void rm(tarPath, { force: true }).catch(() => {});
+        if (!res.headersSent) rejectDuringShutdown(res);
+        return;
+      }
       if (res.headersSent) return;
       uploads.set(id, {
         tarPath,
@@ -673,6 +718,10 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   });
 
   app.get("/tools", (_req: Request, res: Response) => {
+    if (disposed) {
+      rejectDuringShutdown(res);
+      return;
+    }
     idleTimer.touch();
     const snapshot = registry.getSnapshot();
     const tools = snapshot.tools
@@ -727,9 +776,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     },
     async (req: Request, res: Response) => {
       if (disposed) {
-        res
-          .status(503)
-          .json({ error: "The tool-server is shutting down. Retry after it restarts." });
+        rejectDuringShutdown(res, req.params.name as string, req.body);
         return;
       }
       const name = req.params.name as string;
@@ -958,9 +1005,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       }
 
       if (disposed) {
-        res
-          .status(503)
-          .json({ error: "The tool-server is shutting down. Retry after it restarts." });
+        rejectDuringShutdown(res, req.params.name as string, req.body);
         return;
       }
 
@@ -1209,6 +1254,8 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       disposed = true;
       idleTimer.dispose();
       clearInterval(uploadSweeper);
+      for (const cancel of activeUploads) cancel();
+      activeUploads.clear();
       for (const entry of uploads.values()) rm(entry.tarPath, { force: true }).catch(() => {});
       uploads.clear();
     },
