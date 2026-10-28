@@ -68,7 +68,7 @@ import { MACOS_DESCRIBE_LIMITS, MACOS_JUDGING_LIMITS } from "../describe/platfor
 import { settleWithin } from "../../utils/timing";
 import { stripDeviceKeys } from "./flow-device";
 import { fetchFlowTree, supportsFlowTree } from "./flow-tree";
-import type { DescribeSource } from "../describe/contract";
+import { getDescribeTapPoint, type DescribeSource } from "../describe/contract";
 import {
   nodeAtPoint,
   deriveSelector,
@@ -776,6 +776,17 @@ async function captureTapSelector(
     if (!frameContains(resolved, point.x, point.y)) {
       return {
         warning: `selector ${describeSelector(selector)} resolves to a different element on this screen; kept coordinates (brittle)`,
+      };
+    }
+    // Replay clicks the centre. On a Mac app, a click on a container's empty
+    // space would then reach whatever lies at its centre.
+    if (
+      device.platform === "macos" &&
+      !node.clickable &&
+      nodeAtPoint(tree, getDescribeTapPoint(resolved)) !== node
+    ) {
+      return {
+        warning: `selector ${describeSelector(selector)} names a container with another element at its centre; kept coordinates (brittle)`,
       };
     }
     const warnings = [
@@ -1508,7 +1519,8 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
       try {
         // Refused as the runner refuses a raw `tool:` step: a sub-invocation
         // skips the HTTP capability gate.
-        const device = typeof args.udid === "string" ? resolveDevice(args.udid) : undefined;
+        const deviceId = args.udid ?? args.device_id;
+        const device = typeof deviceId === "string" ? resolveDevice(deviceId) : undefined;
         if (device?.platform === "macos") {
           assertSupported(params.command, registry.getTool(params.command)?.capability, device);
         }

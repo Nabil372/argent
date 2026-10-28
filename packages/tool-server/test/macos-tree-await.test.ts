@@ -82,6 +82,13 @@ describe("await-ui-element on a Mac app", () => {
       "swift.dead",
       /is incomplete: 1 element\(s\) did not answer/,
     ],
+    // The fallback walk misses an open context menu.
+    [
+      "came from the fallback walk",
+      { trees: [{ ...probeTree(), source: "fallback", locked: true }] },
+      "context.copy",
+      /could not confirm the element is hidden.*The Mac is locked/,
+    ],
   ])("does not pass `hidden` on a read that %s", async (_name, opts, identifier, note) => {
     const { result, lib } = await awaitElement(opts, {
       selector: { identifier },

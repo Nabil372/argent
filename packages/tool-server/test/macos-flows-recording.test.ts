@@ -50,8 +50,10 @@ function registry(): Registry {
     }),
     getTool: vi.fn((id: string) => ({
       inputSchema: { properties: { udid: {} } },
-      // Touch only, as gesture-swipe declares.
-      ...(id === "gesture-swipe" ? { capability: { apple: { simulator: true } } } : {}),
+      // Not on a Mac, as gesture-swipe and the debugger tools declare.
+      ...(id === "gesture-swipe" || id === "debugger-status"
+        ? { capability: { apple: { simulator: true } } }
+        : {}),
     })),
   } as unknown as Registry;
 }
@@ -145,6 +147,47 @@ describe("a tap recorded on a Mac app", () => {
     );
     expect(reg.invokeTool).not.toHaveBeenCalled();
     expect(await recordedSteps("swipe")).toEqual([]);
+  });
+
+  it("refuses a device_id tool the same way: the runner binds device_id too", async () => {
+    serve([], "macos-devtools");
+    await start("debugger");
+    const reg = registry();
+
+    const args = { udid: undefined, device_id: MAC };
+    const err = await record("debugger", "debugger-status", args, reg).catch((e: unknown) => e);
+
+    expect(String(err)).toMatch(/no macos support declared/);
+    expect(reg.invokeTool).not.toHaveBeenCalled();
+  });
+});
+
+describe("a tap recorded on the empty space of a Mac app container", () => {
+  const CENTRE = { x: 0.75, y: 0.65, width: 0.1, height: 0.1 };
+  const container = (attrs: Partial<DescribeNode>) =>
+    n({ identifier: "box", frame: { x: 0.6, y: 0.5, width: 0.4, height: 0.4 }, ...attrs });
+
+  it.each([
+    [
+      "keeps the coordinates when another element lies at the container's centre",
+      container({ role: "AXStaticText" }),
+      { kind: "tap", x: 0.65, y: 0.55 },
+    ],
+    [
+      "keeps the selector of a control, which takes the click anywhere in it",
+      container({ role: "AXButton", clickable: true }),
+      { kind: "tap", selector: { identifier: "box" } },
+    ],
+  ])("%s", async (_label, box, step) => {
+    serve(
+      [box, n({ role: "AXButton", label: "Delete", clickable: true, frame: CENTRE })],
+      "macos-devtools"
+    );
+    await start("box");
+
+    await record("box", "gesture-tap", { x: 0.65, y: 0.55 });
+
+    expect(await recordedSteps("box")).toEqual([step]);
   });
 });
 

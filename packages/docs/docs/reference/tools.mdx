@@ -233,7 +233,9 @@ Use `gesture-drag` to drag and `gesture-scroll` to scroll.
 - The tree leaves out each element outside the app window, and the hint gives the count.
 - The tree does not show the menu bar of the app. Use [`menu-bar`](#menu-bar).
 - A password field has the `password` flag and no value.
+- A text field without a label has its placeholder as its label.
 - The hint also says when one of these conditions occurs:
+  - The tree comes from a fallback walk, for example while the Mac is locked. This tree can miss elements, and a `hidden` check does not pass on it.
   - The tree reached the limit of 3000 elements or a depth of 40.
   - A web view reached the limit of 3000 items.
   - Elements did not answer during the read.
@@ -247,6 +249,8 @@ The identifier of an element comes from the source of the element:
 | SwiftUI            | The value of `.accessibilityIdentifier()`                                       |
 | Web content        | The `data-testid` attribute, or the `id` attribute when `data-testid` is absent |
 | react-native-macos | The `testID` prop, also on a plain `View` or `Text`                             |
+
+The tree does not show the identifiers that AppKit and SwiftUI set themselves, for example `ListRow` on each row of a SwiftUI list.
 
 ### `file-panel`
 

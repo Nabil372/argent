@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DescribeNode } from "../src/tools/describe/contract";
 import {
+  MACOS_FALLBACK_HINT,
   MACOS_JUDGING_LIMITS,
   MACOS_LOCKED_HINT,
   describeMacos,
@@ -129,6 +130,11 @@ describe("macOS flow tree projection", () => {
   });
 
   it("names a field by its placeholder, never by the start of its value", async () => {
+    const swift = probeTree();
+    const swiftField = findWireNode(windowRoot(swift), byWireId("swift.field"))!;
+    delete swiftField.description;
+    swiftField.placeholder = "Email";
+    expect(leaf(await flowTree({ trees: [swift] }), byId("swift.field"))!.label).toBe("Email");
     const tree = await flowTree();
     const value = "A".repeat(50) + " " + "B".repeat(49);
     expect(leaf(tree, byId("web-notes"))).toMatchObject({
@@ -177,6 +183,12 @@ describe("macOS flow tree projection", () => {
     const focused = (tree: DescribeNode) =>
       tree.children.filter((n) => n.focused).map((n) => n.identifier);
     expect(focused(await flowTree())).toEqual(["appkit.field"]);
+    // SwiftUI reports every List row and cell focused.
+    const list = probeTree();
+    for (const role of ["AXRow", "AXCell"]) {
+      findWireNode(windowRoot(list), (n) => n.role === role)!.focused = true;
+    }
+    expect(focused(await flowTree({ trees: [list] }))).toEqual(["appkit.field"]);
     const web = probeWeb();
     (web.items as Json[]).find((i) => i.testid === "web-input")!.focused = true;
     expect(focused(await flowTree({ web }))).toEqual(["appkit.field", "web-input"]);
@@ -360,6 +372,15 @@ describe("macOS describe and flow trees of one read", () => {
     ],
     ["an identified NSSecureTextField", "pw", secureView({ class: "NSSecureTextField" })],
     [
+      "a node the library calls secure without the secure subrole",
+      "appkit.field",
+      (tree) => {
+        const field = findWireNode(windowRoot(tree), byWireId("appkit.field"))!;
+        delete field.value;
+        field.secure = true;
+      },
+    ],
+    [
       "a node of a secure class without the secure subrole (fallback walk)",
       "appkit.secure",
       (tree) => {
@@ -383,7 +404,16 @@ describe("macOS describe and flow trees of one read", () => {
     expect(JSON.stringify(describe) + JSON.stringify(flow)).not.toMatch(/hunter2|•/);
   });
 
-  it.each(["_NS:87", "_popUpItemAction:", "NSTableViewRowViewKey"])(
+  const automaticIds = [
+    "_NS:87",
+    "_popUpItemAction:",
+    "NSTableViewRowViewKey",
+    "SwiftUI.WindowGroup<Probe.ContentView>-1-AppWindow-1",
+    "SwiftUI.WindowGroup<Probe.ContentView>-1-AppWindow-1, SidebarNavigationSplitView",
+    "ListRow",
+    "ListCell",
+  ];
+  it.each(automaticIds)(
     "drops AppKit's automatic identifier %s, keeping the element",
     async (appkitId) => {
       const tree = probeTree();
@@ -482,10 +512,17 @@ describe("queryMacosTree", () => {
   it.each<[string, LibraryOpts, string, string, string | RegExp]>([
     [
       "the locked-Mac walk",
-      { trees: [{ ...probeTree(), source: "fallback" }] },
+      { trees: [{ ...probeTree(), source: "fallback", locked: true }] },
       "macos-fallback",
       MACOS_LOCKED_HINT,
       MACOS_LOCKED_HINT,
+    ],
+    [
+      "the fallback walk on an unlocked Mac",
+      { trees: [{ ...probeTree(), source: "fallback" }] },
+      "macos-fallback",
+      MACOS_FALLBACK_HINT,
+      MACOS_FALLBACK_HINT,
     ],
     [
       "a tree cut at the node limit",

@@ -519,7 +519,10 @@ describe("native-* view tools on a Mac app", () => {
       >;
       expect(result.status).toBe("ok");
       expect(result).toMatchObject(reply);
-      expect(calls.map((c) => [c.method, c.params])).toEqual([[method, args]]);
+      // Waited for past the library's own 20 s limit.
+      expect(calls.map((c) => [c.method, c.params, c.opts])).toEqual([
+        [method, args, { timeoutMs: 22_000 }],
+      ]);
       expect(urns).toEqual([MAC_URN]);
       expect(ensureDeps).not.toHaveBeenCalled();
     }

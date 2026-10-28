@@ -461,7 +461,7 @@ after a tap/navigation to wait for the next screen, or before tapping an element
         onSample: (data, nowMs) => {
           const matches = findAll(data.tree, selector);
           if (matches.length > 0) everMatched = true;
-          const blind = isBlindRead(data, everMatched);
+          const blind = isBlindRead(data, everMatched, params.condition);
           if (!blind && !data.stale) lastTrustedReadAt = nowMs;
           if (!blind && evaluateMatches(params, matches)) {
             const result: WaitResult = { success: true, elapsed: Date.now() - start };
@@ -494,7 +494,7 @@ after a tap/navigation to wait for the next screen, or before tapping an element
           : poll.lastAttempt === "tree" &&
               poll.lastData !== null &&
               !poll.lastData.stale &&
-              !isBlindRead(poll.lastData, everMatched)
+              !isBlindRead(poll.lastData, everMatched, params.condition)
             ? "trusted"
             : "untrusted";
       return {

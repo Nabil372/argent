@@ -77,6 +77,8 @@ const MACOS_CLICKABLE_ROLES: ReadonlySet<string> = new Set([
 
 const CHECKABLE_ROLES: ReadonlySet<string> = new Set(["AXCheckBox", "AXRadioButton"]);
 
+const UNFOCUSED_ROLES: ReadonlySet<string> = new Set(["AXWindow", "AXSheet", "AXRow", "AXCell"]);
+
 // Never a flow leaf: a window would hoist every text of the screen onto one
 // frame that covers it, and a scroll bar and its parts carry no target.
 const NON_LEAF_ROLES: ReadonlySet<string> = new Set([
@@ -90,9 +92,12 @@ const NON_LEAF_ROLES: ReadonlySet<string> = new Set([
 // (an alert sheet and its texts), a private action selector
 // (`_popUpItemAction:`, on every item of a popup button's menu), and the table
 // and outline view keys (`NSTableViewRowViewKey`, on every row view of an open
-// menu). They change between runs or are shared, so a selector recorded on one
-// would not replay.
-const APPKIT_IDENTIFIER = /^(_NS:|_[A-Za-z][A-Za-z0-9]*:$|NS(TableView|OutlineView)[A-Za-z]*Key$)/;
+// menu). SwiftUI's: a window's scene id (`SwiftUI.WindowGroup<App.RootView>-1-AppWindow-1`)
+// and the split view named after it (`..., SidebarNavigationSplitView`), and
+// every List row and cell (`ListRow`, `ListCell`). They change between runs or
+// are shared, so a selector recorded on one would not replay.
+const APPKIT_IDENTIFIER =
+  /^(_NS:|_[A-Za-z][A-Za-z0-9]*:$|NS(TableView|OutlineView)[A-Za-z]*Key$|List(Row|Cell)$)|-AppWindow-\d+(,|$)/;
 
 function appIdentifier(v: unknown): string | undefined {
   const id = str(v);
@@ -180,6 +185,8 @@ export interface MacosNode {
 export interface MacosTreeRead {
   bundleId: string;
   source: Extract<DescribeSource, "macos-devtools" | "macos-fallback">;
+  /** The Mac was locked during a fallback read. */
+  locked: boolean;
   truncated: boolean;
   unreachableCount: number;
   /** One message per web view whose `Web.tree` failed; its content is missing. */
@@ -235,11 +242,12 @@ function asWebItem(v: unknown): WireWebItem | null {
 }
 
 /**
- * A secure text field: the subrole AppKit gives it, or the class of the view or
- * its cell (NSSecureTextField, NSSecureTextFieldCell, RCTUISecureTextField).
+ * A secure text field: the library's decision, the subrole AppKit gives it, or
+ * the class of the view or its cell (NSSecureTextField, NSSecureTextFieldCell,
+ * RCTUISecureTextField).
  */
 function isSecure(r: Record<string, unknown>): boolean {
-  if (r.subrole === "AXSecureTextField") return true;
+  if (r.secure === true || r.subrole === "AXSecureTextField") return true;
   const cls = typeof r.class === "string" ? r.class : r.viewClassName;
   return typeof cls === "string" && /SecureTextField/i.test(cls);
 }
@@ -437,7 +445,7 @@ function axNode(
   const node = newNode(
     {
       role,
-      label: cap(str(r.title) ?? str(r.description)),
+      label: cap(str(r.title) ?? str(r.description) ?? str(r.placeholder)),
       identifier: appIdentifier(r.identifier),
       value: secure ? undefined : cap(str(r.value)),
       password: secure,
@@ -447,7 +455,8 @@ function axNode(
       checked: checkable && r.value === "1",
       disabled: r.enabled === false,
       // A focused window covers every target, so it would pass any focus check.
-      focused: r.focused === true && role !== "AXWindow" && role !== "AXSheet",
+      // SwiftUI reports every List row and cell focused; a field in one reports its own focus.
+      focused: r.focused === true && !UNFOCUSED_ROLES.has(role),
       selected: r.selected === true,
     },
     asRect(r.normalizedFrame)
@@ -612,6 +621,7 @@ export async function readMacosTree(
   return {
     bundleId: api.bundleId,
     source: raw.source === "fallback" ? "macos-fallback" : "macos-devtools",
+    locked: raw.locked === true,
     truncated: raw.truncated === true,
     unreachableCount: finite(raw.unreachableCount) ?? 0,
     webErrors,
@@ -663,12 +673,15 @@ function toDescribe(
 }
 
 /**
- * A fallback read means the Mac is locked: while the Mac is locked the tree
- * can miss what a custom control draws.
+ * A fallback read, mostly while the Mac is locked: the tree can miss what a
+ * custom control draws.
  */
 export const MACOS_LOCKED_HINT =
   "The Mac is locked, so this tree can miss elements a custom control draws. Taps and typing " +
   "still work; screenshots may fail until the Mac is unlocked.";
+export const MACOS_FALLBACK_HINT =
+  "The app's accessibility tree is not available, so this tree comes from a fallback walk " +
+  "that can miss elements a custom control draws and an open context menu.";
 
 /** `tree` with the read's source and the hints about what the read could not show. */
 export function macosTreeData(
@@ -677,7 +690,9 @@ export function macosTreeData(
   extraHints: string[] = []
 ): DescribeTreeData {
   const hints: string[] = [];
-  if (read.source === "macos-fallback") hints.push(MACOS_LOCKED_HINT);
+  if (read.source === "macos-fallback") {
+    hints.push(read.locked ? MACOS_LOCKED_HINT : MACOS_FALLBACK_HINT);
+  }
   if (read.truncated) {
     hints.push(
       `The tree was cut at the library's limit (${read.limits.maxNodes} elements or depth 40), ` +

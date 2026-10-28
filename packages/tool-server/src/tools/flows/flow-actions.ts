@@ -1755,7 +1755,7 @@ async function waitForCondition(
       lastMatches = flowFindAll(data.tree, step.selector, data.uiOrientation);
       fetchError = undefined;
       everMatched ||= lastMatches.length > 0;
-      const blind = isBlindRead(data, everMatched);
+      const blind = isBlindRead(data, everMatched, step.condition);
       if (!blind) lastTrustedReadAt = Date.now();
       lastReadTrusted = !blind;
       if (

@@ -549,6 +549,12 @@ export function firstInReadingOrder(
   return best;
 }
 
+const MAC_TEXT_FIELD_ROLES: ReadonlySet<string> = new Set([
+  "AXTextField",
+  "AXTextArea",
+  "AXComboBox",
+]);
+
 // Evaluated over ALL elements matching a selector. `visible` holds if ANY match
 // is on-screen; `hidden` only if NONE is; `text` reads the first VISIBLE match
 // in reading order (the first overall if none is visible), so a stale zero-area
@@ -580,15 +586,18 @@ export function evaluateCondition(
       // skips empty text, or `.*` would select every unlabeled view. Not an
       // iOS text field: the simulator's view tree carries no typed text, so a
       // filled field reads "" there (an empty one reads its placeholder). A Mac
-      // app's fields report their text (`textFieldsShowText`), except a
-      // password field, whose text argent never reads.
+      // app's fields report their text (`textFieldsShowText`), so one with no
+      // value reads as "" also when its placeholder names it; never a password
+      // field, whose text argent never reads.
+      const empty = !assertText(first) && !nodeText(first);
       if (
         textMatch === "matches" &&
-        (textFieldsShowText ? !first.password : first.role !== "AXTextField") &&
-        !assertText(first) &&
-        !nodeText(first)
+        (textFieldsShowText
+          ? !first.password && (MAC_TEXT_FIELD_ROLES.has(first.role) ? !first.value : empty)
+          : first.role !== "AXTextField" && empty) &&
+        uiTreeMatchInternals.createRegExp(expectedText).test("")
       ) {
-        return uiTreeMatchInternals.createRegExp(expectedText).test("");
+        return true;
       }
       // Hoisted subtree text is ADDITIVE: a check the element's own
       // label/value satisfies on a plain describe tree must not start failing

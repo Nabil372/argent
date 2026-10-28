@@ -122,7 +122,7 @@ The runner resolves a selector against a different tree than the `describe` tool
 | Mac app         | The elements of the app tree that have an id, a label, a value, a clickable role or focus | The full app tree, nested  |
 | HarmonyOS       | None                                                                                      | `uitest` layout dump       |
 
-On an iOS simulator and Android, an id absent from `describe` can still resolve in an e2e test. On Chromium, an element absent from `describe` cannot resolve. On an iOS simulator, do not copy a `role` from `describe` into a selector: the runner derives the role from the view class, `describe` from the accessibility traits. On a physical iPhone, the runner and `describe` read one tree: copy ids and roles from `describe`. On a Mac app, the runner and `describe` read the same app tree: copy ids and roles from `describe`. The runner reads up to 12000 elements, and `describe` reads up to 3000. The runner treats a read as not ready, and reads again, when elements did not answer or Argent could not read the web content. The runner calls a password field `[password]`, so only an `id` or `role` selector matches it.
+On an iOS simulator and Android, an id absent from `describe` can still resolve in an e2e test. On Chromium, an element absent from `describe` cannot resolve. On an iOS simulator, do not copy a `role` from `describe` into a selector: the runner derives the role from the view class, `describe` from the accessibility traits. On a physical iPhone, the runner and `describe` read one tree: copy ids and roles from `describe`. On a Mac app, the runner and `describe` read the same app tree: copy ids and roles from `describe`. The runner reads up to 12000 elements, and `describe` reads up to 3000. The runner treats a read as not ready, and reads again, when elements did not answer or Argent could not read the web content. The runner calls a password field `[password]`, so only an `id` or `role` selector matches it. A recorded click on the empty space of a container keeps its coordinates, because a replay clicks the center of the container, where another element can be.
 
 ## Directives
 
@@ -263,7 +263,7 @@ The `text` comparators:
 | `equals`   | Case-insensitive full match     |
 | `matches`  | Case-sensitive JavaScript regex |
 
-`matches` reads an element with no text as an empty string. Use `'^$'` to check that a field is empty, or `'^(?!.*@)'` to check that it doesn't contain `@`. A pattern that can match an empty string, such as `'(Saved)?'`, passes on an element with no text. An iOS text field is the exception: on a simulator Argent can't read its typed text, so `matches` never reads an iOS text field as empty.
+`matches` reads an element with no text as an empty string. Use `'^$'` to check that a field is empty, or `'^(?!.*@)'` to check that it doesn't contain `@`. A pattern that can match an empty string, such as `'(Saved)?'`, passes on an element with no text. An iOS text field is the exception: on a simulator Argent can't read its typed text, so `matches` never reads an iOS text field as empty. A text field of a Mac app without typed text reads as empty, also when its placeholder is its label.
 
 A negative condition passes before the element appears, for a typo, and on the wrong screen. First prove the screen and the same selector with `visible`. Then perform the action and check `hidden`.
 

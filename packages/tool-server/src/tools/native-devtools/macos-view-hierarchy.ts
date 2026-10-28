@@ -63,8 +63,8 @@ export function requireMacosAppOfBundle(
 
 type ViewHierarchyMethod = Parameters<NativeDevtoolsApi["queryViewHierarchy"]>[1];
 
-// The full-hierarchy walk gets the same 15 s as on the iOS transport.
-const FULL_HIERARCHY_TIMEOUT_MS = 15_000;
+// Longer than the library's own limit (20 s), so its error, not ours, names the cause.
+const VIEW_HIERARCHY_TIMEOUT_MS = 22_000;
 
 /**
  * Send a `ViewHierarchy.*` request with the tool's parameters other than `udid`
@@ -86,13 +86,9 @@ export async function queryViewHierarchyFor<T, R>(
   let result: T & { error?: string };
   if (device.platform === "macos") {
     const app = requireMacosAppOfBundle(services, device, toolId, bundleId);
-    result = await app.call<typeof result>(
-      method,
-      rpcParams,
-      method === "ViewHierarchy.getFullHierarchy"
-        ? { timeoutMs: FULL_HIERARCHY_TIMEOUT_MS }
-        : undefined
-    );
+    result = await app.call<typeof result>(method, rpcParams, {
+      timeoutMs: VIEW_HIERARCHY_TIMEOUT_MS,
+    });
   } else {
     await ensureDeps(device.platform === "ios-remote" ? ["sim-remote"] : ["xcrun"]);
     const api = services.nativeDevtools as NativeDevtoolsApi;
