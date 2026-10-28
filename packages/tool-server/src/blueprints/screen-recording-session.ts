@@ -281,13 +281,13 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
           clearInterval(state.panelPollTimer);
           state.panelPollTimer = null;
         }
-        await state.debugCapture?.finish();
         state.frameStream?.close();
 
         // The overlay is sim-server global state that must not outlive the
         // capture.
         await state.pointerDisable?.();
         state.pointerDisable = null;
+        await state.debugCapture?.finish();
 
         // A start still mid-readiness has a live child `captureProcess`
         // (success-only) can't see — reap it here or it records forever.

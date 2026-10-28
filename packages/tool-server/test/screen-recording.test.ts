@@ -1757,6 +1757,38 @@ describe("debug recording lifecycle", () => {
     expect(pointer.restore).toHaveBeenCalledOnce();
   });
 
+  it("restores touches before disposal drains queued debug writes", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    const stream = fakeStream();
+    const child = fakeChild();
+    child.exitOnStdinEnd();
+    const pointer = fakePointer();
+    await startAndSettle(instance.api, { mode: "debug", pointer });
+    const debug = instance.api.debugCapture!;
+    const finish = debug.finish.bind(debug);
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(debug, "finish").mockImplementationOnce(async () => {
+      await pending;
+      await finish();
+    });
+    let completed = false;
+    const disposing = instance.dispose().then(() => {
+      completed = true;
+    });
+    await vi.waitFor(() => expect(debug.finish).toHaveBeenCalledOnce());
+    expect(completed).toBe(false);
+    expect(stream.close).toHaveBeenCalledOnce();
+    expect(pointer.restore).toHaveBeenCalledOnce();
+    expect(instance.api.pointerDisable).toBeNull();
+    release();
+    await disposing;
+  });
+
   it("disposes a debug subscription and closes the encoder", async () => {
     const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
       device: iosDevice,
