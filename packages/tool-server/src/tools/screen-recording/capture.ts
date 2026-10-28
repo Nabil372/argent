@@ -131,7 +131,6 @@ export function ffmpegArgs(opts: {
     const args = [
       "-hide_banner",
       "-nostdin",
-      "-xerror",
       "-loglevel",
       "warning",
       "-progress",

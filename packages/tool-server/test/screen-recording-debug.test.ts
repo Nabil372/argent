@@ -351,6 +351,25 @@ it.skipIf(!hasEncoder).each([false, true])(
       if (corrupt) {
         expect(result.durationMs).toBeNull();
         expect(result.warning).toContain("Encoder stderr:");
+        const decoded = spawnSync("ffmpeg", [
+          "-v",
+          "error",
+          "-i",
+          result.outputFile,
+          "-fps_mode",
+          "passthrough",
+          "-f",
+          "rawvideo",
+          "-pix_fmt",
+          "rgb24",
+          "pipe:1",
+        ]);
+        expect(decoded.status, decoded.stderr.toString()).toBe(0);
+        const frameBytes = 34 * 32 * 3;
+        expect(decoded.stdout.length / frameBytes).toBe(4);
+        const bluePixel = decoded.stdout.subarray(2 * frameBytes, 2 * frameBytes + 3);
+        expect(bluePixel[2]).toBeGreaterThan(240);
+        expect(bluePixel[0]).toBeLessThan(15);
       } else {
         const probe = spawnSync(
           "ffprobe",
