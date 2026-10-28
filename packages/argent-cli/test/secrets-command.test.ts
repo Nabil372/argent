@@ -13,8 +13,10 @@ import { SECRET_ENV_PREFIX } from "@argent/configuration-core";
 
 // A linked remote tool-server would add a caveat line; the routing lookup reads
 // real state on the machine running the tests, so pin it to "not linked".
-vi.mock("@argent/tools-client", () => ({
-  getResolvedToolsUrl: async () => ({ url: null, token: null }),
+const linked = vi.hoisted(() => ({ url: null as string | null }));
+vi.mock("@argent/tools-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/tools-client")>()),
+  getResolvedToolsUrl: async () => ({ url: linked.url, token: null }),
 }));
 
 let homeDir: string;
@@ -67,6 +69,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  linked.url = null;
   process.chdir(originalCwd);
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
@@ -137,6 +140,20 @@ describe("argent secrets", () => {
     expect(out).toContain("~/.argent/secrets.env");
     expect(out).toContain("ARGENT_SECRET_");
     expect(out).toContain("gitignore this file");
+  });
+
+  it.each([
+    [false, "http://192.0.2.10:3001", "Run `argent enable forward-secrets`"],
+    [true, "https://192.0.2.10:3001", "A call sends it the value listed above"],
+    [true, "http://127.0.0.1:3001", "A call sends it the value listed above"],
+    [true, "http://192.0.2.10:3001", "so forward-secrets refuses a call"],
+  ])("with forward-secrets %s and a link to %s, says what a call sends", async (on, url, note) => {
+    if (on)
+      write(path.join(projectDir, ".argent", "flags.json"), '{"flags":{"forward-secrets":true}}');
+    linked.url = url;
+    await secrets([]);
+    expect(output()).toContain(`Note: a remote tool-server is linked (${url}). `);
+    expect(output()).toContain(note);
   });
 
   it("rejects an unknown subcommand", async () => {

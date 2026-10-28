@@ -286,7 +286,7 @@ The client sends this header with a `POST /tools/<name>` call over a link when t
 x-argent-client-secrets: eyJBUFBfUEFTU1dPUkQiOiJodW50ZXIyIn0=
 ```
 
-The tool-server resolves each placeholder of the call with these values first, then with its own sources. A sub-tool call of `run-sequence` or `e2e-execute` uses the same values. The tool-server answers `400` and runs no tool when the header is not base64 text of a JSON object, a key is not a valid secret name, or a value is not a string.
+The tool-server resolves each placeholder of the call with these values first, then with its own sources. A sub-tool call of `run-sequence` or `e2e-execute` uses the same values. The tool-server accepts up to 256 KiB of request headers in total. The tool-server answers `400` and runs no tool when the header is not base64 text of a JSON object, a key is not a valid secret name, or a value is not a string.
 
 ## Older clients and tool-servers
 

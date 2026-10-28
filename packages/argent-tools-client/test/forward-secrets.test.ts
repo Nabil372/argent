@@ -127,6 +127,65 @@ describe("forward-secrets", () => {
     expect(sent).toHaveLength(3);
   });
 
+  it.each([
+    ["http://192.0.2.10:3001", false],
+    ["http://[2001:db8::1]:3001", false],
+    ["https://192.0.2.10:3001", true],
+    ["http://localhost:3001", true],
+    ["http://[::1]:3001", true],
+  ])("over %s, sends the call naming a secret: %s", async (target, allowed) => {
+    const posted: Array<Record<string, string>> = [];
+    const fetchImpl = async (to: string, init?: RequestInit): Promise<Response> => {
+      if (to.endsWith("/tools/keyboard")) posted.push(init?.headers as Record<string, string>);
+      const body = to.endsWith("/tools")
+        ? { tools: [{ name: "keyboard", description: "", inputSchema: {} }] }
+        : { data: { ok: true } };
+      return new Response(JSON.stringify(body), {
+        headers: { "Content-Type": "application/json" },
+      });
+    };
+    const linked = createToolsClient({
+      fetchImpl,
+      baseUrl: async () => ({ url: target, token: "t", remote: true }),
+    });
+
+    const call = linked.callTool("keyboard", { text: "{{secret:APP_PASSWORD}}" });
+    if (allowed) {
+      await call;
+      expect(posted[0]?.["x-argent-client-secrets"]).toBeDefined();
+    } else {
+      await expect(call).rejects.toThrow(
+        `forward-secrets sends secret values only over https:// or to a loopback address, and ${target} ` +
+          "is plain HTTP to another machine, so the call was not sent (it names APP_PASSWORD)."
+      );
+      expect(posted).toHaveLength(0);
+      // A call naming no secret this machine holds still goes.
+      await linked.callTool("keyboard", { text: "{{secret:NOT_HERE}}" });
+      expect(posted).toHaveLength(1);
+    }
+  });
+
+  it("says a 431 refused the forwarded header", async () => {
+    server.removeAllListeners("request");
+    server.on("request", (req: IncomingMessage, res) => {
+      if (req.url === "/tools") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ tools: [{ name: "keyboard", description: "", inputSchema: {} }] })
+        );
+        return;
+      }
+      res.writeHead(431);
+      res.end();
+    });
+
+    await expect(
+      client().callTool("keyboard", { text: "{{secret:APP_PASSWORD}}" })
+    ).rejects.toThrow(
+      "refused the request headers as too large (431). The x-argent-client-secrets header carried APP_PASSWORD;"
+    );
+  });
+
   it("reads the names in a flow file and in a fragment sent through POST /upload", async () => {
     const e2e = join(project, ".argent", "e2e");
     mkdirSync(e2e, { recursive: true });

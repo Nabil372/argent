@@ -378,6 +378,16 @@ async function forwardedSecrets(args: unknown): Promise<Map<string, string> | un
   return values.size > 0 ? values : undefined;
 }
 
+/**
+ * Whether `forward-secrets` may send values to `url`: they cross the wire as
+ * plain header text, so only over TLS or to this machine.
+ */
+export function forwardsSecretsTo(url: string): boolean {
+  const { protocol, hostname } = new URL(url);
+  const host = hostname.replace(/^\[|\]$/g, "");
+  return protocol === "https:" || ["127.0.0.1", "localhost", "::1"].includes(host);
+}
+
 export function createToolsClient(options: CreateToolsClientOptions = {}): ToolsClient {
   let cached: ToolsServerHandle | null = null;
   const doFetch = options.fetchImpl ?? ((url, init) => fetch(url, init));
@@ -510,6 +520,14 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     const stream = opts?.onProgress !== undefined || carriesMembers(finalArgs);
     const sentOnce = carriesUpload(finalArgs);
     const clientSecrets = remote ? await forwardedSecrets(finalArgs) : undefined;
+    if (clientSecrets && !forwardsSecretsTo(url)) {
+      throw new Error(
+        `forward-secrets sends secret values only over https:// or to a loopback address, and ${url} ` +
+          `is plain HTTP to another machine, so the call was not sent (it names ` +
+          `${[...clientSecrets.keys()].join(", ")}). Link the tool-server through an https:// URL, ` +
+          `or through an SSH tunnel to a 127.0.0.1 port.`
+      );
+    }
     const res = await doFetch(
       `${url}/tools/${encodeURIComponent(meta?.name ?? name)}`,
       {
@@ -585,6 +603,13 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
         );
       }
       json = {};
+    }
+    if (res.status === 431 && clientSecrets) {
+      throw new ToolInvocationError(
+        `The tool-server, or a proxy in front of it, refused the request headers as too large (431). ` +
+          `The ${CLIENT_SECRETS_HEADER} header carried ${[...clientSecrets.keys()].join(", ")}; ` +
+          `define a secret this large on the machine running the tool-server instead.`
+      );
     }
     if (!res.ok) {
       throw new ToolInvocationError(errorBodyMessage(json) ?? `${res.status} ${res.statusText}`, {
