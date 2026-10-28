@@ -1204,18 +1204,22 @@ describe("otherWorktreeOfBuild", () => {
     );
   });
 
-  it("follows a build in Xcode's DerivedData to the project its info.plist names", async () => {
-    const derivedData = path.join(dir, "DerivedData", "Focus-abcdef");
-    const built = path.join(derivedData, "Build", "Products", "Debug", "Focus.app");
-    fs.mkdirSync(built, { recursive: true });
-    fs.writeFileSync(
-      path.join(derivedData, "info.plist"),
-      `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>WorkspacePath</key>` +
-        `<string>${path.join(dir, "b", "macos", "Focus.xcworkspace")}</string></dict></plist>`
-    );
-    expect(await otherWorktreeOfBuild(built, path.join(dir, "main"))).toBe(path.join(dir, "b"));
-    expect(await otherWorktreeOfBuild(built, path.join(dir, "b"))).toBeNull();
-  });
+  // plutil reads the info.plist: macOS only.
+  it.skipIf(process.platform !== "darwin")(
+    "follows a build in Xcode's DerivedData to the project its info.plist names",
+    async () => {
+      const derivedData = path.join(dir, "DerivedData", "Focus-abcdef");
+      const built = path.join(derivedData, "Build", "Products", "Debug", "Focus.app");
+      fs.mkdirSync(built, { recursive: true });
+      fs.writeFileSync(
+        path.join(derivedData, "info.plist"),
+        `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>WorkspacePath</key>` +
+          `<string>${path.join(dir, "b", "macos", "Focus.xcworkspace")}</string></dict></plist>`
+      );
+      expect(await otherWorktreeOfBuild(built, path.join(dir, "main"))).toBe(path.join(dir, "b"));
+      expect(await otherWorktreeOfBuild(built, path.join(dir, "b"))).toBeNull();
+    }
+  );
 
   it("stays quiet for the same worktree, another repository and a build outside git", async () => {
     expect(await otherWorktreeOfBuild(app("main"), path.join(dir, "main"))).toBeNull();
