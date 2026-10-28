@@ -41,6 +41,7 @@ const zodSchema = z.object({
         "tool-server, from the first source that defines the name: the `ARGENT_SECRET_<NAME>` environment variable, " +
         "`.argent/secrets.env` in the project, the project's `.env.local` / `.env` (only their `ARGENT_SECRET_`-prefixed keys), " +
         "then `~/.argent/secrets.env`. Nothing else on the host is reachable. " +
+        "Over a link with the `forward-secrets` flag on, the client's own sources are checked first. " +
         "Placeholders can be embedded in longer text and are never echoed back resolved. " +
         "If the secret you need is not set, the failure lists the available names and every source it looked in; ask the user to add it " +
         "to one of them (a secrets file applies immediately; an env var needs a restart), NEVER ask the user to paste the secret value into the conversation."

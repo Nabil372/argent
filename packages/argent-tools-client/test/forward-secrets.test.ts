@@ -198,6 +198,15 @@ describe("forward-secrets", () => {
     }
   );
 
+  it("does not send a header over Node's header limit", async () => {
+    writeFileSync(join(project, ".argent", "secrets.env"), `BIG=${"s".repeat(20_000)}\n`);
+    await expect(client().callTool("keyboard", { text: "{{secret:BIG}}" })).rejects.toThrow(
+      "forward-secrets would send BIG in an x-argent-client-secrets header of 26680 bytes, more than " +
+        "the 16384 bytes of request headers a tool-server accepts, so the call was not sent."
+    );
+    expect(sent).toEqual([]);
+  });
+
   it("keeps the tool-server's own 400 error", async () => {
     answerCalls(400, { "Content-Type": "application/json" }, JSON.stringify({ error: "bad udid" }));
     await expect(
@@ -249,5 +258,51 @@ describe("forward-secrets", () => {
     await client().callTool("run-flow", { flow_path: flowPath, project_root: project });
 
     expect(lastSecrets()).toEqual({ APP_PASSWORD: "hunter2", PIN: "4321" });
+  });
+
+  /** A file input as the client sends it over a link. */
+  const wire = (fields: Record<string, unknown>) => ({ __argentFileInput: true, ...fields });
+  const base64 = (text: string) => Buffer.from(text).toString("base64");
+
+  it("reads names from YAML file inputs and flow members only", async () => {
+    writeFileSync(join(project, ".argent", "secrets.env"), "A=1\nB=2\nC=3\nD=4\nE=5\nF=6\n");
+    await client().callTool("keyboard", {
+      yml: wire({ path: "/p/login.yml", content: base64("{{secret:A}}") }),
+      upper: wire({
+        path: "/p/LOGIN.YAML",
+        content: base64("{{secret:B}}"),
+        members: [
+          { role: "flow", key: "k1", path: "/p/frag", content: base64("{{secret:C}}") },
+          { role: "tool", key: "k2", path: "/p/arg.yaml", content: base64("{{secret:D}}") },
+          { role: "baseline", key: "k3", path: "/p/b.png", content: base64("{{secret:E}}") },
+        ],
+      }),
+      text: wire({ path: "/p/notes.txt", content: base64("{{secret:F}}") }),
+    });
+    expect(lastSecrets()).toEqual({ A: "1", B: "2", C: "3" });
+  });
+
+  it("reads from disk only an uploaded member, and skips one deleted since", async () => {
+    writeFileSync(join(project, ".argent", "secrets.env"), "A=1\nB=2\n");
+    const refused = join(project, "refused.yaml");
+    writeFileSync(refused, 'steps:\n  - type: { text: "{{secret:B}}" }\n');
+    await client().callTool("keyboard", {
+      text: "{{secret:A}}",
+      flow: wire({
+        path: "/p/main.yaml",
+        content: base64("steps: []\n"),
+        members: [
+          { role: "flow", key: "k1", path: refused, canonical: refused, state: "refused" },
+          {
+            role: "flow",
+            key: "k2",
+            path: "/p/gone.yaml",
+            canonical: join(project, "gone.yaml"),
+            uploadId: "u-2",
+          },
+        ],
+      }),
+    });
+    expect(lastSecrets()).toEqual({ A: "1" });
   });
 });

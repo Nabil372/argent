@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { maxHeaderSize } from "node:http";
 import * as path from "node:path";
 
 import {
@@ -529,6 +530,17 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
           `or through an SSH tunnel to a 127.0.0.1 port.`
       );
     }
+    const encodedSecrets = clientSecrets ? encodeClientSecrets(clientSecrets) : undefined;
+    // Past Node's header limit the tool-server refuses the call, and with a
+    // large body the socket closes mid-send instead of answering 431.
+    if (encodedSecrets !== undefined && encodedSecrets.length > maxHeaderSize) {
+      throw new Error(
+        `forward-secrets would send ${[...clientSecrets!.keys()].join(", ")} in an ` +
+          `${CLIENT_SECRETS_HEADER} header of ${encodedSecrets.length} bytes, more than the ` +
+          `${maxHeaderSize} bytes of request headers a tool-server accepts, so the call was not sent. ` +
+          `Define a secret this large on the machine running the tool-server instead.`
+      );
+    }
     const res = await doFetch(
       `${url}/tools/${encodeURIComponent(meta?.name ?? name)}`,
       {
@@ -541,7 +553,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
           // Tells the tool-server this client writes recordings under
           // `.argent/e2e/`; an older client writes only `.argent/flows/`.
           [E2E_DIR_CLIENT_HEADER]: "1",
-          ...(clientSecrets ? { [CLIENT_SECRETS_HEADER]: encodeClientSecrets(clientSecrets) } : {}),
+          ...(encodedSecrets ? { [CLIENT_SECRETS_HEADER]: encodedSecrets } : {}),
           // A proxy that compresses the stream holds each line until its buffer
           // fills. `identity` keeps the stream uncompressed end to end.
           ...(stream ? { "Accept": "application/x-ndjson", "Accept-Encoding": "identity" } : {}),

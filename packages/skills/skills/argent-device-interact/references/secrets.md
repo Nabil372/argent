@@ -13,6 +13,8 @@ The placeholder is resolved on the machine running the tool-server, from the fir
 | 3   | `<project>/.env.local`, then `<project>/.env` | only `ARGENT_SECRET_`-prefixed keys, so app config stays unreachable |
 | 4   | `~/.argent/secrets.env`                       | every key, per-user, works in any project                            |
 
+Over `argent link` or `ARGENT_TOOLS_URL` the tool-server can be another machine. With `argent enable forward-secrets` on the client, the client resolves each placeholder of a call with these same sources on its own machine and sends the values with the call; the tool-server's sources resolve only the names the client lacks.
+
 ## Rules
 
 - The result echoes the placeholder, never the value. An unknown name fails with the list of available secret _names_ and every source it looked in, with paths; read that list before asking the user anything.

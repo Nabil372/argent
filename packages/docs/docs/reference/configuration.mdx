@@ -189,7 +189,7 @@ The header contains the values as plain text. Thus the client sends the values o
 
 A tunnel or a proxy can store the request headers. For example, the local web inspector of ngrok records each request with its headers. Turn off this recording for a link that forwards secrets.
 
-The tool-server accepts 16 KiB of request headers in total. Thus one call can send approximately 11 KiB of secret values. A proxy can have a lower limit. For example, nginx accepts 8 KiB for one header by default. When a proxy or the tool-server refuses the header as too large, the call fails. Define a secret of this size on the computer of the tool-server.
+The tool-server accepts 16 KiB of request headers in total. Thus one call can send approximately 11 KiB of secret values. The client does not send a call with a header of more than 16 KiB, and the call fails. A proxy can have a lower limit. For example, nginx accepts 8 KiB for one header by default. When a proxy or the tool-server refuses the header as too large, the call fails. Define a secret of this size on the computer of the tool-server.
 
 The client does not follow a redirect for a call that sends secret values, and the call fails.
 
