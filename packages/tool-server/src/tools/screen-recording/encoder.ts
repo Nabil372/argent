@@ -140,17 +140,18 @@ export async function verifyDebugVideo(ffmpeg: string, outputFile: string): Prom
   );
 }
 
+export function stripEncoderProgress(stderr: string): string {
+  return stderr
+    .split("\n")
+    .filter(
+      (line) =>
+        !/^(?:frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(?:_us|_ms)?|dup_frames|drop_frames|speed|progress)=/.test(
+          line
+        )
+    )
+    .join("\n");
+}
+
 export function encoderDiagnostics(stderr: string): string {
-  return clip(
-    stderr
-      .split("\n")
-      .filter(
-        (line) =>
-          !/^(?:frame|fps|stream_\d+_\d+_q|bitrate|total_size|out_time(?:_us|_ms)?|dup_frames|drop_frames|speed|progress)=/.test(
-            line
-          )
-      )
-      .join("\n"),
-    2_000
-  );
+  return clip(stripEncoderProgress(stderr), 2_000);
 }

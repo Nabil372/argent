@@ -8,6 +8,7 @@ import type { ScreenRecordingSessionApi } from "../../blueprints/screen-recordin
 import {
   encodedFrameCount,
   encoderDiagnostics,
+  stripEncoderProgress,
   finalizeEncoder,
   verifyDebugEncoder,
   verifyDebugVideo,
@@ -530,12 +531,21 @@ async function startCaptureLocked(
     throw err;
   }
 
-  const stderrRef = { text: "" };
+  const stderrRef = { text: "", pending: "", framesEncoded: 0 };
   child.stderr?.on("data", (chunk: Buffer) => {
-    stderrRef.text = (stderrRef.text + chunk.toString("utf8")).slice(-4_000);
+    if (params.mode === "debug") {
+      const lines = (stderrRef.pending + chunk.toString("utf8")).split("\n");
+      stderrRef.pending = lines.pop()!.slice(-4_000);
+      const complete = lines.join("\n");
+      stderrRef.framesEncoded = encodedFrameCount(complete) || stderrRef.framesEncoded;
+      const diagnostic = stripEncoderProgress(complete);
+      if (diagnostic.trim()) stderrRef.text = (stderrRef.text + "\n" + diagnostic).slice(-4_000);
+    } else {
+      stderrRef.text = (stderrRef.text + chunk.toString("utf8")).slice(-4_000);
+    }
     if (params.mode === "debug" && api.outputFile === outputFile && api.lastExitInfo) {
-      api.lastExitInfo.framesEncoded = encodedFrameCount(stderrRef.text);
-      api.lastExitInfo.stderr = encoderDiagnostics(stderrRef.text);
+      api.lastExitInfo.framesEncoded = stderrRef.framesEncoded;
+      api.lastExitInfo.stderr = encoderDiagnostics(stderrRef.text + "\n" + stderrRef.pending);
     }
   });
   // An EPIPE on a dead encoder must not crash the tool-server.
@@ -625,9 +635,13 @@ async function startCaptureLocked(
     api.lastExitInfo = {
       code,
       signal,
-      ...(api.debugCapture ? { framesEncoded: encodedFrameCount(stderrRef.text) } : {}),
-      ...(stderrRef.text
-        ? { stderr: api.debugCapture ? encoderDiagnostics(stderrRef.text) : clip(stderrRef.text) }
+      ...(api.debugCapture ? { framesEncoded: stderrRef.framesEncoded } : {}),
+      ...(stderrRef.text || stderrRef.pending
+        ? {
+            stderr: api.debugCapture
+              ? encoderDiagnostics(stderrRef.text + "\n" + stderrRef.pending)
+              : clip(stderrRef.text),
+          }
         : {}),
     };
     api.captureProcess = null;
@@ -689,7 +703,7 @@ async function startCaptureLocked(
  */
 function waitForEncoderReady(
   child: ReturnType<typeof spawn>,
-  stderrRef: { text: string }
+  stderrRef: { text: string; pending?: string }
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     let settled = false;
@@ -706,7 +720,7 @@ function waitForEncoderReady(
       finish(
         new FailureError(
           `ffmpeg exited (${signal ? `signal ${signal}` : `code ${code ?? "?"}`}) before the ` +
-            `recording started. stderr: ${clip(stderrRef.text)}`,
+            `recording started. stderr: ${clip(stderrRef.text + (stderrRef.pending ?? ""))}`,
           {
             error_code: FAILURE_CODES.SCREEN_RECORDING_START_EXITED,
             failure_stage: "screen_recording_encoder_ready",

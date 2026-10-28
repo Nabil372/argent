@@ -1922,6 +1922,25 @@ describe("debug finalization safeguards", () => {
     }
   );
 
+  it("keeps early decoder diagnostics after many split progress updates", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    child.exitOnStdinEnd(1);
+    await startAndSettle(api, { mode: "debug" });
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    child.stderr.emit("data", Buffer.from("No JPEG data found in image\n"));
+    for (let i = 1; i <= 200; i++) {
+      const progress = `frame=${i}\nfps=30\nout_time_us=${i * 10000}\nprogress=continue\n`;
+      child.stderr.emit("data", Buffer.from(progress.slice(0, 9)));
+      child.stderr.emit("data", Buffer.from(progress.slice(9)));
+    }
+    const result = await stopCapture(api);
+    expect(result.warning).toContain("No JPEG data found in image");
+    expect(result.warning).not.toContain("out_time_us=");
+    expect(result.warning).toContain("encoded=200");
+  });
+
   it("lets a high-rate capture encode slower than real time", async () => {
     const api = await makeSession(iosDevice);
     const stream = fakeStream();
