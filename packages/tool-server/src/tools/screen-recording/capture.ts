@@ -760,20 +760,11 @@ export async function stopCapture(
   if (api.finishedRecording) {
     const { result } = api.finishedRecording;
     if (result instanceof Error) throw result;
-    try {
-      await statNonEmptyOutput(result.outputFile, "screen_recording_stop");
-    } catch (err) {
-      throw new FailureError(
-        `The completed recording is no longer available at ${result.outputFile}. It may already have been delivered. Check the client's saved recordings before re-recording.`,
-        {
-          error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
-          failure_stage: "screen_recording_stop",
-          failure_area: "tool_server",
-          error_kind: "not_found",
-        },
-        { cause: err instanceof Error ? err : new Error(String(err)) }
-      );
-    }
+    await statNonEmptyOutput(
+      result.outputFile,
+      "screen_recording_stop",
+      `The completed recording is no longer available at ${result.outputFile}. It may already have been delivered. Check the client's saved recordings before re-recording.`
+    );
     return result;
   }
   const captureOutput = api.outputFile!;

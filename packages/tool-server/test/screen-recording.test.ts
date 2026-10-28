@@ -1,3 +1,4 @@
+import { formatErrorForAgent } from "../src/utils/format-error";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "events";
 import { promises as fs } from "fs";
@@ -2276,9 +2277,11 @@ describe("debug finalization safeguards", () => {
     await expect(stopCapture(api)).rejects.toThrow("already stopped");
     expect(await stopCapture(api, file)).toBe(result);
     await fs.rm(file);
-    await expect(stopCapture(api, file)).rejects.toThrow(
-      "The completed recording is no longer available"
-    );
+    const missing = await stopCapture(api, file).catch((err: Error) => err);
+    const message = formatErrorForAgent(missing);
+    expect(message).toContain("The completed recording is no longer available");
+    expect(message).toContain("ENOENT");
+    expect(message).not.toContain("The recording ended");
     expect(child.stdin.end).toHaveBeenCalledOnce();
     fakeStream();
     const next = fakeChild();

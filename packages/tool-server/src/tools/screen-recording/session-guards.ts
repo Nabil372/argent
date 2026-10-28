@@ -196,13 +196,17 @@ export function assertNotDisposed(
 }
 
 /** Size of the finished video; rejects a missing or empty container. */
-export async function statNonEmptyOutput(outputFile: string, stage: string): Promise<number> {
+export async function statNonEmptyOutput(
+  outputFile: string,
+  stage: string,
+  unavailableMessage?: string
+): Promise<number> {
   let size: number;
   try {
     size = (await fs.stat(outputFile)).size;
   } catch (err) {
     throw new FailureError(
-      `The recording ended but no video file exists at ${outputFile}.`,
+      unavailableMessage ?? `The recording ended but no video file exists at ${outputFile}.`,
       {
         error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
         failure_stage: stage,
@@ -213,12 +217,15 @@ export async function statNonEmptyOutput(outputFile: string, stage: string): Pro
     );
   }
   if (size === 0) {
-    throw new FailureError(`The recording ended but the video file at ${outputFile} is empty.`, {
-      error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
-      failure_stage: stage,
-      failure_area: "tool_server",
-      error_kind: "not_found",
-    });
+    throw new FailureError(
+      unavailableMessage ?? `The recording ended but the video file at ${outputFile} is empty.`,
+      {
+        error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
+        failure_stage: stage,
+        failure_area: "tool_server",
+        error_kind: "not_found",
+      }
+    );
   }
   return size;
 }
