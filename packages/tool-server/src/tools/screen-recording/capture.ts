@@ -783,6 +783,7 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
     }
     // Idempotent: the cap may already have finalized this capture.
     finalizeCapture(api);
+    await debugCapture?.finish();
 
     if (child && !(await finalizeEncoder(child, Boolean(debugCapture)))) {
       warning =

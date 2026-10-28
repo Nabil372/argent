@@ -2080,6 +2080,33 @@ describe("debug finalization safeguards", () => {
     }
   );
 
+  it("waits for queued JPEG writes before starting the encoding stall watchdog", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    child.exitOnStdinEnd();
+    await startAndSettle(api, { mode: "debug" });
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    let release!: () => void;
+    const draining = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const capture = api.debugCapture!;
+    const finish = capture.finish;
+    capture.finish = vi.fn(async () => {
+      await draining;
+      await finish();
+    });
+    const stopping = stopCapture(api);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.stopping).not.toBeNull();
+    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.stdin.writable).toBe(true);
+    release();
+    expect((await stopping).encodingComplete).toBe(true);
+    expect(child.kill).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     "reports a partial video when encoding fails (cap: %s)",
     async (capped) => {
