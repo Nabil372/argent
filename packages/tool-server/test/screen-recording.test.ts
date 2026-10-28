@@ -2028,6 +2028,19 @@ describe("debug finalization safeguards", () => {
     expect(instance.api.debugCapture).toBeNull();
   });
 
+  it("describes a light finalization deadline without claiming progress stalled", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    fakeChild();
+    await startAndSettle(api);
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    const stopping = stopCapture(api);
+    await vi.advanceTimersByTimeAsync(26_001);
+    const result = await stopping;
+    expect(result.warning).toContain("did not finalize");
+    expect(result.warning).not.toContain("stopped making progress");
+  });
+
   it("kills an encoder that emits progress reports without advancing, then waits for its exit", async () => {
     const api = await makeSession(iosDevice);
     fakeStream();
@@ -2103,6 +2116,22 @@ describe("debug finalization safeguards", () => {
     }
   );
 
+  it("restores touches before the debug encoder finishes", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    const pointer = fakePointer();
+    await startAndSettle(api, { mode: "debug", pointer });
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    const stopping = stopCapture(api);
+    await vi.waitFor(() => expect(pointer.restore).toHaveBeenCalledOnce());
+    expect(child.exitCode).toBeNull();
+    expect(api.stopping).not.toBeNull();
+    await api.debugCapture!.finish();
+    child.exit(0);
+    await stopping;
+  });
+
   it("waits for queued JPEG writes before starting the encoding stall watchdog", async () => {
     const api = await makeSession(iosDevice);
     fakeStream();
@@ -2161,9 +2190,12 @@ describe("debug finalization safeguards", () => {
     const file = api.outputFile!;
     await fs.writeFile(file, Buffer.alloc(64, 1));
     child.stderr.emit("data", Buffer.from("Error writing trailer: No space left on device"));
-    vi.mocked(verifyDebugVideo).mockRejectedValueOnce(new Error("moov atom not found"));
+    vi.mocked(verifyDebugVideo).mockRejectedValueOnce(
+      Object.assign(new Error("moov atom not found"), { code: 1 })
+    );
     const error = await stopCapture(api).catch((err: Error) => err);
     expect(verifyDebugVideo).toHaveBeenCalledWith("/fake/ffmpeg", file);
+    await expect(fs.access(file)).rejects.toThrow();
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("No readable debug video");
     expect((error as Error).message).toContain("moov atom not found");

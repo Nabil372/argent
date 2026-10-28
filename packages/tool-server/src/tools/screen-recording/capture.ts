@@ -173,8 +173,6 @@ export function ffmpegArgs(opts: {
       "1:1000000",
       "-video_track_timescale",
       "1000000",
-      "-movflags",
-      "+faststart",
       "-an",
       "-y",
       opts.outputFile,
@@ -784,11 +782,13 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
     }
     // Idempotent: the cap may already have finalized this capture.
     finalizeCapture(api);
+    await disablePointer(api);
     await debugCapture?.finish();
 
     if (child && !(await finalizeEncoder(child, Boolean(debugCapture)))) {
-      warning =
-        "ffmpeg stopped making progress and had to be killed; the file may be truncated or unplayable.";
+      warning = debugCapture
+        ? "ffmpeg stopped making progress and had to be killed; the file may be truncated or unplayable."
+        : "ffmpeg did not finalize the video after the capture ended and had to be killed; the file may be truncated or unplayable.";
     }
 
     if (endedEarly && !warning) {
@@ -856,13 +856,21 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
       if (encodingComplete === false) {
         const ffmpeg = await resolveFfmpeg();
         if (!ffmpeg) throw new Error("ffmpeg is unavailable to check the failed debug output.");
-        await verifyDebugVideo(ffmpeg, outputFile);
+        try {
+          await verifyDebugVideo(ffmpeg, outputFile);
+        } catch (err) {
+          const failure = err as Error & { code?: number; killed?: boolean };
+          if (typeof failure.code === "number" && !failure.killed) {
+            await fs.rm(outputFile, { force: true }).catch(() => {});
+          }
+          throw err;
+        }
       }
     } catch (err) {
       if (!debugCapture) throw err;
       const message = err instanceof Error ? err.message : String(err);
       throw new FailureError(
-        `No readable debug video was saved at ${outputFile}. ${message} ` +
+        `No readable debug video was saved at ${outputFile}. Captured JPEGs are discarded after failed encoding. ${message} ` +
           [encodingStatus, debugCapture.warning].filter(Boolean).join(" "),
         {
           error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,

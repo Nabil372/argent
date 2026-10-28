@@ -368,6 +368,9 @@ it.skipIf(!hasEncoder)(
   async () => {
     const now = vi.spyOn(performance, "now").mockReturnValue(1_000);
     const output = path.join(scratch, "phone.mp4");
+    expect(
+      ffmpegArgs({ mode: "debug", outputFile: output, logoFile: null, graph: null, canvas: null })
+    ).not.toContain("+faststart");
     const child = spawn(
       "ffmpeg",
       ffmpegArgs({
