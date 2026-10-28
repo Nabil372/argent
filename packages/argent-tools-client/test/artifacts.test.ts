@@ -1256,9 +1256,10 @@ describe("materializeArtifacts durable destination", () => {
     }
   });
 
-  it.each(["different", "unavailable"])(
+  it.each(["different", "unavailable", "both unavailable"])(
     "preserves another writer when its PID namespace is %s",
     async (namespace) => {
+      if (namespace === "both unavailable") vi.mocked(processNamespaceId).mockResolvedValue(null);
       const probe = vi.spyOn(process, "kill").mockImplementation(() => {
         throw Object.assign(new Error("not visible here"), { code: "ESRCH" });
       });
