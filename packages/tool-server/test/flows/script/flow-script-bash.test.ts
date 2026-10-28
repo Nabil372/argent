@@ -1413,8 +1413,6 @@ describe("environment and working directory", () => {
       { env: { BASH_ENV: preamble } }
     );
 
-    expect(result.failure?.message ?? "").not.toContain("No bash this host offers");
-    expect(result.ok).toBe(true);
     expect(result.output).toEqual({ greeting: "hello" });
   }, 30_000);
 

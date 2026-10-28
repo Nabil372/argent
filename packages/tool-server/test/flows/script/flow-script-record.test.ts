@@ -333,27 +333,6 @@ describe("recording a script step", () => {
     expect((err as Error).message).toContain("Check the script's changes before you retry");
   });
 
-  it("refuses a recording file that is gone, asking for a restart rather than a repair", async () => {
-    const marker = path.join(root, "gone.txt");
-    await start("erased");
-    await write(
-      "scripts/seed.mjs",
-      `import * as fs from "node:fs";
-       fs.writeFileSync(${JSON.stringify(marker)}, "ran");`
-    );
-    await fs.rm(flowPath("erased"));
-
-    const err = (await addScript("erased", "../../scripts/seed.mjs").catch(
-      (e: unknown) => e
-    )) as Error;
-
-    expect(err).toBeInstanceOf(Error);
-    expect(err.message).toContain("was NOT run");
-    expect(err.message).toContain("is gone");
-    expect(err.message).toContain("Start the recording again with e2e-start-recording");
-    await expect(fs.access(marker)).rejects.toThrow();
-  });
-
   it("blames the hand-edited file, not the script, when the re-parse refuses it", async () => {
     await start("handedited");
     await write(
@@ -378,29 +357,35 @@ describe("recording a script step", () => {
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED);
   });
 
-  it("refuses a file that will not parse before it runs the script", async () => {
-    const marker = path.join(root, "seeded.txt");
-    await start("broken");
+  it.each([
+    [
+      "is gone, asking for a restart rather than a repair",
+      (file: string) => fs.rm(file),
+      ["is gone", "Start the recording again with e2e-start-recording"],
+    ],
+    [
+      "will not parse, blaming the file",
+      (file: string) => fs.writeFile(file, `env:\n  NODE_OPTIONS: --bogus\nsteps: []\n`, "utf8"),
+      ["about the FILE, not about this script", "NODE_OPTIONS"],
+    ],
+  ])("refuses a recording file that %s, before it runs the script", async (_, spoil, says) => {
+    const marker = path.join(root, "ran.txt");
+    await start("spoiled");
     await write(
       "scripts/seed.mjs",
       `import * as fs from "node:fs";
        fs.writeFileSync(${JSON.stringify(marker)}, "ran");`
     );
-    await fs.writeFile(
-      flowPath("broken"),
-      `env:\n  PROBE_A: from-file\n  NODE_OPTIONS: --bogus\nsteps: []\n`,
-      "utf8"
-    );
+    await spoil(flowPath("spoiled"));
 
-    const err = (await addScript("broken", "../../scripts/seed.mjs").catch(
+    const err = (await addScript("spoiled", "../../scripts/seed.mjs").catch(
       (e: unknown) => e
     )) as Error;
 
     expect(err).toBeInstanceOf(Error);
-    expect(err.message).toContain("was NOT run");
-    expect(err.message).toContain(flowPath("broken"));
-    expect(err.message).toContain("about the FILE, not about this script");
-    expect(err.message).toContain("NODE_OPTIONS");
+    for (const text of ["was NOT run", flowPath("spoiled"), ...says]) {
+      expect(err.message).toContain(text);
+    }
     await expect(fs.access(marker)).rejects.toThrow();
   });
 
