@@ -38,7 +38,6 @@ import {
   SCRIPT_ENV_NAME_PATTERN,
   type ConfigDefinition,
 } from "@argent/configuration-core";
-import { isLongEnoughToBeSecret, makeSensitiveBank } from "@zapier/secret-scrubber/lib/utils";
 import { isElectronHostedEnv } from "../../../utils/electron-env";
 import { formatErrorForAgent } from "../../../utils/format-error";
 import {
@@ -1401,14 +1400,35 @@ function spellingsOf(secret: FlowScriptSecret): readonly string[] {
   if (!spellings) {
     const { value } = secret;
     spellings = isLongEnoughToBeSecret(value)
-      ? [...Object.keys(makeSensitiveBank([value])), ...printedSpellings(value)]
+      ? [...encodedSpellings(value), ...printedSpellings(value)]
       : [];
     SPELLINGS.set(secret, spellings);
   }
   return spellings;
 }
 
-/** Spellings Node or bash print by default that the package's bank does not hold. */
+/**
+ * The raw value is always scrubbed. Its other spellings, and each line of a
+ * multi-line value on its own, only from six characters on: shorter ones turn
+ * up in ordinary text.
+ */
+function isLongEnoughToBeSecret(value: string): boolean {
+  return value.length >= 6;
+}
+
+/** As written, percent-encoded with `%20` or `+` for a space, JSON-escaped, and in base64. */
+function encodedSpellings(value: string): string[] {
+  const percent = encodeURIComponent(value);
+  return [
+    value,
+    percent,
+    percent.replace(/%20/g, "+"),
+    JSON.stringify(value).slice(1, -1),
+    Buffer.from(value).toString("base64"),
+  ];
+}
+
+/** Spellings Node or bash print by default. */
 function printedSpellings(value: string): string[] {
   // A URL's user name or password: `@ : / ;` escaped, `$ & + , %` kept.
   const url = new URL("http://host");
