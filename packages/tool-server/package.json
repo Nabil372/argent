@@ -26,7 +26,6 @@
     "@fails-components/webtransport-transport-http3-quiche": "^1.6.8",
     "@moq/net": "^0.3.5",
     "@swmansion/argent-cloud-sdk": "^0.3.1",
-    "@zapier/secret-scrubber": "^1.1.6",
     "bunyan": "^1.8.15",
     "bytes": "^3.1.2",
     "dotenv": "^18.0.8",

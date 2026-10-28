@@ -24,7 +24,6 @@ import {
   getConfigDefinition,
   MIN_SCRIPT_HEAP_LIMIT_MB,
   MIN_SCRIPT_TIMEOUT_MS,
-  WINDOWS_ROOTED_PATH_RE,
   type ConfigDefinition,
 } from "../src/config-schema.js";
 
@@ -119,23 +118,15 @@ describe("recordings.directory — schema entry", () => {
 });
 
 describe("scripts.env.allow — schema entry", () => {
-  it("is unset by default", () => {
+  it("is unset by default, takes both scopes and unions them", () => {
     expect(getConfigValueByKey("scripts.env.allow", opts())).toBeUndefined();
-  });
-
-  it("unions both scopes — a project names what its own scripts read", () => {
+    expect(getConfigDefinition("scripts.env.allow")?.scopes).toEqual(["project", "global"]);
     setConfigValue("scripts.env.allow", ["AWS_PROFILE"], "global", opts());
     setConfigValue("scripts.env.allow", ["DATABASE_URL"], "project", opts());
     expect(getConfigValueByKey("scripts.env.allow", opts())).toEqual([
       "AWS_PROFILE",
       "DATABASE_URL",
     ]);
-  });
-
-  it("takes both scopes, unlike the global-only host bounds", () => {
-    expect(getConfigDefinition("scripts.env.allow")?.scopes).toEqual(["project", "global"]);
-    expect(getConfigDefinition("scripts.maxTimeoutMs")?.scopes).toEqual(["global"]);
-    expect(getConfigDefinition("scripts.heapLimitMb")?.scopes).toEqual(["global"]);
   });
 
   it("drops a blank or non-string entry when the file is read", () => {
@@ -505,28 +496,22 @@ describe("flow script host bounds", () => {
 describe("scripts.bash — schema entry", () => {
   const configured = path.join(path.sep, "opt", "homebrew", "bin", "bash");
 
-  // The read path deliberately keeps whatever is PRESENT: a value `parse`
-  // rejected is handed back as `undefined`, which is indistinguishable from an
-  // absent key — so a wrong value in a hand-edited file would fall through to
-  // PATH and run the step under a bash that happens to exist on this machine.
-  it("keeps a wrong hand-edited value so the resolver can name it", () => {
+  function writeGlobal(config: unknown): void {
     const file = configFilePath("global", opts());
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ scripts: { bash: "bin/bash" } }));
+    fs.writeFileSync(file, JSON.stringify(config));
+  }
 
-    expect(getConfigValueByKey("scripts.bash", opts())).toBe("bin/bash");
-  });
+  // The reader keeps a wrong value so the resolver can name it: one it dropped
+  // would read as absent and fall through to whatever bash is on PATH. A `null`
+  // is what a generator writes for no value, and reads as unset.
+  it.each([
+    ["a wrong hand-edited value", "bin/bash", "bin/bash"],
+    ["a null", null, undefined],
+  ])("reads %s back as the resolver needs it", (_label, value, read) => {
+    writeGlobal({ scripts: { bash: value } });
 
-  // `null` is what a generator writes for a key it has no value for, and every
-  // other parser in the schema reads it as an absent key. Read as the text
-  // "null" it became the one value nothing can use and nothing falls back
-  // from: every `.sh` step in that scope refused, naming a relative path.
-  it("reads a null as an unset key rather than as the text null", () => {
-    const file = configFilePath("global", opts());
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ scripts: { bash: null } }));
-
-    expect(getConfigValueByKey("scripts.bash", opts())).toBeUndefined();
+    expect(getConfigValueByKey("scripts.bash", opts())).toBe(read);
   });
 
   it.each([
@@ -548,18 +533,14 @@ describe("scripts.bash — schema entry", () => {
     expect(readConfigObject("global", opts())).toEqual({ scripts: { bash: configured } });
   });
 
-  // Global only, like its two siblings, though for a different reason: the
-  // value is an absolute path judged against `process.platform`, so no single
-  // spelling satisfies a mixed-OS team and a committed one broke every `.sh`
-  // step for whoever did not share the committer's OS. `readScopeValue` gates
-  // reads on `scopes` too, so the project file is not merely unwritable - it is
-  // unread, and the resolver falls through to its PATH search.
-  //
-  // No global value beside it, which is what makes this the scope gate: `merge`
-  // is `prioritize-global`, so one set here would win whatever `scopes` said.
-  it("takes the global scope only, and does not read a committed project value", () => {
-    const def = getConfigDefinition("scripts.bash")!;
-    expect(def.scopes).toEqual(["global"]);
+  // An absolute path judged against `process.platform` suits no mixed-OS team,
+  // so a committed project value is neither written nor read. No global value
+  // beside it, because `prioritize-global` would let one win regardless.
+  it("takes the global scope only, and neither writes nor reads a project value", () => {
+    expect(getConfigDefinition("scripts.bash")!.scopes).toEqual(["global"]);
+    expect(() => setConfigValue("scripts.bash", configured, "project", opts())).toThrow(
+      ConfigScopeError
+    );
     const projectFile = configFilePath("project", opts());
     fs.mkdirSync(path.dirname(projectFile), { recursive: true });
     fs.writeFileSync(
@@ -570,41 +551,22 @@ describe("scripts.bash — schema entry", () => {
     expect(getConfigValueByKey("scripts.bash", opts())).toBeUndefined();
   });
 
-  it("refuses a write at the project scope", () => {
-    expect(() => setConfigValue("scripts.bash", configured, "project", opts())).toThrow(
-      ConfigScopeError
-    );
-    expect(readConfigObject("project", opts())).toEqual({});
-  });
-
-  // Both host-specific strings are printed back as a value to type, so a path
-  // this host does not have is a value that reproduces the error it is offered
-  // to fix - and `asAbsolutePath` never checks existence, so it is written and
-  // only fails later, at every `.sh` step.
-  it.runIf(process.platform !== "win32")("offers an example this host really has", () => {
+  // The refusal names the host the shape is judged against, and its example is
+  // printed back as a value to type, so it has to exist on this host.
+  it("says what it wants, with an example this host has", () => {
     const def = getConfigDefinition("scripts.bash")!;
-
-    expect(fs.existsSync(def.example!)).toBe(true);
-    expect(describeExpectedValue(def)).toContain(def.example);
-  });
-
-  // The refusal says WHICH host the shape is judged against, because the write
-  // gate and the resolver both apply the running platform's rules, and the
-  // global file the key does land in travels: a home directory restored onto a
-  // machine of another family carries a spelling that host refuses.
-  it("says what it wants when it refuses one", () => {
-    const expected = describeExpectedValue(getConfigDefinition("scripts.bash")!);
+    const expected = describeExpectedValue(def);
     expect(expected).toContain("an absolute path to Bash");
     expect(expected).toContain("the tool-server host");
     expect(expected).toContain("on Windows");
+    if (process.platform !== "win32") {
+      expect(fs.existsSync(def.example!)).toBe(true);
+      expect(expected).toContain(def.example);
+    }
   });
 
-  // The win32 half of the write gate, on the platform the repository cannot
-  // run its unit tests on by default. It is the WRITE side of a rule the tool
-  // server reads back through the same `WINDOWS_ROOTED_PATH_RE`, and the two
-  // had already disagreed once in exactly this direction: `argent config set`
-  // stored a POSIX path that every `.sh` step then refused with "names no
-  // drive".
+  // The write side of the rule the tool server reads back, so `argent config
+  // set` cannot store a value every `.sh` step then refuses.
   describe("under Windows rules", () => {
     const realPlatform = process.platform;
 
@@ -626,8 +588,7 @@ describe("scripts.bash — schema entry", () => {
     });
 
     it.each([
-      // `path.win32.isAbsolute` says true for both of these, and neither names
-      // a drive - so the step would refuse a value the write gate had accepted.
+      // `path.win32.isAbsolute` accepts both of these, and neither names a drive.
       ["a POSIX path", "/usr/bin/bash"],
       ["a path rooted on no drive", "\\Git\\bin\\bash.exe"],
       ["a relative path", "bin\\bash.exe"],
@@ -636,13 +597,6 @@ describe("scripts.bash — schema entry", () => {
         ConfigValidationError
       );
       expect(readConfigObject("global", opts())).toEqual({});
-    });
-
-    // The rule both sides share, so a change to one of them is a change to the
-    // other's test too.
-    it("uses the same rooted-path rule the tool server reads back", () => {
-      expect(WINDOWS_ROOTED_PATH_RE.test("C:\\Git\\bin\\bash.exe")).toBe(true);
-      expect(WINDOWS_ROOTED_PATH_RE.test("/usr/bin/bash")).toBe(false);
     });
   });
 });

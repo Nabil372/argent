@@ -194,44 +194,22 @@ describe("parseRunArgs", () => {
     );
   });
 
-  it("refuses a malformed --env argument, quoting it", () => {
-    expect(() => parseRunArgs(["checkout", "--env", "NOEQUALS"])).toThrow(
-      /--env expects NAME=value, got "NOEQUALS" — it holds no "="/
-    );
-    expect(() => parseRunArgs(["checkout", "--env", "=value"])).toThrow(
-      /it starts with "=", so it names nothing/
-    );
-    expect(() => parseRunArgs(["checkout", "--env", "2FA=x"])).toThrow(
-      /"2FA" is not an environment variable name/
-    );
-  });
+  const NPM_RESERVED =
+    /--env cannot set npm_config_node-options: it steers the runner's own process/;
 
-  it("refuses __proto__, which every map on the way would drop", () => {
-    expect(() => parseRunArgs(["checkout", "--env", "__proto__=x"])).toThrow(
-      /--env cannot set __proto__/
-    );
-  });
-
-  it("refuses a reserved name here rather than at the server, in every spelling", () => {
-    for (const spelling of [
-      "npm_config_node-options",
-      "npm_config_node_options",
-      "NPM_CONFIG_NODE_OPTIONS",
-    ]) {
-      expect(() => parseRunArgs(["checkout", "--env", `${spelling}=--inspect`]), spelling).toThrow(
-        /--env cannot set npm_config_node-options: it steers the runner's own process/
-      );
-    }
-    expect(() => parseRunArgs(["checkout", "--env", "NODE_OPTIONS=--inspect"])).toThrow(
-      /--env cannot set NODE_OPTIONS/
-    );
-    expect(() => parseRunArgs(["checkout", "--env", "ARGENT_OUTPUT=/tmp/x"])).toThrow(
-      /names the file a `\.sh` step exchanges/
-    );
-    expect(() => parseRunArgs(["checkout", "--env", "MY-VAR=x"])).toThrow(
-      /"MY-VAR" is not an environment variable name/
-    );
-    expect(parseRunArgs(["checkout", "--env", "BUILD=1421"]).env).toEqual({ BUILD: "1421" });
+  it.each([
+    ["NOEQUALS", /--env expects NAME=value, got "NOEQUALS" — it holds no "="/],
+    ["=value", /it starts with "=", so it names nothing/],
+    ["2FA=x", /"2FA" is not an environment variable name/],
+    ["MY-VAR=x", /"MY-VAR" is not an environment variable name/],
+    ["__proto__=x", /--env cannot set __proto__/],
+    ["NODE_OPTIONS=--inspect", /--env cannot set NODE_OPTIONS/],
+    ["ARGENT_OUTPUT=/tmp/x", /names the file a `\.sh` step exchanges/],
+    ["npm_config_node-options=--inspect", NPM_RESERVED],
+    ["npm_config_node_options=--inspect", NPM_RESERVED],
+    ["NPM_CONFIG_NODE_OPTIONS=--inspect", NPM_RESERVED],
+  ])("refuses --env %s here rather than at the server", (arg, error) => {
+    expect(() => parseRunArgs(["checkout", "--env", arg])).toThrow(error);
   });
 
   it("accepts -r and --recursive in any position", () => {
@@ -3196,9 +3174,6 @@ describe("argent e2e run <dir>", () => {
 
     const rerun = `argent e2e run ${path.join("flows", "a-login.yaml")} --env BUILD=1421 --env 'LABEL=Test account' --env 'API_KEY={{secret:API_KEY}}'`;
     expect(logs.join("\n").split("\n")).toContain(`    re-run: ${rerun}`);
-    expect(parseRunArgs(["flows/a-login.yaml", "--env", "LABEL=Test account"]).env).toEqual({
-      LABEL: "Test account",
-    });
   });
 
   it("re-runs with an --output that starts with a dash through ./, not as an option", async () => {

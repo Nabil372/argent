@@ -308,47 +308,30 @@ describe("the recorder reports the verdict the runner will", () => {
   });
 });
 
-// The executor runs what it is told and never looks at an extension, so this is
-// the one place the language is decided for a step. Both routes to it — the
-// runner and the recorder — go through `runFlowScriptStep`, so pinning it here
-// pins it for both.
+// The one place a step's language is decided, for the runner and the recorder
+// alike. It is read off the CANONICAL file the executor runs; a `.sh` link to a
+// file with no extension (`seed.sh -> ../tools/seed`) falls back to the step's
+// own spelling.
 describe("which interpreter the step asks the executor for", () => {
   it.each([
-    ["seed.mjs", "node"],
-    ["seed.sh", "bash"],
-  ])("asks for %s to run under %s", async (file, interpreter) => {
-    await fs.writeFile(path.join(root, "scripts", file), "");
-    await fs.writeFile(
-      path.join(root, ".argent", "flows", "verdict.yaml"),
-      `steps:\n  - script: { path: ../../scripts/${file} }\n`,
-      "utf8"
-    );
-    executeMock.mockResolvedValue(outcome({ ok: true, output: {} }));
-
-    await runScript();
-
-    expect(executedRequest().interpreter).toBe(interpreter);
-  });
-
-  // The language comes off the CANONICAL file, so a `.sh` that is a symlink to
-  // a `.mjs` runs under node and the reverse runs under bash. A canonical path
-  // with NO extension is the one case the target cannot answer -
-  // `seed.sh -> ../tools/seed` is an ordinary way to name a script - and the
-  // step's own spelling stands in, which the parser holds to one of the two.
-  // Without that fallback a passing bash step became a `load` failure with a
-  // stack pointing into a shell file.
-  it.each([
-    ["an extensionless target", "extensionless", "seed", "bash"],
-    ["a target of the other language", "other-language", "seed.mjs", "node"],
-  ])(
-    "reads the interpreter of a linked .sh through %s",
-    async (_label, link, target, interpreter) => {
-      await fs.mkdir(path.join(root, "tools"), { recursive: true });
-      await fs.writeFile(path.join(root, "tools", target), "");
-      await fs.symlink(path.join(root, "tools", target), path.join(root, "scripts", `${link}.sh`));
+    ["seed.mjs", undefined, "node"],
+    ["seed.sh", undefined, "bash"],
+    ["linked.sh", "seed", "bash"],
+    ["linked.sh", "seed.mjs", "node"],
+  ] as [string, string | undefined, string][])(
+    "asks for %s (linked to %s) to run under %s",
+    async (file, target, interpreter) => {
+      const step = path.join(root, "scripts", file);
+      if (target) {
+        await fs.mkdir(path.join(root, "tools"), { recursive: true });
+        await fs.writeFile(path.join(root, "tools", target), "");
+        await fs.symlink(path.join(root, "tools", target), step);
+      } else {
+        await fs.writeFile(step, "");
+      }
       await fs.writeFile(
         path.join(root, ".argent", "flows", "verdict.yaml"),
-        `steps:\n  - script: { path: ../../scripts/${link}.sh }\n`,
+        `steps:\n  - script: { path: ../../scripts/${file} }\n`,
         "utf8"
       );
       executeMock.mockResolvedValue(outcome({ ok: true, output: {} }));

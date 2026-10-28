@@ -18,10 +18,7 @@ export interface ConfigDefinition<T = unknown> {
   readonly parse: (raw: unknown) => T | undefined;
   /**
    * The check `argent config set` applies instead of {@link parse}, for a key
-   * whose `parse` is deliberately permissive. A reader cannot tell a value
-   * `parse` threw away from an absent key, so a key whose own reader reports
-   * what it found has to KEEP a wrong value — which is no reason to accept one
-   * being typed in. Absent ⇒ `parse` is the write check too.
+   * whose `parse` deliberately keeps any present value. When absent, `parse` is used.
    */
   readonly validateWrite?: (raw: unknown) => T | undefined;
   /** How the project and global values combine into the effective value. */
@@ -58,46 +55,28 @@ export function asString(raw: unknown): string | undefined {
 }
 
 /**
- * Any value that is present, as text. Only for a key whose own reader checks
- * the value and reports what it found: a rejected value is invisible to that
- * reader, and a wrong one that is silently ignored fails somewhere else.
- *
- * `null` is absent here, as it is for every other parser in this file. A
- * generator that writes `null` for a key it has no value for means "unset",
- * and reading it as the text "null" makes it the one value nothing can use and
- * nothing falls back from.
+ * Any present value, as text, for a key whose own reader checks it and reports
+ * what it found. `null` is absent, as for every other parser here.
  */
 function asPresentText(raw: unknown): string | undefined {
   if (raw === undefined || raw === null) return undefined;
   if (typeof raw === "string") return raw.trim();
-  // A config file is JSON, so everything that reaches here has a JSON text
-  // form; `??` covers a caller that passed a live value which has none.
+  // Config files are JSON; `??` covers a live value with no JSON form.
   return JSON.stringify(raw) ?? "(a value with no JSON form)";
 }
 
 /**
- * What a rooted Windows path looks like: a drive letter, or a UNC share. The
- * one rule, shared with the tool server's own interpreter check, because this
- * is the WRITE gate for a value that check reads back — and
- * `path.win32.isAbsolute("/usr/bin/bash")` is true, so on Windows the two
- * disagreed in exactly one direction: `argent config set` stored a POSIX path
- * that every `.sh` step then refused with "names no drive".
+ * A rooted Windows path: a drive letter or a UNC share. Shared with the tool
+ * server's interpreter check, since `path.win32.isAbsolute("/usr/bin/bash")` is true.
  */
 export const WINDOWS_ROOTED_PATH_RE = /^(?:[A-Za-z]:[\\/]|[\\/][\\/])/;
 
-/**
- * Accept a non-blank string that names an absolute path on THIS host. The
- * running platform's rules, because the path is for a program this host has to
- * start: `C:\\…` is not a path a POSIX tool server can spawn, and a
- * `/usr/bin/…` is not one a Windows tool server can.
- */
+/** A non-blank string that is an absolute path under this host's own platform rules. */
 function asAbsolutePath(raw: unknown): string | undefined {
   const text = asString(raw);
   if (text === undefined) return undefined;
   const win32 = process.platform === "win32";
-  // Explicit win32 semantics under win32 rather than the bare `path` object's,
-  // which is the same thing on a real Windows host and is testable from a POSIX
-  // one — the shape `flow-script-interpreter.ts` reads the value back with.
+  // Explicit win32 semantics so the Windows rule is testable from a POSIX host.
   if (!(win32 ? path.win32 : path.posix).isAbsolute(text)) return undefined;
   if (win32 && !WINDOWS_ROOTED_PATH_RE.test(text)) return undefined;
   return text;
@@ -217,9 +196,8 @@ export const MIN_SCRIPT_HEAP_LIMIT_MB = 32;
 
 /**
  * The smallest ceiling a flow `script` step can run under and still report on
- * the script rather than on the host. The step starts a process before the
- * script runs — a bash one as well as a Node one — and that start alone costs
- * tens of milliseconds, so under
+ * the script rather than on the host. The step starts a process before
+ * the script runs, and that start alone costs tens of milliseconds, so under
  * this the same script passes or times out according to how busy the machine
  * was. Floored rather than defaulted for the reason the heap limit is: the
  * step that loses the race errors, and names neither this bound nor the value
@@ -354,12 +332,10 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
     merge: "union",
     example: '["DATABASE_URL", "AWS_PROFILE"]',
   },
-  // All three `scripts.` keys below are global-scope only, for two reasons. The
-  // two bounds: a checked-in `.argent/config.json` must not raise the ceiling on
-  // how much of the machine a script step may occupy. `scripts.bash`: the value
-  // is an absolute path judged against `process.platform`, so no one spelling
-  // suits a mixed-OS team. `merge` is nominal for all three — the project scope
-  // of a global-only key is never read.
+  // Global-scope only: a checked-in `.argent/config.json` must not raise the
+  // ceiling on how much of the machine a script step may occupy, or pin a bash
+  // path for one OS on a mixed-OS team. `merge` is nominal for all three - the
+  // project scope of a global-only key is never read.
   {
     key: "scripts.maxTimeoutMs",
     description:
@@ -402,28 +378,15 @@ export const CONFIG_SCHEMA: readonly ConfigDefinition[] = [
       "If unset, Argent searches PATH, then standard install locations. " +
       "On Windows, use Bash from Git for Windows.",
     scopes: ["global"],
-    // Deliberately permissive: `readScopeValue` hands back `undefined` for a
-    // value its `parse` rejected, which is indistinguishable from an absent key
-    // — so a schema that refused a relative path, an empty string or a number
-    // would make a hand-edited config file fall through to PATH and hide the
-    // mistake behind a bash that happens to exist on this machine. Everything
-    // PRESENT is kept, as the text the refusal names it by; the resolver checks
-    // the value and refuses the step, naming the key. `asString` was not that:
-    // it maps an empty, whitespace-only or non-string value to `undefined`.
+    // Deliberately permissive: a value `parse` rejects reads as an absent key and
+    // would silently fall through to PATH. The resolver checks it and names the key.
     parse: asPresentText,
     validateWrite: asAbsolutePath,
     expected:
       "an absolute path to Bash on the tool-server host (`/bin/bash`; on Windows, `C:\\...\\bash.exe`)",
     merge: "prioritize-global",
-    // Host-specific for the same reason the check above is: the example is
-    // printed back as a command to run, and one this host would refuse is a
-    // command that reproduces the error it is offered to fix. So the POSIX
-    // string names the path macOS and the mainstream Linux distributions share,
-    // and the Windows one names Git for Windows' default install location:
-    // macOS ships no `/usr/bin/bash` at all, and `/opt/homebrew/bin/bash`
-    // exists only on an arm64 Mac with Homebrew. `asAbsolutePath` checks shape
-    // and never existence, so a spelling this host lacks is written and only
-    // fails later, at every `.sh` step.
+    // Host-specific, since it is printed back as a command to run: `/bin/bash`
+    // exists on macOS and mainstream Linux; Git for Windows' default on Windows.
     example: process.platform === "win32" ? "C:\\Program Files\\Git\\bin\\bash.exe" : "/bin/bash",
   },
 ] as const;

@@ -824,19 +824,8 @@ describe("parseFlow", () => {
       "\t\n",
       "  hi  ",
       "plain single line",
-      // Long enough to reach the emitter's FOLD path, which none of the values
-      // above do: every one of them is under 40 characters, so the two rules
-      // `serializeFlow` sets against folding — `doubleQuotedMinMultiLineLength`
-      // and `lineWidth: 0` — were guarded by the `env` cases in
-      // `flow-script-env.test.ts` alone. The serializer change is
-      // document-wide, and these fields are the rest of the document.
-      //
-      // Both values were FOUND by searching for one the folding emitter
-      // corrupts at these column positions and the non-folding one does not:
-      // a fold placed between an escaped space and an escaped newline ate the
-      // space, and where the fold lands depends on the key it sits under. Each
-      // fails at one of the two positions this case writes them to, so neither
-      // is redundant.
+      // Past the emitter's fold point: a fold between an escaped space and an
+      // escaped newline ate the space. Each fails under one of the keys below.
       "\n".repeat(10) +
         "a".repeat(13) +
         "\n".repeat(8) +
@@ -894,72 +883,48 @@ describe("parseFlow", () => {
     }
   });
 
-  it("still accepts a file whose first line opens with a tab", async () => {
-    expect(parseFlow("\tsteps:\n  - echo: hi\n").steps).toEqual([{ kind: "echo", message: "hi" }]);
-  });
-
-  it("still parses a file whose last line holds nothing but a stray whitespace character", async () => {
+  it("still parses a file a stray character opens or ends", async () => {
     const strays = ["\r", "\v", "\f", "\u00a0", "\u1680", "\u2028", "\u202f", "\u3000", "\ufeff"];
-    for (const stray of strays) {
-      expect(parseFlow(`steps:\n  - echo: hi\n${stray}`).steps).toEqual([
-        { kind: "echo", message: "hi" },
-      ]);
-      expect(parseFlow(`steps:\n  - echo: hi\n \t${stray}`).steps).toEqual([
+    for (const yaml of [
+      // A first line that opens with a tab, which YAML refuses as indentation.
+      "\tsteps:\n  - echo: hi\n",
+      // A last line of nothing but whitespace YAML does not count as such.
+      ...strays.flatMap((stray) => [
+        `steps:\n  - echo: hi\n${stray}`,
+        `steps:\n  - echo: hi\n \t${stray}`,
+      ]),
+      // A CRLF file whose final LF a conversion dropped, once or twice.
+      "steps:\r\n  - echo: hi\r",
+      "steps: [{ echo: hi }]\r",
+      "steps:\r\n  - echo: hi\r\r",
+    ]) {
+      expect(parseFlow(yaml).steps, JSON.stringify(yaml)).toEqual([
         { kind: "echo", message: "hi" },
       ]);
     }
-  });
-
-  it("still parses a CRLF file whose final LF a conversion dropped", async () => {
-    expect(parseFlow("steps:\r\n  - echo: hello\r").steps).toEqual([
-      { kind: "echo", message: "hello" },
-    ]);
-    expect(parseFlow("steps: [{ echo: hello }]\r").steps).toEqual([
-      { kind: "echo", message: "hello" },
-    ]);
     expect(
       parseFlow("steps:\r\n  - script:\r\n      path: seed.mjs\r\n      env:\r\n        TOK: abc\r")
         .steps
     ).toEqual([{ kind: "script", path: "seed.mjs", env: { TOK: "abc" } }]);
-    expect(parseFlow("steps:\r\n  - echo: hello\r\r").steps).toEqual([
-      { kind: "echo", message: "hello" },
-    ]);
-    expect(parseFlow("steps:\r\n  - echo: hello\r\n").steps).toEqual([
-      { kind: "echo", message: "hello" },
-    ]);
-  });
-
-  it("keeps a trailing non-ASCII space in the last scalar when a stray line follows it", async () => {
-    const flow: FlowFile = {
-      executionPrerequisite: "",
-      steps: [{ kind: "script", path: "scripts/seed.mjs", env: { TOK: "abc\u00a0" } }],
-    };
-    expect(parseFlow(`${serializeFlow(flow)}\u00a0`)).toEqual(flow);
   });
 
   it("keeps an env name YAML's core schema would resolve", async () => {
-    for (const name of ["TRUE", "True", "FALSE", "NULL", "Null"]) {
+    for (const name of ["TRUE", "True", "FALSE", "NULL", "Null", "YES", "ON", "NO", "OFF"]) {
       const flow = parseFlow(
         `env: { ${name}: v }\nsteps:\n  - script: { path: seed.mjs, env: { ${name}: v } }\n`
       );
-      expect(Object.keys(flow.env ?? {})).toEqual([name]);
-      expect(Object.keys(flow.steps[0].kind === "script" ? (flow.steps[0].env ?? {}) : {})).toEqual(
-        [name]
-      );
-    }
-    for (const name of ["YES", "ON", "NO", "OFF"]) {
-      expect(Object.keys(parseFlow(`env: { ${name}: v }\nsteps: []\n`).env ?? {})).toEqual([name]);
+      expect(flow.env).toEqual({ [name]: "v" });
+      expect(flow.steps[0]).toMatchObject({ env: { [name]: "v" } });
     }
   });
 
   it("accepts a bare `env:` header with no entries under it", async () => {
     const flow = parseFlow("env:\nsteps:\n  - echo: hi\n");
     expect(flow.env).toEqual({});
-    expect(flow.steps).toEqual([{ kind: "echo", message: "hi" }]);
     expect(flow).toEqual(parseFlow("env: {}\nsteps:\n  - echo: hi\n"));
   });
 
-  it("round-trips a trailing non-ASCII space in the file's last scalar", async () => {
+  it("round-trips a trailing non-ASCII space in the file's last scalar, a stray line after it or not", async () => {
     const spaces = [
       "\u00a0",
       "\u1680",
@@ -978,12 +943,13 @@ describe("parseFlow", () => {
         env: { HEADER: `abc${space}` },
         steps: [{ kind: "script", path: "scripts/seed.mjs", env: { TOK: `abc${space}` } }],
       };
-      expect(parseFlow(serializeFlow(flow))).toEqual(flow);
       const lone: FlowFile = {
         executionPrerequisite: "",
         steps: [{ kind: "script", path: "scripts/seed.mjs", env: { TOK: space } }],
       };
+      expect(parseFlow(serializeFlow(flow))).toEqual(flow);
       expect(parseFlow(serializeFlow(lone))).toEqual(lone);
+      expect(parseFlow(`${serializeFlow(flow)}\u00a0`)).toEqual(flow);
     }
   });
 

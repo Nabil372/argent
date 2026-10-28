@@ -9,9 +9,8 @@
 // "timed out and was stopped" says more than a child that kills its own group
 // and leaves the parent describing an unexplained SIGKILL.
 //
-// Armed only by the runner's own `workerData`, so the runner and the lifeline
-// can import `stopOwnGroup` below, and so can the inactive runner a `.mjs`
-// script's own worker threads inherit.
+// Armed only by the runner's own `workerData`, so other modules can import
+// `stopOwnGroup` below without arming it.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,9 +20,7 @@ const deadlineMs = workerData && workerData.deadlineMs;
 if (workerData?.fired instanceof Int32Array && Number.isFinite(deadlineMs) && deadlineMs > 0) {
   const slot = new Int32Array(new SharedArrayBuffer(4));
   Atomics.wait(slot, 0, 0, deadlineMs);
-  // Before anything is stopped, so the runner's own thread cannot report what
-  // the stop does to bash as the script's own answer: `taskkill /t` takes the
-  // tree one process at a time.
+  // Flagged first, so the runner does not report bash's forced exit as its own.
   Atomics.store(workerData.fired, 0, 1);
   // The group, so a descendant the script started goes with it: reaching here
   // means the parent that would have reaped them could not.
@@ -32,10 +29,8 @@ if (workerData?.fired instanceof Int32Array && Number.isFinite(deadlineMs) && de
 }
 
 /**
- * SIGKILL this process's group, and before it every other group a descendant
- * of this process sits in. Here rather than in the runner: a watchdog that
- * imports the runner is still loading it when a fast script's runner exits,
- * and V8 then aborts the process with a fatal error on stderr.
+ * SIGKILL every other group a descendant sits in, then this process's own. Not in
+ * the runner: V8 aborts if the runner exits while a watchdog is still importing it.
  */
 export function stopOwnGroup() {
   stopDescendantGroups();
@@ -44,12 +39,8 @@ export function stopOwnGroup() {
   } catch {
     // No process group to name (Windows, or a runner that never led one).
   }
-  // Windows has no group for the line above to name, so a self-kill reaches
-  // this process alone, leaving bash — and a `.mjs` script's own subprocesses
-  // — running. `taskkill /t` walks the live tree from this process down
-  // instead. `child_process` is available in a worker thread, and this call
-  // not returning is the outcome wanted; `taskkill.exe` is itself a descendant
-  // of the pid it is aimed at.
+  // Windows has no groups, so the self-kill would reach this process alone;
+  // `taskkill /t` walks the tree instead. Not returning is the wanted outcome.
   if (process.platform === "win32") {
     try {
       spawnSync("taskkill", ["/pid", String(process.pid), "/t", "/f"], {
@@ -63,13 +54,9 @@ export function stopOwnGroup() {
 }
 
 /**
- * GNU `timeout` moves itself and its command into a group of their own, and so
- * does every job under `set -m`, so the group kill misses them. They are found
- * through the process tree, which leads to them only while this process is
- * alive, so this runs before the group kill. A descendant that started a
- * session of its own - `setsid`, a daemon such as the adb server, Node's
- * `detached` - is left alone with all below it. Windows has no groups, and
- * `taskkill /t` walks the tree itself.
+ * Groups the group kill misses (GNU `timeout`, jobs under `set -m`), found through
+ * the process tree while this process is alive to lead to them. A descendant with
+ * a session of its own is left alone.
  */
 function stopDescendantGroups() {
   if (process.platform === "win32") return;

@@ -30,14 +30,11 @@ describe("parseCommandArgs", () => {
     expect(parseCommandArgs([], SPECS)).toEqual({ positionals: [], options: {} });
   });
 
-  it("collects every occurrence of a repeatable option, in both spellings", () => {
+  it("collects every occurrence of a repeatable option, in both spellings, each with a value", () => {
     expect(
       parseCommandArgs(["--env", "A=1", "--env=B=2", "--env", "A=3"], SPECS).options.env
     ).toEqual(["A=1", "B=2", "A=3"]);
     expect(parseCommandArgs([], SPECS).options.env).toBeUndefined();
-  });
-
-  it("still requires a value for a repeatable option", () => {
     expect(() => parseCommandArgs(["--env"], SPECS)).toThrow("--env requires a value");
   });
 

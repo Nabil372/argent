@@ -245,14 +245,8 @@ export const FLOW_FILE_NAME_PATTERN = new RegExp(`^${FLOW_NAME_CHARSET}\\.yaml$`
  * the charset of the flow-name patterns above, so a name legal in a `run:`
  * target stays legal in a `script:` path.
  *
- * The extension is the only thing that says which interpreter runs the file, so
- * one spelling per language and no synonyms: `.mjs` pins the module type against
- * a project's `package.json` `type` field, and `.sh` names bash — `.js` and
- * `.bash` are refused so a reader never has to ask which of two spellings a
- * project uses. `scriptInterpreter` in the tool-server's `flow-utils.ts` maps
- * each accepted extension to its interpreter, and a test fails if the two
- * disagree on a name this pattern accepts or if it accepts any of the other
- * extensions that test lists.
+ * The extension picks the interpreter, one spelling per language: `.sh` is bash,
+ * and `.mjs` pins the module type against a project's `package.json` `type` field.
  */
 export const SCRIPT_FILE_NAME_PATTERN = new RegExp(`^${FLOW_NAME_CHARSET}\\.(mjs|sh)$`);
 

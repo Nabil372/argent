@@ -141,19 +141,9 @@ export async function runFlowScriptStep(
 
   const result = await flowScriptExecutor().execute({
     scriptPath: canonical,
-    // Decided here from the CANONICAL path — the file the executor really runs —
-    // and passed explicitly: the executor runs what it is told and never
-    // inspects an extension. The spelling is not the same fact: a step written
-    // as `aliased.sh` can be a symlink to a `.mjs`, and reading the extension
-    // off the link would run JavaScript under bash, which fails it on a syntax
-    // error or, where every line parses, with exit code 127 and a hint about a
-    // missing tool.
-    //
-    // A canonical path that ends in neither `.mjs` nor `.sh` is the case the
-    // resolved file cannot answer — `seed.sh -> ../tools/seed` is an ordinary
-    // way to name a script — and `scriptInterpreter` would fall through to its
-    // `node` default there. The step's own spelling is what stands in: the parser holds it to
-    // `SCRIPT_FILE_NAME_PATTERN`, so it always carries one of the two.
+    // From the canonical path, the file the executor really runs: `aliased.sh` may
+    // link to a `.mjs`. A target with neither extension falls back to the step's
+    // own spelling, which the parser holds to `SCRIPT_FILE_NAME_PATTERN`.
     interpreter: scriptInterpreter(hasScriptExtension(canonical) ? canonical : target),
     output: request.output ?? {},
     ...(step.timeout !== undefined ? { timeoutMs: step.timeout } : {}),

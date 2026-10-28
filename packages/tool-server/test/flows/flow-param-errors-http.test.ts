@@ -39,17 +39,8 @@ describe("flow param errors over HTTP", () => {
   });
 
   it("returns 400 for a run-time env carrying __proto__ in the raw JSON body", async () => {
-    // The only channel where `__proto__` arrives as an OWN property: the body is
-    // parsed with `JSON.parse`, which puts it there without invoking the
-    // accessor. `z.record` then REBUILDS the map without it, so the run would
-    // answer 200 with that one value silently gone — which is why the refusal
-    // lives in the parameter's `z.preprocess`, before the record is built. The
-    // two tool tests for this name call `execute` directly and never run the
-    // schema, so what they observe is the `describeScriptEnvProblem` backstop,
-    // and the backstop cannot see a name the rebuild already dropped.
-    //
-    // A body LITERAL, not an object: a `__proto__` key written in JS source is
-    // the accessor, not an entry.
+    // Only a parsed body carries `__proto__` as an own key, which `z.record`
+    // would drop silently; a body literal, since one in JS source is the accessor.
     const registry = new Registry();
     registry.registerTool(createRunFlowTool(registry) as never);
     const { app } = createHttpApp(registry);

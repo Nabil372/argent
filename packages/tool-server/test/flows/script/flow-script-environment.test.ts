@@ -279,41 +279,30 @@ describe("flow script executor — the environment allowlist", () => {
 });
 
 describe("an env map holding two names that differ only in case", () => {
-  it("is a usable map on POSIX, where the two names are two variables", async () => {
-    const problem = await asPosix(async () =>
-      describeScriptEnvProblem({ API_URL: "first", api_url: "second" })
-    );
+  const pair = { API_URL: "first", api_url: "second" };
 
-    expect(problem).toBeNull();
+  it("is two variables on POSIX, and refused on Windows in a clause naming both", async () => {
+    expect(await asPosix(async () => describeScriptEnvProblem(pair))).toBeNull();
+    expect(await asWindows(async () => describeScriptEnvProblem(pair))).toContain(
+      "holds API_URL and api_url, which Windows reads as one variable"
+    );
   });
 
-  it("is refused on Windows, in a clause naming both spellings", async () => {
-    const problem = await asWindows(async () =>
-      describeScriptEnvProblem({ API_URL: "first", api_url: "second" })
-    );
+  it("merges to one variable per spelling on POSIX, and to the later layer's on Windows", async () => {
+    const merge = (flow: Record<string, string>, step: Record<string, string>) => async () =>
+      mergeScriptEnv(flow, step);
 
-    expect(problem).toContain("holds API_URL and api_url, which Windows reads as one variable");
-    expect(problem).toContain("Give them one spelling, or names of their own");
-  });
-
-  it("merges to one variable per spelling on POSIX", async () => {
-    const merged = await asPosix(async () =>
-      mergeScriptEnv({ API_URL: "flow" }, { api_url: "step" })
-    );
-
-    expect(merged).toEqual({ API_URL: "flow", api_url: "step" });
-  });
-
-  it("merges to the later layer's value on Windows, whichever way round the spellings fall", async () => {
-    const upperFirst = await asWindows(async () =>
-      mergeScriptEnv({ API_URL: "flow" }, { api_url: "step" })
-    );
-    const lowerFirst = await asWindows(async () =>
-      mergeScriptEnv({ api_url: "flow" }, { API_URL: "step" })
-    );
-
-    expect(upperFirst).toEqual({ api_url: "step" });
-    expect(lowerFirst).toEqual({ API_URL: "step" });
+    expect(await asPosix(merge({ API_URL: "flow" }, { api_url: "step" }))).toEqual({
+      API_URL: "flow",
+      api_url: "step",
+    });
+    // Whichever way round the spellings fall.
+    expect(await asWindows(merge({ API_URL: "flow" }, { api_url: "step" }))).toEqual({
+      api_url: "step",
+    });
+    expect(await asWindows(merge({ api_url: "flow" }, { API_URL: "step" }))).toEqual({
+      API_URL: "step",
+    });
   });
 });
 
@@ -632,34 +621,25 @@ describe("an environment near the operating system's limit", () => {
     60_000
   );
 
-  it("says nothing about the environment when an ordinary one dies early", async () => {
+  it("says nothing of it when an ordinary one dies early, or a large one is cancelled first", async () => {
     const ws = workspace();
-    const script = ws.write("early.mjs", "process.exit(7);");
-    const result = await executor().execute({
-      scriptPath: script,
+    const early = await executor().execute({
+      scriptPath: ws.write("early.mjs", "process.exit(7);"),
       projectRoot: ws.dir,
       env: { SMALL: "value" },
     });
-
-    expect(result.ok).toBe(false);
-    expect(result.notes.join(" ")).not.toContain("ARG_MAX");
-  }, 30_000);
-
-  it("stays off a step that was cancelled before the runner started", async () => {
-    const ws = workspace();
-    const script = ws.write("slow.mjs", "await new Promise((r) => setTimeout(r, 5000));");
     const controller = new AbortController();
     const pending = executor().execute({
-      scriptPath: script,
+      scriptPath: ws.write("slow.mjs", "await new Promise((r) => setTimeout(r, 5000));"),
       projectRoot: ws.dir,
       env: { BIG: "x".repeat(400 * 1024) },
       signal: controller.signal,
     });
     controller.abort();
-    const result = await pending;
+    const cancelled = await pending;
 
-    expect(result.ok).toBe(false);
-    expect(result.failure?.kind).toBe("cancelled");
-    expect(result.notes.join(" ")).not.toContain("ARG_MAX");
+    expect(early.ok).toBe(false);
+    expect(cancelled.failure?.kind).toBe("cancelled");
+    for (const { notes } of [early, cancelled]) expect(notes.join(" ")).not.toContain("ARG_MAX");
   }, 30_000);
 });

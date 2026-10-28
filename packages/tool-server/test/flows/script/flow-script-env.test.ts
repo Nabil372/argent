@@ -51,21 +51,31 @@ async function write(relative: string, contents: string): Promise<string> {
   return file;
 }
 
+function e2ePath(name: string): string {
+  return path.join(root, ".argent", "e2e", `${name}.yaml`);
+}
+
 function flow(name: string, yaml: string): Promise<string> {
   return write(path.join(".argent", "e2e", `${name}.yaml`), yaml);
+}
+
+/** A flow of one step that runs `scripts/<script>`, with `env` as the step's own map. */
+function scriptFlow(name: string, script: string, env?: string): Promise<string> {
+  const stepEnv = env ? `, env: ${env}` : "";
+  return flow(name, `steps:\n  - script: { path: ../../scripts/${script}${stepEnv} }\n`);
 }
 
 function markPath(mark: string): string {
   return path.join(root, `${mark}.mark`);
 }
 
-/**
- * The same path as a `.sh` redirection target. Forward slashes, because a
- * Windows path inside a bash double-quoted string is a run of backslash
- * escapes waiting to happen — and Git Bash resolves `C:/…` the same as `C:\…`.
- */
+/** Forward slashes: a Windows path in a bash double-quoted string is a run of escapes. */
 function shellMarkPath(mark: string): string {
   return markPath(mark).replace(/\\/g, "/");
+}
+
+function printenv(name: string, mark: string): string {
+  return `printenv ${name} > "${shellMarkPath(mark)}"\n`;
 }
 
 function readMark(mark: string): string | undefined {
@@ -104,6 +114,45 @@ async function runFlow(
     await createRunFlowTool(registry).execute({}, { project_root: root, name, ...params } as never)
   );
   return { result, invokeTool };
+}
+
+/** The reason of a flow's first step, run without a device. */
+async function firstReason(name: string): Promise<string> {
+  return (await runFlow(name)).result.steps[0].reason ?? "";
+}
+
+type Added = {
+  status: string;
+  message: string;
+  reason?: string;
+  recorded: string;
+  stepCount: number;
+  outputJson?: string;
+};
+
+type Finished = { message: string; flowFile: string; summary: string[] };
+
+/** Starts a recording, then replaces the reset file with `header` when given. */
+async function startRecording(name: string, header?: string) {
+  const started = (await flowStartRecordingTool.execute({}, { name, project_root: root })) as {
+    message: string;
+    flowFile: string;
+  };
+  if (header !== undefined) await fs.writeFile(e2ePath(name), header, "utf8");
+  return started;
+}
+
+function addScript(name: string, script: string, env?: Record<string, string>): Promise<Added> {
+  return flowAddScriptTool.execute({}, {
+    name,
+    project_root: root,
+    path: `../../scripts/${script}`,
+    ...(env ? { env } : {}),
+  } as never) as Promise<Added>;
+}
+
+function finishRecording(name: string): Promise<Finished> {
+  return flowFinishRecordingTool.execute({}, { name, project_root: root }) as Promise<Finished>;
 }
 
 let noBash: string | undefined;
@@ -214,55 +263,6 @@ describe("environment precedence", () => {
     expect(seen("guarded")).toEqual({ FROM_FLOW: "flow-value", FROM_STEP: "step-value" });
   });
 
-  it("lets a fragment's own env beat the parent's default for a recorded step", async () => {
-    await write("scripts/frag.mjs", reporter("fragment", ["SHARED", "ONLY_PARENT"]));
-    await flow(
-      "parent",
-      "env: { SHARED: parent-value, ONLY_PARENT: parent-only }\n" +
-        "steps:\n" +
-        "  - run: fragment.yaml\n"
-    );
-    await flow(
-      "fragment",
-      "env: { SHARED: fragment-value }\n" +
-        "steps:\n" +
-        "  - script: { path: ../../scripts/frag.mjs }\n"
-    );
-
-    const { result } = await runFlow("parent", {}, { booted: true });
-
-    expect(result.ok).toBe(true);
-    expect(seen("fragment")).toEqual({
-      SHARED: "fragment-value",
-      ONLY_PARENT: "parent-only",
-    });
-  });
-
-  it("restores the parent's values after a nested flow that overrode them", async () => {
-    await write("scripts/probe.mjs", reporter("before", ["PROBE"]));
-    await write("scripts/after.mjs", reporter("after", ["PROBE"]));
-    await write("scripts/nested.mjs", reporter("nested", ["PROBE"]));
-    await flow(
-      "outer",
-      "env: { PROBE: parent }\n" +
-        "steps:\n" +
-        "  - script: { path: ../../scripts/probe.mjs }\n" +
-        "  - run: inner.yaml\n" +
-        "  - script: { path: ../../scripts/after.mjs }\n"
-    );
-    await flow(
-      "inner",
-      "env: { PROBE: child }\nsteps:\n  - script: { path: ../../scripts/nested.mjs }\n"
-    );
-
-    const { result } = await runFlow("outer", {}, { booted: true });
-
-    expect(result.ok).toBe(true);
-    expect(seen("before")).toEqual({ PROBE: "parent" });
-    expect(seen("nested")).toEqual({ PROBE: "child" });
-    expect(seen("after")).toEqual({ PROBE: "parent" });
-  });
-
   it("gives a nested `tool: flow-execute` only its own args.env", async () => {
     await flow(
       "outer",
@@ -285,279 +285,204 @@ describe("environment precedence", () => {
 });
 
 describe("environment shape rules", () => {
-  it("refuses a reserved name in a flow file's own env, printing it whole", async () => {
-    await flow("bad", "env: { NODE_OPTIONS: --inspect }\nsteps:\n  - echo: hi\n");
+  const fileEnv = (env: string) => `env: ${env}\nsteps:\n  - echo: hi\n`;
+  const stepEnv = (env: string) =>
+    `steps:\n  - script: { path: ../../scripts/probe.mjs, env: ${env} }\n`;
+  const noEnv = "steps:\n  - echo: hi\n";
 
-    await expect(runFlow("bad")).rejects.toThrow(/NODE_OPTIONS/);
-  });
+  const STEERS = /steers the runner's own process/;
+  const TEMPLATE = /env.X` uses unsupported template syntax/;
 
-  it("refuses a YAML tag that builds something the entry walk cannot read", async () => {
-    await flow("omap", "env: !!omap\n  - A: one\nsteps:\n  - echo: hi\n");
-    await expect(runFlow("omap")).rejects.toThrow(/a Map \(`!!omap`\).*plain map/s);
-
-    await flow("set", "env: !!set\n  ? A\nsteps:\n  - echo: hi\n");
-    await expect(runFlow("set")).rejects.toThrow(/a Set \(`!!set`\).*plain map/s);
-
-    await flow("stamp", "env: !!timestamp 2020-01-01\nsteps:\n  - echo: hi\n");
-    await expect(runFlow("stamp")).rejects.toThrow(/a Date \(`!!timestamp`\).*plain map/s);
-  });
-
-  it("refuses a NUL character in an authored value, naming the key", async () => {
+  it.each<[string, string, RegExp]>([
+    ["a reserved name", fileEnv("{ NODE_OPTIONS: --inspect }"), /NODE_OPTIONS/],
+    ["a step's reserved name", stepEnv("{ ELECTRON_RUN_AS_NODE: '1' }"), /ELECTRON_RUN_AS_NODE/],
+    ["ARGENT_OUTPUT", fileEnv("{ ARGENT_OUTPUT: /tmp/x }"), /ARGENT_OUTPUT/],
+    ["a step's ARGENT_OUTPUT", stepEnv("{ ARGENT_OUTPUT: /tmp/y }"), /ARGENT_OUTPUT/],
+    ["npm's dashed spelling", fileEnv('{ "npm_config_node-options": x }'), STEERS],
+    ["npm's underscored spelling", fileEnv('{ "npm_config_node_options": x }'), STEERS],
+    ["npm's upper-case spelling", fileEnv('{ "NPM_CONFIG_NODE_OPTIONS": x }'), STEERS],
+    ["a !!omap", fileEnv("!!omap\n  - A: one"), /a Map \(`!!omap`\).*plain map/s],
+    ["a !!set", fileEnv("!!set\n  ? A"), /a Set \(`!!set`\).*plain map/s],
+    ["a !!timestamp", fileEnv("!!timestamp 2020-01-01"), /a Date \(`!!timestamp`\).*plain map/s],
+    ["a number", fileEnv("{ RETRIES: 3 }"), /an environment carries strings only/],
+    ["a name that is not one", fileEnv('{ "2FA": x }'), /not an environment variable name/],
+    ["a NUL character", stepEnv('{ TOK: "a\\0b" }'), /holds a NUL character in the value of TOK/],
+    [
+      "a lone surrogate",
+      stepEnv('{ LONE: "\\uD800abc" }'),
+      /script `env` holds an unpaired surrogate in the value of LONE/,
+    ],
+    [
+      "{{output:}}",
+      fileEnv('{ X: "{{output:user.id}}" }'),
+      /env.X` uses unsupported template syntax: this map holds defaults .*A `script` step's own `env` can read output/s,
+    ],
+    ["__proto__", fileEnv("{ __proto__: x }"), /__proto__/],
+  ])("refuses %s in a flow's env before the run starts", async (_case, yaml, error) => {
     await write("scripts/probe.mjs", "");
-    await flow(
-      "nul",
-      'steps:\n  - script: { path: ../../scripts/probe.mjs, env: { TOK: "a\\0b" } }\n'
-    );
+    await flow("bad", yaml);
 
-    await expect(runFlow("nul")).rejects.toThrow(/holds a NUL character in the value of TOK/);
+    await expect(runFlow("bad")).rejects.toThrow(error);
   });
 
-  it("refuses a reserved name in a step's env", async () => {
-    await write("scripts/probe.mjs", "");
-    await flow(
-      "bad",
-      "steps:\n" +
-        "  - script: { path: ../../scripts/probe.mjs, env: { ELECTRON_RUN_AS_NODE: '1' } }\n"
-    );
+  it.each<[string, Record<string, string>, RegExp]>([
+    ["a reserved name", { NODE_CHANNEL_FD: "9" }, /NODE_CHANNEL_FD/],
+    [
+      "{{output:}}",
+      { X: "{{output:user.id}}" },
+      /This run's `env.X` uses unsupported template syntax/,
+    ],
+    [
+      "__proto__",
+      JSON.parse('{"__proto__":"x","A":"y"}') as Record<string, string>,
+      /`env` holds __proto__/,
+    ],
+  ])("refuses %s in the run's env", async (_case, env, error) => {
+    await flow("ok", noEnv);
 
-    await expect(runFlow("bad")).rejects.toThrow(/ELECTRON_RUN_AS_NODE/);
+    await expect(runFlow("ok", { env })).rejects.toThrow(error);
   });
 
-  it("refuses a reserved name in the run-time env parameter", async () => {
-    await flow("ok", "steps:\n  - echo: hi\n");
+  it("refuses a bad run-time env as the caller's input, not a file's fault", async () => {
+    // `argent e2e run <dir>` stops the batch on this code instead of failing every file.
+    await write(".argent/secrets.env", "KNOWN=value\n");
+    await flow("ok", noEnv);
 
-    await expect(runFlow("ok", { env: { NODE_CHANNEL_FD: "9" } })).rejects.toThrow(
-      /NODE_CHANNEL_FD/
-    );
-  });
-
-  it("refuses ARGENT_OUTPUT in every env channel", async () => {
-    await flow("file-env", "env: { ARGENT_OUTPUT: /tmp/x }\nsteps:\n  - echo: hi\n");
-    await expect(runFlow("file-env")).rejects.toThrow(/ARGENT_OUTPUT/);
-
-    await write("scripts/probe.mjs", "");
-    await flow(
-      "step-env",
-      "steps:\n  - script: { path: ../../scripts/probe.mjs, env: { ARGENT_OUTPUT: /tmp/y } }\n"
-    );
-    await expect(runFlow("step-env")).rejects.toThrow(/ARGENT_OUTPUT/);
-
-    await flow("ok", "steps:\n  - echo: hi\n");
-    const runTime = runFlow("ok", { env: { ARGENT_OUTPUT: "/tmp/z" } });
-    await expect(runTime).rejects.toThrow(/ARGENT_OUTPUT/);
-    // The CODE, not just the sentence. A run-time refusal is about the CALL,
-    // not about the file, and `argent flow run <dir>` keys on exactly this to
-    // stop the batch instead of failing each flow in turn — but the CLI's own
-    // case hand-builds the rejection it expects, so nothing joined that check
-    // to the server that emits it. This is that join, from the server's side.
-    expect(getFailureSignal(await runTime.catch((e: unknown) => e))?.error_code).toBe(
-      FAILURE_CODES.TOOL_INPUT_INVALID
-    );
-
-    await flowStartRecordingTool.execute({}, { name: "rec", project_root: root });
-    await expect(
-      flowAddScriptTool.execute(
-        {},
-        {
-          name: "rec",
-          project_root: root,
-          path: "../../scripts/probe.mjs",
-          env: { ARGENT_OUTPUT: "/tmp/w" },
-        }
-      )
-    ).rejects.toThrow(/ARGENT_OUTPUT/);
-  });
-
-  it("passes ARGENT_REASON to the script like any other name, in every env channel", async () => {
-    await write("scripts/reason.mjs", reporter("reason", ["ARGENT_REASON"]));
-
-    await flow(
-      "reason-file",
-      "env: { ARGENT_REASON: from-file }\nsteps:\n  - script: { path: ../../scripts/reason.mjs }\n"
-    );
-    expect((await runFlow("reason-file")).result.ok).toBe(true);
-    expect(seen("reason")).toEqual({ ARGENT_REASON: "from-file" });
-
-    await flow(
-      "reason-step",
-      "steps:\n  - script: { path: ../../scripts/reason.mjs, env: { ARGENT_REASON: from-step } }\n"
-    );
-    expect((await runFlow("reason-step")).result.ok).toBe(true);
-    expect(seen("reason")).toEqual({ ARGENT_REASON: "from-step" });
-
-    await flow("reason-run", "steps:\n  - script: { path: ../../scripts/reason.mjs }\n");
-    const runTime = await runFlow("reason-run", { env: { ARGENT_REASON: "from-run" } });
-    expect(runTime.result.ok).toBe(true);
-    expect(seen("reason")).toEqual({ ARGENT_REASON: "from-run" });
-
-    await flowStartRecordingTool.execute({}, { name: "reason-rec", project_root: root });
-    const added = (await flowAddScriptTool.execute(
-      {},
-      {
-        name: "reason-rec",
-        project_root: root,
-        path: "../../scripts/reason.mjs",
-        env: { ARGENT_REASON: "from-recording" },
-      }
-    )) as { status: string };
-    expect(added.status).toBe("pass");
-    expect(seen("reason")).toEqual({ ARGENT_REASON: "from-recording" });
+    for (const [env, error] of [
+      [{ ARGENT_OUTPUT: "/tmp/z" }, /ARGENT_OUTPUT/],
+      [{ AUTH: "{{secret:MISSING}}" }, /This run's env value AUTH.*Unknown secret "MISSING"/s],
+    ] as const) {
+      const refused = runFlow("ok", { env });
+      await expect(refused).rejects.toThrow(error);
+      expect(getFailureSignal(await refused.catch((e: unknown) => e))?.error_code).toBe(
+        FAILURE_CODES.TOOL_INPUT_INVALID
+      );
+    }
   });
 
   it("refuses a reserved name in a nested fragment's own env, mid-run", async () => {
     await write("scripts/probe.mjs", "");
-    await flow("outer-reserved", "steps:\n  - echo: before\n  - run: inner-reserved.yaml\n");
+    await flow("outer", "steps:\n  - echo: before\n  - run: inner.yaml\n");
     await flow(
-      "inner-reserved",
-      "env: { ARGENT_OUTPUT: /tmp/x }\n" +
-        "steps:\n" +
-        "  - script: { path: ../../scripts/probe.mjs }\n"
+      "inner",
+      "env: { ARGENT_OUTPUT: /tmp/x }\nsteps:\n  - script: { path: ../../scripts/probe.mjs }\n"
     );
 
-    const { result } = await runFlow("outer-reserved", {}, { booted: true });
+    const { result } = await runFlow("outer", {}, { booted: true });
 
     expect(result.ok).toBe(false);
     expect(result.steps[0].status).toBe("pass");
     expect(JSON.stringify(result.steps)).toContain("ARGENT_OUTPUT");
-
-    await write("scripts/reason.mjs", reporter("fragment-reason", ["ARGENT_REASON"]));
-    await flow("outer-reason", "steps:\n  - echo: before\n  - run: inner-reason.yaml\n");
-    await flow(
-      "inner-reason",
-      "env: { ARGENT_REASON: from-fragment }\n" +
-        "steps:\n" +
-        "  - script: { path: ../../scripts/reason.mjs }\n"
-    );
-
-    const reasonRun = (await runFlow("outer-reason", {}, { booted: true })).result;
-
-    expect(reasonRun.ok).toBe(true);
-    expect(seen("fragment-reason")).toEqual({ ARGENT_REASON: "from-fragment" });
   });
 
-  it("refuses a non-string value and an illegal name", async () => {
-    await flow("numeric", "env: { RETRIES: 3 }\nsteps:\n  - echo: hi\n");
-    await expect(runFlow("numeric")).rejects.toThrow(/an environment carries strings only/);
-
-    await flow("named", 'env: { "2FA": x }\nsteps:\n  - echo: hi\n');
-    await expect(runFlow("named")).rejects.toThrow(/not an environment variable name/);
-  });
-
-  it("calls a reserved name reserved, in every spelling npm gives it", async () => {
-    const spellings = [
-      "npm_config_node-options",
-      "npm_config_node_options",
-      "NPM_CONFIG_NODE_OPTIONS",
-    ];
-    for (const [at, name] of spellings.entries()) {
-      // Numbered rather than named after the spelling: a case-insensitive
-      // filesystem reads two of the three as one flow file.
-      await flow(`npmres${at}`, `env: { "${name}": x }\nsteps:\n  - echo: hi\n`);
-      const refused = runFlow(`npmres${at}`);
-      await expect(refused, name).rejects.toThrow(/steers the runner's own process/);
-      await expect(refused, name).rejects.not.toThrow(/not an environment variable name/);
+  it("passes ARGENT_REASON to the script like any other name, in every env channel", async () => {
+    for (const mark of ["file", "step", "fragment"]) {
+      await write(`scripts/${mark}.mjs`, reporter(mark, ["ARGENT_REASON"]));
     }
-    await flow("stillmalformed", 'env: { "2FA": x }\nsteps:\n  - echo: hi\n');
-    await expect(runFlow("stillmalformed")).rejects.toThrow(/not an environment variable name/);
-  });
-
-  it("refuses a {{output:...}} reference in the env maps resolved before any script runs", async () => {
-    await flow("out-file", 'env: { X: "{{output:user.id}}" }\nsteps:\n  - echo: hi\n');
-    await expect(runFlow("out-file")).rejects.toThrow(
-      "The e2e test's `env.X` uses unsupported template syntax: this map holds defaults for every " +
-        "script in the run, and Argent resolves it before the first script has written any " +
-        "output. A `script` step's own `env` can read output."
+    await flow(
+      "reason",
+      "env: { ARGENT_REASON: from-file }\n" +
+        "steps:\n" +
+        "  - script: { path: ../../scripts/file.mjs }\n" +
+        "  - script: { path: ../../scripts/step.mjs, env: { ARGENT_REASON: from-step } }\n" +
+        "  - run: fragment.yaml\n"
+    );
+    await flow(
+      "fragment",
+      "env: { ARGENT_REASON: from-fragment }\nsteps:\n  - script: { path: ../../scripts/fragment.mjs }\n"
     );
 
-    await flow("out-ok", "steps:\n  - echo: hi\n");
-    await expect(runFlow("out-ok", { env: { X: "{{output:user.id}}" } })).rejects.toThrow(
-      /This run's `env.X` uses unsupported template syntax/
+    expect((await runFlow("reason", {}, { booted: true })).result.ok).toBe(true);
+    expect(seen("file")).toEqual({ ARGENT_REASON: "from-file" });
+    expect(seen("step")).toEqual({ ARGENT_REASON: "from-step" });
+    expect(seen("fragment")).toEqual({ ARGENT_REASON: "from-fragment" });
+
+    const runTime = await runFlow(
+      "reason",
+      { env: { ARGENT_REASON: "from-run" } },
+      { booted: true }
     );
+    expect(runTime.result.ok).toBe(true);
+    expect(seen("file")).toEqual({ ARGENT_REASON: "from-run" });
+
+    await startRecording("reason-rec");
+    expect(
+      (await addScript("reason-rec", "file.mjs", { ARGENT_REASON: "from-recording" })).status
+    ).toBe("pass");
+    expect(seen("file")).toEqual({ ARGENT_REASON: "from-recording" });
   });
 
   it("resolves a {{output:...}} reference in a script step's own env, at replay and while recording", async () => {
     await write("scripts/seed.mjs", `output.user = { id: "u_42" };`);
     await write("scripts/probe.mjs", reporter("probe", ["X"]));
-    const probeStep = { kind: "script", path: "../../scripts/probe.mjs" };
+    const probe = 'script: { path: ../../scripts/probe.mjs, env: { X: "{{output:user.id}}" } }';
 
-    // Accepted at parse, and resolved directly before the step: with nothing
-    // written yet, the step errors and names the field and the missing path.
-    await flow(
-      "out-step-missing",
-      'steps:\n  - script: { path: ../../scripts/probe.mjs, env: { X: "{{output:user.id}}" } }\n'
-    );
+    // Resolved directly before the step: with nothing written yet, the step errors.
+    await flow("out-step-missing", `steps:\n  - ${probe}\n`);
     const missing = (await runFlow("out-step-missing")).result;
-    expect(missing.ok).toBe(false);
     expect(missing.steps[0]).toMatchObject({
-      kind: "script",
       status: "error",
       reason:
         "`script.env.X`: {{output:user.id}} did not resolve: `output` has no `user` (it has no keys)",
     });
     expect(readMark("probe")).toBeUndefined();
 
-    await flow(
-      "out-step",
-      "steps:\n" +
-        "  - script: { path: ../../scripts/seed.mjs }\n" +
-        '  - script: { path: ../../scripts/probe.mjs, env: { X: "{{output:user.id}}" } }\n'
-    );
-    const resolved = (await runFlow("out-step")).result;
-    expect(resolved.ok).toBe(true);
+    await flow("out-step", `steps:\n  - script: { path: ../../scripts/seed.mjs }\n  - ${probe}\n`);
+    expect((await runFlow("out-step")).result.ok).toBe(true);
     expect(seen("probe")).toEqual({ X: "u_42" });
     await fs.rm(markPath("probe"));
 
-    // flow-add-script resolves against the recording's own document, which
-    // starts empty — so the same reference is refused before the script runs…
-    await flowStartRecordingTool.execute({}, { name: "out-rec", project_root: root });
-    await expect(
-      flowAddScriptTool.execute(
-        {},
-        {
-          name: "out-rec",
-          project_root: root,
-          path: "../../scripts/probe.mjs",
-          env: { X: "{{output:user.id}}" },
-        }
-      )
-    ).rejects.toThrow(
+    // Recording resolves against the recording's own document, which starts
+    // empty, and the file keeps the reference.
+    await startRecording("out-rec");
+    await expect(addScript("out-rec", "probe.mjs", { X: "{{output:user.id}}" })).rejects.toThrow(
       "This call's `env` cannot be used, so the script did not run and nothing was recorded: " +
-        "`script.env.X`: {{output:user.id}} did not resolve: `output` has no `user` (it has no keys)"
+        "`script.env.X`: {{output:user.id}} did not resolve"
     );
     expect(readMark("probe")).toBeUndefined();
-
-    // …and reaches the script once a recorded script has written the path,
-    // while the file keeps the reference.
-    await flowAddScriptTool.execute(
-      {},
-      { name: "out-rec", project_root: root, path: "../../scripts/seed.mjs" }
+    await addScript("out-rec", "seed.mjs");
+    expect((await addScript("out-rec", "probe.mjs", { X: "{{output:user.id}}" })).status).toBe(
+      "pass"
     );
-    const added = await flowAddScriptTool.execute(
-      {},
-      {
-        name: "out-rec",
-        project_root: root,
-        path: "../../scripts/probe.mjs",
-        env: { X: "{{output:user.id}}" },
-      }
-    );
-    expect(added.status).toBe("pass");
     expect(seen("probe")).toEqual({ X: "u_42" });
-    const recorded = await fs.readFile(path.join(root, ".argent/e2e/out-rec.yaml"), "utf8");
-    expect(parseFlow(recorded).steps).toEqual([
+    expect(parseFlow(await fs.readFile(e2ePath("out-rec"), "utf8")).steps).toEqual([
       { kind: "script", path: "../../scripts/seed.mjs" },
-      { ...probeStep, env: { X: "{{output:user.id}}" } },
+      { kind: "script", path: "../../scripts/probe.mjs", env: { X: "{{output:user.id}}" } },
     ]);
   });
 
-  it("refuses __proto__, which a merge would drop rather than carry", async () => {
-    await flow("proto", "env: { __proto__: x }\nsteps:\n  - echo: hi\n");
-
-    await expect(runFlow("proto")).rejects.toThrow(/__proto__/);
+  it("opens every flow-add-script env refusal with the two words the decision rule reads", async () => {
+    await write("scripts/noop.mjs", "output.ok = true;");
+    await startRecording("wording");
+    for (const [env, fault] of [
+      [{ NODE_OPTIONS: "--inspect" }, "holds NODE_OPTIONS"],
+      [{ ARGENT_OUTPUT: "/tmp/w" }, "holds ARGENT_OUTPUT"],
+      [{ "not a name": "x" }, "is not an environment variable name"],
+      [{ A: "{{output:x}}" }, "{{output:x}} did not resolve"],
+      [JSON.parse('{"__proto__":"x","A":"y"}') as Record<string, string>, "holds __proto__"],
+    ] as const) {
+      const refused = await addScript("wording", "noop.mjs", env).then(
+        () => "",
+        (err: unknown) => (err instanceof Error ? err.message : String(err))
+      );
+      expect(refused, JSON.stringify(env)).toMatch(/^This call's `env/);
+      expect(refused).toContain(fault);
+      expect(refused).not.toContain("was NOT run and nothing was recorded");
+    }
   });
 });
 
 describe("serialization", () => {
+  /** Records a `gesture-tap` step through flow-add-step. */
+  function addTap(name: string) {
+    return createFlowAddStepTool(mockRegistry({ booted: true }).registry).execute({}, {
+      name,
+      project_root: root,
+      command: "gesture-tap",
+      args: JSON.stringify({ udid: DEVICE, x: 0.5, y: 0.5 }),
+    } as never);
+  }
+
   it("round-trips a flow whose env holds an empty map and a multi-line value", () => {
     const parsed = parseFlow(
       "env:\n" +
@@ -580,18 +505,11 @@ describe("serialization", () => {
     const text = serializeFlow(parsed);
     expect(text).toContain("env: {}");
     expect(parseFlow(text)).toEqual(parsed);
-
     expect(serializeFlow(parseFlow("env:\nsteps:\n  - echo: hi\n"))).toBe(text);
   });
 
-  // A minimized real failure: the emitter FOLDS a long double-quoted scalar,
-  // and a fold placed between an escaped space and an escaped newline eats the
-  // space — `…aaa  a \n…` came back `…aaa  a\n…`, one character shorter than
-  // the author wrote and with nothing to say so. Rare (about 437 in 40,000
-  // random values built from runs of `a`, spaces and newlines) and silent,
-  // which is the combination `serializeFlow`'s `lineWidth: 0` exists for. This
-  // value is a local minimum: no character of it can be dropped and still fail.
   it("keeps a folded value's spaces through the round trip", () => {
+    // A minimized value whose fold, between an escaped space and newline, once ate the space.
     const value =
       " \n\na\na\naaaaaaaaaaaa\na  aaaa\naaaaaaaaaaaaaaaaaaaaaaaa\na\na\n \naaa  a \n  a " +
       "\n \n\naaaaaaaaaa  a\naaaaaaaaaaaaaaaaaaaaaaaa\naaaaaaaaaaa \n\n";
@@ -610,23 +528,21 @@ describe("serialization", () => {
     expect(atStep.steps[0]).toEqual({ kind: "script", path: "seed.mjs", env: { K: value } });
   });
 
-  it("keeps `env` through a real recorder append", async () => {
-    await flowStartRecordingTool.execute({}, { name: "append", project_root: root });
-    const filePath = path.join(root, ".argent/e2e/append.yaml");
-    await fs.writeFile(
-      filePath,
+  it("keeps `env` through an echo and a flow-add-step append", async () => {
+    await startRecording(
+      "append",
       "env: { API_URL: https://example.com }\n" +
         "steps:\n" +
-        "  - script: { path: seed.mjs, env: { USER_TYPE: premium } }\n",
-      "utf8"
+        "  - script: { path: seed.mjs, env: { USER_TYPE: premium } }\n"
     );
 
     await flowInsertEchoTool.execute(
       {},
       { name: "append", project_root: root, message: "appended" }
     );
+    await addTap("append");
 
-    const after = parseFlow(await fs.readFile(filePath, "utf8"));
+    const after = parseFlow(await fs.readFile(e2ePath("append"), "utf8"));
     expect(after.env).toEqual({ API_URL: "https://example.com" });
     expect(after.steps[0]).toEqual({
       kind: "script",
@@ -634,209 +550,76 @@ describe("serialization", () => {
       env: { USER_TYPE: "premium" },
     });
     expect(after.steps[1]).toEqual({ kind: "echo", message: "appended" });
+    expect(after.steps).toHaveLength(3);
   });
 
-  it("says an echo went unrecorded when the FILE's env is what refused it", async () => {
-    await flowStartRecordingTool.execute({}, { name: "echorefuse", project_root: root });
-    await fs.writeFile(
-      path.join(root, ".argent/e2e/echorefuse.yaml"),
+  const FILE_FAULTS = [
+    ["reserved", 'env:\n  NODE_OPTIONS: "--inspect"\nsteps: []\n', /NODE_OPTIONS/],
+    ["number", "env:\n  RETRIES: 5\nsteps: []\n", /RETRIES/],
+    [
+      "output-ref",
       'env:\n  TOKEN: "{{output:1.token}}"\nsteps: []\n',
-      "utf8"
-    );
+      /unsupported template syntax/,
+    ],
+  ] as const;
 
-    const rejection = flowInsertEchoTool.execute(
-      {},
-      { name: "echorefuse", project_root: root, message: "note" }
-    );
+  it("says the call already ran when the FILE's env refuses an echo or a step append", async () => {
+    for (const [name, header, fault] of FILE_FAULTS) {
+      await startRecording(name, header);
 
-    await expect(rejection).rejects.toThrow(/The echo was not recorded/);
-    await expect(rejection).rejects.toThrow(/already in the file, not in this call/);
-    await expect(rejection).rejects.toThrow(/unsupported template syntax/);
-  });
+      const echo = flowInsertEchoTool.execute({}, { name, project_root: root, message: "note" });
+      await expect(echo).rejects.toThrow(
+        /The echo was not recorded\..*already in the file, not in this call/s
+      );
+      await expect(echo).rejects.toThrow(fault);
 
-  it("says the call already ran when a PARSE-stage env fault refuses the append", async () => {
-    for (const [name, header] of [
-      ["parse-reserved", 'env:\n  NODE_OPTIONS: "--inspect"\nsteps: []\n'],
-      ["parse-number", "env:\n  RETRIES: 5\nsteps: []\n"],
-    ] as const) {
-      await flowStartRecordingTool.execute({}, { name, project_root: root });
-      await write(`.argent/e2e/${name}.yaml`, header);
-
-      await expect(
-        flowInsertEchoTool.execute({}, { name, project_root: root, message: "note" })
-      ).rejects.toThrow(/The echo was not recorded\..*already in the file, not in this call/s);
-
-      const { registry } = mockRegistry({ booted: true });
-      await expect(
-        createFlowAddStepTool(registry).execute({}, {
-          name,
-          project_root: root,
-          command: "gesture-tap",
-          args: JSON.stringify({ udid: DEVICE, x: 0.5, y: 0.5 }),
-        } as never)
-      ).rejects.toThrow(/call ran, but something already in the e2e test file failed validation/);
+      await expect(addTap(name)).rejects.toThrow(
+        /call ran, but something already in the e2e test file failed validation/
+      );
     }
   });
 
-  it("opens every env refusal with the two words the decision rule reads", async () => {
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flowStartRecordingTool.execute({}, { name: "wording", project_root: root });
-    for (const env of [
-      { NODE_OPTIONS: "--inspect" },
-      { "not a name": "x" },
-      { A: "{{output:x}}" },
-      JSON.parse('{"__proto__":"x","A":"y"}') as Record<string, string>,
-    ]) {
-      const refused = await flowAddScriptTool
-        .execute({}, {
-          name: "wording",
-          project_root: root,
-          path: "../../scripts/noop.mjs",
-          env,
-        } as never)
-        .then(
-          () => "",
-          (err: unknown) => (err instanceof Error ? err.message : String(err))
-        );
-      expect(refused, JSON.stringify(env)).toMatch(/^This call's `env/);
-      expect(refused).not.toContain("was NOT run and nothing was recorded");
-    }
-  }, 30_000);
-
-  it("says the script already ran when a PARSE-stage env fault refuses its append", async () => {
+  it("says the script already ran when the FILE's env refuses its append", async () => {
     await write(
       "scripts/slow.mjs",
       "await new Promise((r) => setTimeout(r, 1200));\noutput.ok = true;"
     );
-    for (const [name, header] of [
-      ["script-parse-reserved", 'env:\n  NODE_OPTIONS: "--inspect"\nsteps: []\n'],
-      ["script-parse-number", "env:\n  RETRIES: 5\nsteps: []\n"],
-      ["script-output-ref", 'env:\n  TOKEN: "{{output:1.token}}"\nsteps: []\n'],
-    ] as const) {
-      await flowStartRecordingTool.execute({}, { name, project_root: root });
+    for (const [name, header] of FILE_FAULTS) {
+      await startRecording(name);
 
-      const rejection = flowAddScriptTool.execute({}, {
-        name,
-        project_root: root,
-        path: "../../scripts/slow.mjs",
-      } as never);
+      const rejection = addScript(name, "slow.mjs");
       await new Promise((resolve) => setTimeout(resolve, 400));
-      await write(`.argent/e2e/${name}.yaml`, header);
+      await fs.writeFile(e2ePath(name), header, "utf8");
 
       await expect(rejection).rejects.toThrow(/passed, but the step was not recorded/);
       await expect(rejection).rejects.toThrow(/already in the file, not in this script/);
       await expect(rejection).rejects.not.toThrow(/Check the script's changes before you retry/);
     }
-  }, 30_000);
-
-  it("truncates a checked-in `env:` with the rest of the file", async () => {
-    await write(
-      ".argent/e2e/header.yaml",
-      'env:\n  API_URL: https://example.com\n  BUILD: "42"\n' + "steps:\n  - echo: hello\n"
-    );
-
-    const started = (await flowStartRecordingTool.execute(
-      {},
-      { name: "header", project_root: root }
-    )) as { message: string; flowFile: string };
-
-    expect(started.flowFile).toBe("steps: []\n");
-    expect(started.message).not.toContain("API_URL");
-  });
-
-  it("keeps `env` through a flow-add-step append", async () => {
-    await flowStartRecordingTool.execute({}, { name: "addstep", project_root: root });
-    const filePath = path.join(root, ".argent/e2e/addstep.yaml");
-    await fs.writeFile(
-      filePath,
-      "env: { API_URL: https://example.com }\n" +
-        "steps:\n" +
-        "  - script: { path: seed.mjs, env: { USER_TYPE: premium } }\n",
-      "utf8"
-    );
-
-    const { registry } = mockRegistry({ booted: true });
-    await createFlowAddStepTool(registry).execute({}, {
-      name: "addstep",
-      project_root: root,
-      command: "gesture-tap",
-      args: JSON.stringify({ udid: DEVICE, x: 0.5, y: 0.5 }),
-    } as never);
-
-    const after = parseFlow(await fs.readFile(filePath, "utf8"));
-    expect(after.env).toEqual({ API_URL: "https://example.com" });
-    expect(after.steps[0]).toEqual({
-      kind: "script",
-      path: "seed.mjs",
-      env: { USER_TYPE: "premium" },
-    });
-    expect(after.steps).toHaveLength(2);
-  });
-
-  it("keeps `env` through a serialize round trip", async () => {
-    await flow(
-      "kept",
-      "env: { API_URL: https://example.com }\n" +
-        "steps:\n" +
-        "  - script: { path: seed.mjs, env: { USER_TYPE: premium } }\n"
-    );
-    const parsed = parseFlow(await fs.readFile(path.join(root, ".argent/e2e/kept.yaml"), "utf8"));
-    parsed.steps.push({ kind: "echo", message: "appended" });
-
-    const round = parseFlow(serializeFlow(parsed));
-
-    expect(round.env).toEqual({ API_URL: "https://example.com" });
-    expect(round.steps[0]).toEqual({
-      kind: "script",
-      path: "seed.mjs",
-      env: { USER_TYPE: "premium" },
-    });
-  });
-});
-
-describe("a tool env parameter that carries __proto__", () => {
-  const withProto = (): Record<string, string> =>
-    JSON.parse('{"__proto__":"x","A":"y"}') as Record<string, string>;
-
-  it("refuses it on the run-time parameter", async () => {
-    await flow("proto", "steps:\n  - echo: hi\n");
-    const { registry } = mockRegistry();
-
-    await expect(
-      createRunFlowTool(registry).execute({}, {
-        project_root: root,
-        name: "proto",
-        env: withProto(),
-      } as never)
-    ).rejects.toThrow(/`env` holds __proto__/);
-  });
-
-  it("refuses it on flow-add-script", async () => {
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flowStartRecordingTool.execute({}, { name: "proto-rec", project_root: root });
-
-    await expect(
-      flowAddScriptTool.execute({}, {
-        name: "proto-rec",
-        project_root: root,
-        path: "../../scripts/noop.mjs",
-        env: withProto(),
-      } as never)
-    ).rejects.toThrow(/`env` holds __proto__/);
   });
 });
 
 describe("the host allowlist extension", () => {
-  it("adds a configured name and drops an ARGENT_ one, naming it in a note", async () => {
+  const allow = (...names: unknown[]) => JSON.stringify({ scripts: { env: { allow: names } } });
+
+  /** Runs one script step under a project config of `config`, and returns its note. */
+  async function allowNote(config: string): Promise<string> {
+    await write(".argent/config.json", config);
+    await write("scripts/noop.mjs", "output.ok = true;");
+    await scriptFlow("allow", "noop.mjs");
+    const { result } = await runFlow("allow");
+    expect(result.ok).toBe(true);
+    return result.steps[0].reason ?? "";
+  }
+
+  it("adds a configured name and drops an ARGENT_ one in any case, naming it in a note", async () => {
     process.env.PROJECT_DB_URL = "postgres://fixture";
     process.env.ARGENT_AUTH_TOKEN = "host-token";
+    process.env.Argent_Session = "host-session";
     try {
-      await write(
-        ".argent/config.json",
-        JSON.stringify({ scripts: { env: { allow: ["PROJECT_DB_URL", "ARGENT_AUTH_TOKEN"] } } })
-      );
-      await write("scripts/probe.mjs", reporter("allow", ["PROJECT_DB_URL", "ARGENT_AUTH_TOKEN"]));
-      await flow("allow", "steps:\n  - script: { path: ../../scripts/probe.mjs }\n");
+      const names = ["PROJECT_DB_URL", "ARGENT_AUTH_TOKEN", "Argent_Session"];
+      await write(".argent/config.json", allow(...names));
+      await write("scripts/probe.mjs", reporter("allow", names));
+      await scriptFlow("allow", "probe.mjs");
 
       const { result } = await runFlow("allow");
 
@@ -844,33 +627,15 @@ describe("the host allowlist extension", () => {
       expect(seen("allow")).toEqual({
         PROJECT_DB_URL: "postgres://fixture",
         ARGENT_AUTH_TOKEN: null,
+        Argent_Session: null,
       });
       expect(result.steps[0].reason).toContain("ARGENT_AUTH_TOKEN");
+      expect(result.steps[0].reason).toContain("Argent_Session");
       expect(result.steps[0].reason).toContain("scripts.env.allow");
     } finally {
       delete process.env.PROJECT_DB_URL;
       delete process.env.ARGENT_AUTH_TOKEN;
-    }
-  });
-
-  it("drops an ARGENT_ name written in another case, and says so", async () => {
-    process.env.Argent_Auth_Token = "host-token";
-    try {
-      await write(
-        ".argent/config.json",
-        JSON.stringify({ scripts: { env: { allow: ["Argent_Auth_Token"] } } })
-      );
-      await write("scripts/probe.mjs", reporter("mixedcase", ["Argent_Auth_Token"]));
-      await flow("mixedcase", "steps:\n  - script: { path: ../../scripts/probe.mjs }\n");
-
-      const { result } = await runFlow("mixedcase");
-
-      expect(result.ok).toBe(true);
-      expect(seen("mixedcase")).toEqual({ Argent_Auth_Token: null });
-      expect(result.steps[0].reason).toContain("Argent_Auth_Token");
-      expect(result.steps[0].reason).toContain("scripts.env.allow");
-    } finally {
-      delete process.env.Argent_Auth_Token;
+      delete process.env.Argent_Session;
     }
   });
 
@@ -878,18 +643,15 @@ describe("the host allowlist extension", () => {
     process.env.FROM_GLOBAL_CFG = "global-value";
     process.env.FROM_PROJECT_CFG = "project-value";
     try {
-      await write(
-        ".argent/config.json",
-        JSON.stringify({ scripts: { env: { allow: ["FROM_PROJECT_CFG"] } } })
-      );
+      await write(".argent/config.json", allow("FROM_PROJECT_CFG"));
       await fs.mkdir(path.join(os.homedir(), ".argent"), { recursive: true });
       await fs.writeFile(
         path.join(os.homedir(), ".argent", "config.json"),
-        JSON.stringify({ scripts: { env: { allow: ["FROM_GLOBAL_CFG"] } } }),
+        allow("FROM_GLOBAL_CFG"),
         "utf8"
       );
       await write("scripts/probe.mjs", reporter("scopes", ["FROM_GLOBAL_CFG", "FROM_PROJECT_CFG"]));
-      await flow("scopes", "steps:\n  - script: { path: ../../scripts/probe.mjs }\n");
+      await scriptFlow("scopes", "probe.mjs");
 
       const { result } = await runFlow("scopes");
 
@@ -904,153 +666,72 @@ describe("the host allowlist extension", () => {
     }
   });
 
-  it("says which file lists a dropped name when two are configured", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({ scripts: { env: { allow: ["PROJECT_OK"] } } })
-    );
-    await fs.mkdir(path.join(os.homedir(), ".argent"), { recursive: true });
+  it("says which file lists a dropped name only when two are configured", async () => {
+    const one = await allowNote(allow("NODE_OPTIONS"));
+    expect(one).toContain("NODE_OPTIONS");
+    expect(one).not.toContain("Listed in");
+
     const globalFile = path.join(os.homedir(), ".argent", "config.json");
-    await fs.writeFile(
-      globalFile,
-      JSON.stringify({ scripts: { env: { allow: ["NODE_OPTIONS"] } } }),
-      "utf8"
+    await fs.mkdir(path.dirname(globalFile), { recursive: true });
+    await fs.writeFile(globalFile, allow("NODE_OPTIONS"), "utf8");
+    expect(await allowNote(allow("PROJECT_OK"))).toContain(
+      `Listed in ${globalFile.replace(/\\/g, "\\\\")}.`
     );
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("whichfile", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
-
-    const { result } = await runFlow("whichfile");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(reason).toContain("NODE_OPTIONS");
-    expect(reason).toContain(`Listed in ${globalFile.replace(/\\/g, "\\\\")}.`);
-  });
-
-  it("stays silent about which file when only one is configured", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({ scripts: { env: { allow: ["NODE_OPTIONS"] } } })
-    );
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("onefile", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
-
-    const { result } = await runFlow("onefile");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(reason).toContain("NODE_OPTIONS");
-    expect(reason).not.toContain("Listed in");
   });
 
   it("says a config file that does not parse lost everything in it", async () => {
-    await write(".argent/config.json", '{ "scripts": { "env": { "allow": ["DB_URL"] } } ,,, }');
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("badjson", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
-
-    const { result } = await runFlow("badjson");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(result.ok).toBe(true);
-    expect(reason).toContain("is not valid JSON");
-    expect(reason).toContain("read nothing from it at all");
+    expect(await allowNote('{ "scripts": { "env": { "allow": ["DB_URL"] } } ,,, }')).toMatch(
+      /is not valid JSON[\s\S]*read nothing from it at all/
+    );
   });
 
   it("answers a reserved entry and an ARGENT_ one differently", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({
-        scripts: { env: { allow: ["NODE_OPTIONS", "npm_config_userconfig", "ARGENT_PORT"] } },
-      })
-    );
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("buckets", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
+    const note = await allowNote(allow("NODE_OPTIONS", "npm_config_userconfig", "ARGENT_PORT"));
 
-    const { result } = await runFlow("buckets");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(result.ok).toBe(true);
-    expect(reason).toContain(
+    expect(note).toContain(
       "names ARGENT_PORT, which argent keeps out of the copy it takes from its own environment"
     );
-    expect(reason).toContain(
+    expect(note).toContain(
       "names NODE_OPTIONS, npm_config_userconfig, which steer the runner's own process"
     );
-    expect(reason).toMatch(/ARGENT_PORT[\s\S]*under a name of your own/);
-    expect(reason).not.toMatch(/steer the runner's own process[\s\S]*under a name of your own/);
+    expect(note).toMatch(/ARGENT_PORT[\s\S]*under a name of your own/);
+    expect(note).not.toMatch(/steer the runner's own process[\s\S]*under a name of your own/);
+  });
+
+  it("names a reserved npm spelling reserved, not malformed", async () => {
+    const note = await allowNote(allow("npm_config_node-options"));
+
+    expect(note).toContain("npm_config_node-options");
+    expect(note).toContain("steers the runner's own process rather than reaching the script");
+    expect(note).not.toContain("is not an environment variable name");
   });
 
   it("says so when scripts.env.allow is not a list", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({ scripts: { env: { allow: "DATABASE_URL" } } })
-    );
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("notalist", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
+    const note = await allowNote(JSON.stringify({ scripts: { env: { allow: "DATABASE_URL" } } }));
 
-    const { result } = await runFlow("notalist");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[0].reason).toContain("is not a list");
-    expect(result.steps[0].reason).toContain('e.g. ["DATABASE_URL"]');
+    expect(note).toContain("is not a list");
+    expect(note).toContain('e.g. ["DATABASE_URL"]');
   });
 
   it("names a malformed entry and a __proto__ one apart", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({ scripts: { env: { allow: ["9LIVES", "__proto__"] } } })
-    );
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("badnames", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
+    const note = await allowNote(allow("9LIVES", "__proto__"));
 
-    const { result } = await runFlow("badnames");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(result.ok).toBe(true);
-    expect(reason).toContain('"9LIVES"');
-    expect(reason).toContain("is not an environment variable name");
-    expect(reason).toContain("__proto__, which argent cannot carry");
+    expect(note).toContain('"9LIVES"');
+    expect(note).toContain("is not an environment variable name");
+    expect(note).toContain("__proto__, which argent cannot carry");
   });
 
   it("names an allowlist entry that is not a name at all", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({
-        scripts: { env: { allow: ["DB_URL", ["AWS_PROFILE", "AWS_REGION"], 42, ""] } },
-      })
-    );
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("badentries", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
+    const note = await allowNote(allow("DB_URL", ["AWS_PROFILE", "AWS_REGION"], 42, ""));
 
-    const { result } = await runFlow("badentries");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(result.ok).toBe(true);
-    expect(reason).toContain("scripts.env.allow");
-    expect(reason).toContain('["AWS_PROFILE","AWS_REGION"]');
-    expect(reason).toContain("42");
-    expect(reason).toContain("Those entries were ignored");
+    expect(note).toContain("scripts.env.allow");
+    expect(note).toContain('["AWS_PROFILE","AWS_REGION"]');
+    expect(note).toContain("42");
+    expect(note).toContain("Those entries were ignored");
   });
 
-  it("names a reserved allowlist entry reserved, not malformed", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({ scripts: { env: { allow: ["npm_config_node-options"] } } })
-    );
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow("npmallow", "steps:\n  - script: { path: ../../scripts/noop.mjs }\n");
-
-    const { result } = await runFlow("npmallow");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(result.ok).toBe(true);
-    expect(reason).toContain("npm_config_node-options");
-    expect(reason).toContain("steers the runner's own process rather than reaching the script");
-    expect(reason).not.toContain("is not an environment variable name");
-  });
   it("says a note once per run, not once per step", async () => {
-    await write(
-      ".argent/config.json",
-      JSON.stringify({ scripts: { env: { allow: ["ARGENT_PORT"] } } })
-    );
+    await write(".argent/config.json", allow("ARGENT_PORT"));
     await write("scripts/noop.mjs", "output.ok = true;");
     await flow(
       "once",
@@ -1064,89 +745,55 @@ describe("the host allowlist extension", () => {
     expect(result.ok).toBe(true);
     expect(result.steps[0].reason).toContain("ARGENT_PORT");
     expect(result.steps[1].reason).toBeUndefined();
-
-    const second = (await runFlow("once")).result;
-    expect(second.steps[0].reason).toContain("ARGENT_PORT");
+    expect(await firstReason("once")).toContain("ARGENT_PORT");
   });
 });
 
 describe("a bash step's environment", () => {
-  it("observes the same precedence through printenv", async (ctx) => {
+  it("sees every layer, a resolved secret and a value with a space through printenv", async (ctx) => {
     skipWithoutBash(ctx);
+    await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\n");
     await write(
       "scripts/probe.sh",
-      `printenv PROBE_FLOW > "${shellMarkPath("flow")}"\n` +
-        `printenv PROBE_RUN > "${shellMarkPath("run")}"\n` +
-        `printenv PROBE_STEP > "${shellMarkPath("step")}"\n`
+      printenv("PROBE_FLOW", "flow") +
+        printenv("PROBE_RUN", "run") +
+        printenv("PROBE_STEP", "step") +
+        printenv("API_KEY", "secret")
     );
+    await write(
+      "scripts/frag.sh",
+      printenv("PROBE_FRAGMENT", "fragment") + printenv("PROBE_FLOW", "inherited")
+    );
+    await write("scripts/after.sh", printenv("PROBE_FRAGMENT", "after"));
     await flow(
       "sh",
       "env:\n" +
         "  PROBE_FLOW: from-flow\n" +
         "  PROBE_RUN: from-flow\n" +
         "  PROBE_STEP: from-flow\n" +
+        "  PROBE_FRAGMENT: from-flow\n" +
         "steps:\n" +
         "  - script:\n" +
         "      path: ../../scripts/probe.sh\n" +
-        "      env: { PROBE_STEP: from-step }\n"
-    );
-
-    const { result } = await runFlow("sh", { env: { PROBE_RUN: "from-run" } });
-
-    expect(result.ok).toBe(true);
-    expect(readMark("flow")).toBe("from-flow\n");
-    expect(readMark("run")).toBe("from-run\n");
-    expect(readMark("step")).toBe("from-step\n");
-  });
-
-  it("observes a fragment's layer through printenv too", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write(
-      "scripts/frag.sh",
-      `printenv PROBE_FRAGMENT > "${shellMarkPath("sh-fragment")}"\n` +
-        `printenv PROBE_FLOW > "${shellMarkPath("sh-inherited")}"\n`
-    );
-    await write("scripts/after.sh", `printenv PROBE_FRAGMENT > "${shellMarkPath("sh-after")}"\n`);
-    await flow(
-      "sh-parent",
-      "env:\n" +
-        "  PROBE_FLOW: from-flow\n" +
-        "  PROBE_FRAGMENT: from-flow\n" +
-        "steps:\n" +
+        '      env: { PROBE_STEP: from-step, API_KEY: "{{secret:API_KEY}}" }\n' +
         "  - run: sh-fragment.yaml\n" +
         "  - script: { path: ../../scripts/after.sh }\n"
     );
     await flow(
       "sh-fragment",
-      "env: { PROBE_FRAGMENT: from-fragment }\n" +
-        "steps:\n" +
-        "  - script: { path: ../../scripts/frag.sh }\n"
+      "env: { PROBE_FRAGMENT: from-fragment }\nsteps:\n  - script: { path: ../../scripts/frag.sh }\n"
     );
 
-    const { result } = await runFlow("sh-parent", {}, { booted: true });
+    const { result } = await runFlow("sh", { env: { PROBE_RUN: "Bearer abc" } }, { booted: true });
 
     expect(result.ok).toBe(true);
-    expect(readMark("sh-fragment")).toBe("from-fragment\n");
-    expect(readMark("sh-inherited")).toBe("from-flow\n");
-    expect(readMark("sh-after")).toBe("from-flow\n");
-  });
-
-  it("carries a run-time value holding a space, whole, to both languages", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write("scripts/space.mjs", reporter("space-mjs", ["AUTH"]));
-    await write("scripts/space.sh", `printenv AUTH > "${shellMarkPath("space-sh")}"\n`);
-    await flow(
-      "space",
-      "steps:\n" +
-        "  - script: { path: ../../scripts/space.mjs }\n" +
-        "  - script: { path: ../../scripts/space.sh }\n"
-    );
-
-    const { result } = await runFlow("space", { env: { AUTH: "Bearer abc" } });
-
-    expect(result.ok).toBe(true);
-    expect(seen("space-mjs")).toEqual({ AUTH: "Bearer abc" });
-    expect(readMark("space-sh")).toBe("Bearer abc\n");
+    expect(readMark("flow")).toBe("from-flow\n");
+    expect(readMark("run")).toBe("Bearer abc\n");
+    expect(readMark("step")).toBe("from-step\n");
+    expect(readMark("secret")).toBe("sk-live-9d3f0a1b\n");
+    expect(readMark("fragment")).toBe("from-fragment\n");
+    expect(readMark("inherited")).toBe("from-flow\n");
+    expect(readMark("after")).toBe("from-flow\n");
   });
 });
 
@@ -1155,36 +802,16 @@ describe("secret placeholders in an env value", () => {
     await write(".argent/secrets.env", `${name}=${value}\n`);
   }
 
-  it("resolves a project secret while the tool server's cwd points elsewhere", async () => {
+  it("resolves a step's and the run's secret against the project, not the server's cwd", async () => {
     expect(path.resolve(process.cwd()).startsWith(root)).toBe(false);
-    await writeProjectSecret("API_KEY", "sk-live-9d3f0a1b");
-    await write("scripts/probe.mjs", reporter("secret", ["API_KEY"]));
-    await flow(
-      "secret",
-      "steps:\n" +
-        '  - script: { path: ../../scripts/probe.mjs, env: { API_KEY: "{{secret:API_KEY}}" } }\n'
-    );
+    await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\nRUN_TOKEN=sk-run-4b21\n");
+    await write("scripts/probe.mjs", reporter("secret", ["API_KEY", "AUTH"]));
+    await scriptFlow("secret", "probe.mjs", '{ API_KEY: "{{secret:API_KEY}}" }');
 
-    const { result } = await runFlow("secret");
+    const { result } = await runFlow("secret", { env: { AUTH: "{{secret:RUN_TOKEN}}" } });
 
     expect(result.ok).toBe(true);
-    expect(seen("secret")).toEqual({ API_KEY: "sk-live-9d3f0a1b" });
-  });
-
-  it("reaches a .sh as $NAME", async (ctx) => {
-    skipWithoutBash(ctx);
-    await writeProjectSecret("API_KEY", "sk-live-9d3f0a1b");
-    await write("scripts/probe.sh", `printenv API_KEY > "${shellMarkPath("sh-secret")}"\n`);
-    await flow(
-      "sh-secret",
-      "steps:\n" +
-        '  - script: { path: ../../scripts/probe.sh, env: { API_KEY: "{{secret:API_KEY}}" } }\n'
-    );
-
-    const { result } = await runFlow("sh-secret");
-
-    expect(result.ok).toBe(true);
-    expect(readMark("sh-secret")).toBe("sk-live-9d3f0a1b\n");
+    expect(seen("secret")).toEqual({ API_KEY: "sk-live-9d3f0a1b", AUTH: "sk-run-4b21" });
   });
 
   it("replaces the resolved value in the reason and the stack a .mjs throws", async () => {
@@ -1213,11 +840,7 @@ describe("secret placeholders in an env value", () => {
     skipWithoutBash(ctx);
     await writeProjectSecret("API_KEY", "sk-live-9d3f0a1b");
     await write("scripts/fail.sh", `printf 'the call with %s failed\\n' "$API_KEY" >&2\nexit 1\n`);
-    await flow(
-      "sh-throws",
-      "steps:\n" +
-        '  - script: { path: ../../scripts/fail.sh, env: { API_KEY: "{{secret:API_KEY}}" } }\n'
-    );
+    await scriptFlow("sh-throws", "fail.sh", '{ API_KEY: "{{secret:API_KEY}}" }');
 
     const { result } = await runFlow("sh-throws");
 
@@ -1233,23 +856,15 @@ describe("secret placeholders in an env value", () => {
   it("redacts a one-character secret like any other — there is no floor", async () => {
     await writeProjectSecret("PIN", "7");
     await write("scripts/fail.mjs", `throw new Error("pin was " + process.env.PIN);`);
-    await flow(
-      "tiny",
-      'steps:\n  - script: { path: ../../scripts/fail.mjs, env: { PIN: "{{secret:PIN}}" } }\n'
-    );
+    await scriptFlow("tiny", "fail.mjs", '{ PIN: "{{secret:PIN}}" }');
 
-    const { result } = await runFlow("tiny");
-
-    expect(result.steps[0].reason).toContain("pin was {{secret:PIN}}");
+    expect(await firstReason("tiny")).toContain("pin was {{secret:PIN}}");
   });
 
-  it("errors the step on an unknown name, listing the names that resolve", async () => {
+  it("errors the step on an unknown name in a flow's env, listing the names that resolve", async () => {
     await writeProjectSecret("KNOWN", "value");
     await write("scripts/probe.mjs", "");
-    await flow(
-      "unknown",
-      'steps:\n  - script: { path: ../../scripts/probe.mjs, env: { X: "{{secret:MISSING}}" } }\n'
-    );
+    await scriptFlow("unknown", "probe.mjs", '{ X: "{{secret:MISSING}}" }');
 
     const { result } = await runFlow("unknown");
 
@@ -1259,68 +874,10 @@ describe("secret placeholders in an env value", () => {
     expect(result.steps[0].reason).toContain("KNOWN");
   });
 
-  it("refuses an unknown name in the RUN's own env as caller input", async () => {
-    // A flow file's `env:` is that file's own text, so an unknown name there is
-    // one flow's fault and stays a per-step error. The run's map is one
-    // argument every flow in a directory takes, so the same name there is ONE
-    // fault: left to the step it repeated a ~900-character refusal once per
-    // file and ended `0 passed, N failed`, naming N files for one typo.
-    //
-    // The error CODE is the fix, not the wording: the CLI stops a directory run
-    // on `TOOL_INPUT_INVALID` and on nothing else, so a more granular code here
-    // would silently put the batch back to blaming every file.
-    await writeProjectSecret("KNOWN", "value");
-    await write("scripts/probe.mjs", "");
-    await flow("runsecret", "steps:\n  - script: { path: ../../scripts/probe.mjs }\n");
-
-    const refused = runFlow("runsecret", { env: { AUTH: "{{secret:MISSING}}" } });
-    await expect(refused).rejects.toThrow(/This run's env value AUTH/);
-    await expect(refused).rejects.toThrow(/Unknown secret "MISSING"/);
-    expect(getFailureSignal(await refused.catch((err: unknown) => err))?.error_code).toBe(
-      FAILURE_CODES.TOOL_INPUT_INVALID
-    );
-
-    await flow(
-      "filesecret",
-      'env: { AUTH: "{{secret:MISSING}}" }\nsteps:\n  - script: { path: ../../scripts/probe.mjs }\n'
-    );
-    const { result } = await runFlow("filesecret");
-    expect(result.steps[0].status).toBe("error");
-    expect(result.steps[0].reason).toContain('Unknown secret "MISSING"');
-  });
-
-  it("resolves a RUN-level secret against the run's project, not the server's cwd", async () => {
-    expect(path.resolve(process.cwd()).startsWith(root)).toBe(false);
-    await writeProjectSecret("RUN_TOKEN", "sk-run-4b21");
-    await write("scripts/probe.mjs", reporter("runanchor", ["AUTH"]));
-    await flow("runanchor", "steps:\n  - script: { path: ../../scripts/probe.mjs }\n");
-
-    const { result } = await runFlow("runanchor", { env: { AUTH: "{{secret:RUN_TOKEN}}" } });
-
-    expect(result.ok).toBe(true);
-    expect(seen("runanchor")).toEqual({ AUTH: "sk-run-4b21" });
-  });
-
-  it("refuses an unpaired surrogate in an env value", async () => {
-    await write("scripts/noop.mjs", "output.ok = true;");
-    await flow(
-      "lone",
-      "steps:\n" + '  - script: { path: ../../scripts/noop.mjs, env: { LONE: "\\uD800abc" } }\n'
-    );
-
-    await expect(runFlow("lone")).rejects.toThrow(
-      /script `env` holds an unpaired surrogate in the value of LONE/
-    );
-  });
-
   it("refuses a resolved value an environment cannot carry, without quoting it", async () => {
     await write(".argent/secrets.env", 'NULKEY="sec\u0000ret-9d3f"\n');
     await write("scripts/noop.mjs", "output.ok = true;");
-    await flow(
-      "nulsec",
-      "steps:\n" +
-        '  - script: { path: ../../scripts/noop.mjs, env: { TOK: "{{secret:NULKEY}}" } }\n'
-    );
+    await scriptFlow("nulsec", "noop.mjs", '{ TOK: "{{secret:NULKEY}}" }');
 
     const { result } = await runFlow("nulsec");
 
@@ -1334,12 +891,10 @@ describe("secret placeholders in an env value", () => {
   it("hands a near-spelling to the script as literal text, unresolved", async () => {
     await writeProjectSecret("X", "resolved-value");
     await write("scripts/probe.mjs", reporter("spelling", ["A", "B", "C"]));
-    await flow(
+    await scriptFlow(
       "spelling",
-      "steps:\n" +
-        "  - script:\n" +
-        "      path: ../../scripts/probe.mjs\n" +
-        '      env: { A: "{{ secret: X }}", B: "{{SECRET:X}}", C: "{secret:X}" }\n'
+      "probe.mjs",
+      '{ A: "{{ secret: X }}", B: "{{SECRET:X}}", C: "{secret:X}" }'
     );
 
     const { result } = await runFlow("spelling");
@@ -1354,120 +909,61 @@ describe("secret placeholders in an env value", () => {
 });
 
 describe("the shell-environment note", () => {
-  it("explains a command a .mjs could not find, and stays off an unrelated failure", async () => {
+  const NOTE = "A command was not found";
+
+  /** The reason a .mjs step that throws `message` fails with. */
+  async function reasonFor(message: string): Promise<string> {
+    await write("scripts/throws.mjs", `throw new Error(${JSON.stringify(message)});`);
+    await scriptFlow("throws", "throws.mjs");
+    return firstReason("throws");
+  }
+
+  it("explains a command a .mjs could not find", async () => {
     await write(
       "scripts/missing.mjs",
       `import { execSync } from "node:child_process";\n` + `execSync("argent-no-such-command-xyz");`
     );
-    await write("scripts/fixture.mjs", `throw new Error("fixture: users.json: not found");`);
-    await flow("notes", "steps:\n  - script: { path: ../../scripts/missing.mjs }\n");
-    await flow("unrelated", "steps:\n  - script: { path: ../../scripts/fixture.mjs }\n");
+    await scriptFlow("notes", "missing.mjs");
 
-    const missing = (await runFlow("notes")).result;
-    const unrelated = (await runFlow("unrelated")).result;
+    const reason = await firstReason("notes");
 
-    expect(missing.steps[0].reason).toContain("A command was not found.");
-    expect(missing.steps[0].reason).toContain("snapshot");
-    expect(missing.steps[0].reason).toContain("`scripts.env.allow` cannot widen it");
-    expect(unrelated.steps[0].reason).toContain("fixture: users.json: not found");
-    expect(unrelated.steps[0].reason).not.toContain("A command was not found");
-    expect(unrelated.steps[0].reason).not.toContain("snapshot");
+    expect(reason).toContain("A command was not found.");
+    expect(reason).toContain("snapshot");
+    expect(reason).toContain("`scripts.env.allow` cannot widen it");
   });
 
-  it("reads dash's wording without reading a three-part application error", async () => {
-    await write(
-      "scripts/dash.mjs",
-      `throw new Error("Command failed: adb devices\\n/bin/sh: 1: adb: not found\\n");`
-    );
-    await write(
-      "scripts/three-part.mjs",
-      `throw new Error("fixtures/orders.json: 12: customerId: not found");`
-    );
-    await write(
-      "scripts/http-part.mjs",
-      `throw new Error("seed failed for api/v1/users: 404: user: not found");`
-    );
-    await write("scripts/named.mjs", `throw new Error("/tmp/run tests.sh: 3: adb: not found");`);
-    await flow("dash-line", "steps:\n  - script: { path: ../../scripts/dash.mjs }\n");
-    await flow("dash-named", "steps:\n  - script: { path: ../../scripts/named.mjs }\n");
-    await flow("three-part", "steps:\n  - script: { path: ../../scripts/three-part.mjs }\n");
-    await flow("http-part", "steps:\n  - script: { path: ../../scripts/http-part.mjs }\n");
+  it.each<[string, string, string?]>([
+    ["Command failed: adb devices\n/bin/sh: 1: adb: not found\n", "A command was not found."],
+    ["/tmp/run tests.sh: 3: adb: not found", "A command was not found."],
+    ["sh: adb: command not found", "A command was not found."],
+    ["/tmp/run.sh: line 3: adb: command not found", "A command was not found."],
+    ["zsh:1: command not found: adb", "A command was not found."],
+    [
+      "Command failed: adb shell pm list packages\n/system/bin/sh: pm: command not found\n",
+      "on the OTHER end in these same words",
+    ],
+    ["spawnSync adb ENOENT", "A command was not found — or the working directory", "OTHER end"],
+  ])("reads a shell's or Node's wording in %j", async (message, expected, absent) => {
+    const reason = await reasonFor(message);
 
-    const dash = (await runFlow("dash-line")).result;
-    const named = (await runFlow("dash-named")).result;
-    const threePart = (await runFlow("three-part")).result;
-    const httpPart = (await runFlow("http-part")).result;
-
-    expect(dash.steps[0].reason).toContain("A command was not found.");
-    expect(named.steps[0].reason).toContain("A command was not found.");
-    expect(threePart.steps[0].reason).toContain("fixtures/orders.json");
-    expect(threePart.steps[0].reason).not.toContain("A command was not found");
-    expect(threePart.steps[0].reason).not.toContain("tool server");
-    expect(httpPart.steps[0].reason).not.toContain("A command was not found");
-    expect(httpPart.steps[0].reason).not.toContain("tool server");
+    expect(reason).toContain(expected);
+    if (absent) expect(reason).not.toContain(absent);
   });
 
-  it("asks for a shell writer in the longer wording too, not only in dash's", async () => {
-    await write("scripts/tenant.mjs", `throw new Error("tenant acme: seed: command not found");`);
-    await write("scripts/first.mjs", `throw new Error("tenant acme: command not found: seed");`);
-    await write("scripts/bare.mjs", `throw new Error("sh: adb: command not found");`);
-    await write(
-      "scripts/lined.mjs",
-      `throw new Error("/tmp/run.sh: line 3: adb: command not found");`
-    );
-    await write("scripts/zsh.mjs", `throw new Error("zsh:1: command not found: adb");`);
-    for (const name of ["tenant", "first", "bare", "lined", "zsh"]) {
-      await flow(name, `steps:\n  - script: { path: ../../scripts/${name}.mjs }\n`);
-    }
+  it.each([
+    "fixture: users.json: not found",
+    "fixtures/orders.json: 12: customerId: not found",
+    "seed failed for api/v1/users: 404: user: not found",
+    "tenant acme: seed: command not found",
+    "tenant acme: command not found: seed",
+    "could not spawn the seeder because the fixture directory is missing ENOENT",
+  ])("leaves an application error alone: %j", async (message) => {
+    const reason = await reasonFor(message);
 
-    const reason = async (name: string) => (await runFlow(name)).result.steps[0].reason ?? "";
-
-    expect(await reason("tenant")).not.toContain("A command was not found");
-    expect(await reason("tenant")).not.toContain("tool server");
-    expect(await reason("first")).not.toContain("A command was not found");
-    expect(await reason("first")).not.toContain("tool server");
-    expect(await reason("bare")).toContain("A command was not found.");
-    expect(await reason("lined")).toContain("A command was not found.");
-    expect(await reason("zsh")).toContain("A command was not found.");
-  });
-
-  it("says a shell's words may be the far end's, and does not say it of Node's", async () => {
-    await write(
-      "scripts/relayed.mjs",
-      `throw new Error("Command failed: adb shell pm list packages\\n/system/bin/sh: pm: command not found\\n");`
-    );
-    await write("scripts/local-enoent.mjs", `throw new Error("spawnSync adb ENOENT");`);
-    await flow("relayed", "steps:\n  - script: { path: ../../scripts/relayed.mjs }\n");
-    await flow("local-enoent", "steps:\n  - script: { path: ../../scripts/local-enoent.mjs }\n");
-
-    const relayed = (await runFlow("relayed")).result.steps[0].reason ?? "";
-    const local = (await runFlow("local-enoent")).result.steps[0].reason ?? "";
-
-    expect(relayed).toContain("A command was not found.");
-    expect(relayed).toContain("on the OTHER end in these same words");
-    expect(local).toContain("A command was not found — or the working directory");
-    expect(local).not.toContain("OTHER end");
-  });
-
-  it("reads Node's own ENOENT spelling without reading a sentence holding the word", async () => {
-    await write("scripts/spawn-enoent.mjs", `throw new Error("spawnSync adb ENOENT");`);
-    await write(
-      "scripts/sentence-enoent.mjs",
-      `throw new Error("could not spawn the seeder because the fixture directory is missing ENOENT");`
-    );
-    await flow("spawn-enoent", "steps:\n  - script: { path: ../../scripts/spawn-enoent.mjs }\n");
-    await flow(
-      "sentence-enoent",
-      "steps:\n  - script: { path: ../../scripts/sentence-enoent.mjs }\n"
-    );
-
-    const spawned = (await runFlow("spawn-enoent")).result;
-    const sentence = (await runFlow("sentence-enoent")).result;
-
-    expect(spawned.steps[0].reason).toContain("A command was not found — or the working directory");
-    expect(sentence.steps[0].reason).toContain("fixture directory is missing");
-    expect(sentence.steps[0].reason).not.toContain("A command was not found");
-    expect(sentence.steps[0].reason).not.toContain("tool server");
+    expect(reason).toContain(message);
+    expect(reason).not.toContain(NOTE);
+    expect(reason).not.toContain("tool server");
+    expect(reason).not.toContain("snapshot");
   });
 
   it("names the run's own PATH when the run is what set it", async () => {
@@ -1482,9 +978,8 @@ describe("the shell-environment note", () => {
         "  - script: { path: ../../scripts/own-path.mjs }\n"
     );
 
-    const { result } = await runFlow("own-path");
+    const reason = await firstReason("own-path");
 
-    const reason = result.steps[0].reason ?? "";
     expect(reason).toContain("A command was not found.");
     expect(reason).toContain("This run sets `PATH` itself");
     expect(reason).not.toContain("/nonexistent/bin");
@@ -1492,63 +987,37 @@ describe("the shell-environment note", () => {
     expect(reason).not.toContain("snapshot");
   });
 
-  it("reads exit 127 from a .sh without repeating the runner's own hint", async (ctx) => {
+  const KEEPS_ENV = "The tool server keeps the environment it started with";
+
+  it.for<[string, string, string[], string[]]>([
+    [
+      "the shell's own wording, without the runner's hint again",
+      `argent-no-such-command-xyz\n`,
+      ["argent-no-such-command-xyz: command not found", KEEPS_ENV],
+      ["A command was not found."],
+    ],
+    [
+      "a line naming the script by a Windows path",
+      `echo "C:/Users/dev/project/scripts/x.sh: line 1: adb: command not found" >&2\nexit 127\n`,
+      [KEEPS_ENV],
+      [],
+    ],
+    [
+      "a .sh that chose 127 and explained itself",
+      `echo "no such tenant" >&2\nexit 127\n`,
+      ["no such tenant"],
+      [KEEPS_ENV],
+    ],
+  ])("reads exit 127 from %s", async ([, script, expected, absent], ctx) => {
     skipWithoutBash(ctx);
-    await write("scripts/missing.sh", `argent-no-such-command-xyz\n`);
-    await flow("sh-missing", "steps:\n  - script: { path: ../../scripts/missing.sh }\n");
+    await write("scripts/x.sh", script);
+    await scriptFlow("sh-127", "x.sh");
 
-    const { result } = await runFlow("sh-missing");
+    const reason = await firstReason("sh-127");
 
-    const reason = result.steps[0].reason ?? "";
     expect(reason).toContain("exited with code 127");
-    expect(reason).toContain("The tool server keeps the environment it started with");
-    expect(reason).not.toContain("A command was not found.");
-  });
-
-  it("keeps the note for a .sh whose stderr line is the shell's own wording", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write("scripts/not-found.sh", `argent-no-such-command-xyz\n`);
-    await flow("sh-not-found", "steps:\n  - script: { path: ../../scripts/not-found.sh }\n");
-
-    const { result } = await runFlow("sh-not-found");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(reason).toContain("exited with code 127");
-    expect(reason).toContain("argent-no-such-command-xyz: command not found");
-    expect(reason).toContain("The tool server keeps the environment it started with");
-    expect(reason).not.toContain("A command was not found.");
-  });
-
-  it("keeps the note when the shell's line names the script by a Windows path", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write(
-      "scripts/win-not-found.sh",
-      `echo "C:/Users/dev/project/scripts/win-not-found.sh: line 1: adb: command not found" >&2\n` +
-        `exit 127\n`
-    );
-    await flow(
-      "sh-win-not-found",
-      "steps:\n  - script: { path: ../../scripts/win-not-found.sh }\n"
-    );
-
-    const { result } = await runFlow("sh-win-not-found");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(reason).toContain("exited with code 127");
-    expect(reason).toContain("The tool server keeps the environment it started with");
-  });
-
-  it("leaves a .sh that chose 127 and explained itself alone", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write("scripts/own-127.sh", `echo "no such tenant" >&2\nexit 127\n`);
-    await flow("sh-own-127", "steps:\n  - script: { path: ../../scripts/own-127.sh }\n");
-
-    const { result } = await runFlow("sh-own-127");
-
-    const reason = result.steps[0].reason ?? "";
-    expect(reason).toContain("exited with code 127");
-    expect(reason).toContain("no such tenant");
-    expect(reason).not.toContain("The tool server keeps the environment it started with");
+    for (const text of expected) expect(reason).toContain(text);
+    for (const text of absent) expect(reason).not.toContain(text);
   });
 });
 
@@ -1574,17 +1043,9 @@ describe("what is NOT hidden", () => {
   it("returns the output document as the script wrote it, resolved secret and all", async () => {
     await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\n");
     await write("scripts/doc.mjs", `output.token = process.env.API_KEY;`);
-    await flowStartRecordingTool.execute({}, { name: "document", project_root: root });
+    await startRecording("document");
 
-    const added = (await flowAddScriptTool.execute(
-      {},
-      {
-        name: "document",
-        project_root: root,
-        path: "../../scripts/doc.mjs",
-        env: { API_KEY: "{{secret:API_KEY}}" },
-      }
-    )) as { status: string; outputJson?: string };
+    const added = await addScript("document", "doc.mjs", { API_KEY: "{{secret:API_KEY}}" });
 
     expect(added.status).toBe("pass");
     expect(added.outputJson).toBe(JSON.stringify({ token: "sk-live-9d3f0a1b" }));
@@ -1610,6 +1071,7 @@ describe("what is NOT hidden", () => {
       FROM_RUN: "https://api.example.com",
       FROM_STEP: "https://api.example.com",
     });
+    expect(JSON.stringify(result.steps[0])).not.toContain("{{secret:");
   });
 });
 
@@ -1618,80 +1080,48 @@ describe("recording a script step with env", () => {
     await write("scripts/dump.mjs", reporter("kept", ["PLAIN"]));
     await flow(
       "qa",
-      "env:\n" +
-        "  PLAIN: checked-in-default\n" +
-        "steps:\n" +
-        "  - script: { path: ../../scripts/dump.mjs }\n"
+      "env:\n  PLAIN: checked-in-default\nsteps:\n  - script: { path: ../../scripts/dump.mjs }\n"
     );
 
-    const started = (await flowStartRecordingTool.execute(
-      {},
-      { name: "qa", project_root: root }
-    )) as { message: string; flowFile: string };
+    const started = await startRecording("qa");
 
     expect(started.flowFile).toBe("steps: []\n");
     expect(started.message).toBe('Started recording "qa" e2e test');
 
-    await fs.writeFile(
-      path.join(root, ".argent/e2e/qa.yaml"),
-      "env:\n  PLAIN: checked-in-default\nsteps: []\n",
-      "utf8"
-    );
+    await fs.writeFile(e2ePath("qa"), "env:\n  PLAIN: checked-in-default\nsteps: []\n", "utf8");
 
-    const added = (await flowAddScriptTool.execute(
-      {},
-      { name: "qa", project_root: root, path: "../../scripts/dump.mjs" }
-    )) as { status: string };
-
-    expect(added.status).toBe("pass");
+    expect((await addScript("qa", "dump.mjs")).status).toBe("pass");
     expect(seen("kept")).toEqual({ PLAIN: "checked-in-default" });
   });
 
-  it("tells a gone, an unreadable and a malformed flow file apart", async () => {
+  it("tells a gone and a malformed flow file apart", async () => {
     await write("scripts/dump.mjs", reporter("branches", ["A"]));
-    await flowStartRecordingTool.execute({}, { name: "gone", project_root: root });
-    const gonePath = path.join(root, ".argent/e2e/gone.yaml");
-    await fs.rm(gonePath);
+    await startRecording("gone");
+    await fs.rm(e2ePath("gone"));
 
-    await expect(
-      flowAddScriptTool.execute(
-        {},
-        { name: "gone", project_root: root, path: "../../scripts/dump.mjs" }
-      )
-    ).rejects.toThrow(/is gone\..*Start the recording again/s);
+    await expect(addScript("gone", "dump.mjs")).rejects.toThrow(
+      /is gone\..*Start the recording again/s
+    );
 
-    await flowStartRecordingTool.execute({}, { name: "broken", project_root: root });
-    const brokenPath = path.join(root, ".argent/e2e/broken.yaml");
-    await fs.writeFile(brokenPath, "steps:\n  - script: { path: x.mjs, env: { A: 3 } }\n", "utf8");
+    await startRecording("broken", "steps:\n  - script: { path: x.mjs, env: { A: 3 } }\n");
 
-    await expect(
-      flowAddScriptTool.execute(
-        {},
-        { name: "broken", project_root: root, path: "../../scripts/dump.mjs" }
-      )
-    ).rejects.toThrow(/is not an e2e test argent can use as it stands/);
+    await expect(addScript("broken", "dump.mjs")).rejects.toThrow(
+      /is not an e2e test argent can use as it stands/
+    );
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "reports an unreadable flow file as unreadable, not as malformed",
     async () => {
       await write("scripts/dump.mjs", reporter("locked", ["A"]));
-      await flowStartRecordingTool.execute({}, { name: "locked", project_root: root });
-      const lockedPath = path.join(root, ".argent/e2e/locked.yaml");
-      await fs.chmod(lockedPath, 0o000);
+      await startRecording("locked");
+      await fs.chmod(e2ePath("locked"), 0o000);
       try {
-        await expect(
-          flowAddScriptTool.execute(
-            {},
-            {
-              name: "locked",
-              project_root: root,
-              path: "../../scripts/dump.mjs",
-            }
-          )
-        ).rejects.toThrow(/could not be read\..*Make the file readable/s);
+        await expect(addScript("locked", "dump.mjs")).rejects.toThrow(
+          /could not be read\..*Make the file readable/s
+        );
       } finally {
-        await fs.chmod(lockedPath, 0o644);
+        await fs.chmod(e2ePath("locked"), 0o644);
       }
     }
   );
@@ -1702,23 +1132,15 @@ describe("recording a script step with env", () => {
       "scripts/seed.mjs",
       reporter("recorded", ["API_URL", "USER_TYPE", "API_KEY"]) + "\noutput.ok = true;"
     );
-    await flowStartRecordingTool.execute({}, { name: "rec", project_root: root });
-    const filePath = path.join(root, ".argent/e2e/rec.yaml");
-    await fs.writeFile(
-      filePath,
-      "env:\n  API_URL: https://api.example.com\n  USER_TYPE: from-file\nsteps: []\n",
-      "utf8"
+    await startRecording(
+      "rec",
+      "env:\n  API_URL: https://api.example.com\n  USER_TYPE: from-file\nsteps: []\n"
     );
 
-    const added = (await flowAddScriptTool.execute(
-      {},
-      {
-        name: "rec",
-        project_root: root,
-        path: "../../scripts/seed.mjs",
-        env: { USER_TYPE: "premium", API_KEY: "{{secret:API_KEY}}" },
-      }
-    )) as { status: string; message: string };
+    const added = await addScript("rec", "seed.mjs", {
+      USER_TYPE: "premium",
+      API_KEY: "{{secret:API_KEY}}",
+    });
 
     expect(added.status).toBe("pass");
     expect(added.message).toBe('Added script step to "rec" e2e test.');
@@ -1728,10 +1150,7 @@ describe("recording a script step with env", () => {
       API_KEY: "sk-live-9d3f0a1b",
     });
 
-    const finished = (await flowFinishRecordingTool.execute(
-      {},
-      { name: "rec", project_root: root }
-    )) as { flowFile: string; summary: string[] };
+    const finished = await finishRecording("rec");
 
     expect(finished.flowFile).toContain("{{secret:API_KEY}}");
     expect(finished.flowFile).not.toContain("sk-live-9d3f0a1b");
@@ -1743,22 +1162,9 @@ describe("recording a script step with env", () => {
       "scripts/fail.mjs",
       `throw new Error("401 from " + process.env.API_URL + " for key " + process.env.API_KEY);`
     );
-    await flowStartRecordingTool.execute({}, { name: "recfail", project_root: root });
-    await fs.writeFile(
-      path.join(root, ".argent/e2e/recfail.yaml"),
-      "env: { API_URL: https://api.example.com }\nsteps: []\n",
-      "utf8"
-    );
+    await startRecording("recfail", "env: { API_URL: https://api.example.com }\nsteps: []\n");
 
-    const failed = (await flowAddScriptTool.execute(
-      {},
-      {
-        name: "recfail",
-        project_root: root,
-        path: "../../scripts/fail.mjs",
-        env: { API_KEY: "{{secret:API_KEY}}" },
-      }
-    )) as { status: string; reason?: string; stepCount: number };
+    const failed = await addScript("recfail", "fail.mjs", { API_KEY: "{{secret:API_KEY}}" });
 
     expect(failed.status).toBe("fail");
     expect(failed.reason).not.toContain("sk-live-9d3f0a1b");
@@ -1766,21 +1172,40 @@ describe("recording a script step with env", () => {
     expect(failed.stepCount).toBe(0);
   });
 
-  it("withdraws the layering promise when the file's env changed during the run", async () => {
-    const filePath = path.join(root, ".argent/e2e/drift.yaml");
+  it("shows the recorded env in the step summary", async () => {
+    await write("scripts/seed.mjs", "output.ok = true;");
+    await startRecording("summary");
+
+    const added = await addScript("summary", "seed.mjs", { USER_TYPE: "premium" });
+
+    const line = '1. script: ../../scripts/seed.mjs env {"USER_TYPE":"premium"}';
+    expect(added.recorded).toBe(line);
+    expect((await finishRecording("summary")).summary).toEqual([line]);
+  });
+
+  /** Records a script that rewrites the recording's `before` header to `after` while it runs. */
+  async function recordDrift(
+    name: string,
+    before: string,
+    after: string,
+    env?: Record<string, string>
+  ): Promise<Added> {
     await write(
-      "scripts/edit.mjs",
+      `scripts/${name}.mjs`,
       `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(filePath)}, "env: { LATER: added }\\nsteps: []\\n");\n` +
+        `fs.writeFileSync(${JSON.stringify(e2ePath(name))}, ${JSON.stringify(after)});\n` +
         `output.ok = true;`
     );
-    await flowStartRecordingTool.execute({}, { name: "drift", project_root: root });
-    await fs.writeFile(filePath, "env: { EARLY: original }\nsteps: []\n", "utf8");
+    await startRecording(name, before);
+    return addScript(name, `${name}.mjs`, env);
+  }
 
-    const added = (await flowAddScriptTool.execute(
-      {},
-      { name: "drift", project_root: root, path: "../../scripts/edit.mjs" }
-    )) as { status: string; message: string };
+  it("withdraws the layering promise when the file's env changed during the run", async () => {
+    const added = await recordDrift(
+      "drift",
+      "env: { EARLY: original }\nsteps: []\n",
+      "env: { LATER: added }\nsteps: []\n"
+    );
 
     expect(added.status).toBe("pass");
     expect(added.message).toContain("the e2e test file's own `env` changed while the script");
@@ -1789,55 +1214,32 @@ describe("recording a script step with env", () => {
     expect(added.message).toContain("would append a SECOND one");
   });
 
-  it("shows the recorded env in the step summary", async () => {
-    await write("scripts/seed.mjs", "output.ok = true;");
-    await flowStartRecordingTool.execute({}, { name: "summary", project_root: root });
+  it("says which way the drift went when the names did not change", async () => {
+    const added = await recordDrift(
+      "valuedrift",
+      "env: { A: before }\nsteps: []\n",
+      "env: { A: after }\nsteps: []\n"
+    );
 
-    const added = (await flowAddScriptTool.execute(
-      {},
-      {
-        name: "summary",
-        project_root: root,
-        path: "../../scripts/seed.mjs",
-        env: { USER_TYPE: "premium" },
-      }
-    )) as { recorded: string };
-
-    expect(added.recorded).toBe('1. script: ../../scripts/seed.mjs env {"USER_TYPE":"premium"}');
-
-    const finished = (await flowFinishRecordingTool.execute(
-      {},
-      { name: "summary", project_root: root }
-    )) as { summary: string[] };
-
-    expect(finished.summary).toEqual([
-      '1. script: ../../scripts/seed.mjs env {"USER_TYPE":"premium"}',
-    ]);
+    expect(added.status).toBe("pass");
+    expect(added.message).toContain("it ran with env A and the recorded step will replay with");
+    expect(added.message).toContain("those same names, at least one of them carrying a different");
   });
 
   it("reads a case-only rename as drift on POSIX and as no change on Windows", async () => {
-    const filePath = path.join(root, ".argent/e2e/casedrift.yaml");
-    await write(
-      "scripts/recase.mjs",
-      `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(filePath)}, "env: { PATHY: /a }\\nsteps: []\\n");\n` +
-        `output.ok = true;`
-    );
-
     const drift = async (platform: NodeJS.Platform): Promise<string> => {
       const real = process.platform;
       Object.defineProperty(process, "platform", { value: platform, configurable: true });
       try {
-        await flowStartRecordingTool.execute({}, { name: "casedrift", project_root: root });
-        await fs.writeFile(filePath, "env: { Pathy: /a }\nsteps: []\n", "utf8");
-        const added = (await flowAddScriptTool.execute(
-          {},
-          { name: "casedrift", project_root: root, path: "../../scripts/recase.mjs" }
-        )) as { message: string };
+        const added = await recordDrift(
+          "casedrift",
+          "env: { Pathy: /a }\nsteps: []\n",
+          "env: { PATHY: /a }\nsteps: []\n"
+        );
         return added.message;
       } finally {
         Object.defineProperty(process, "platform", { value: real, configurable: true });
-        await flowFinishRecordingTool.execute({}, { name: "casedrift", project_root: root });
+        await finishRecording("casedrift");
       }
     };
 
@@ -1845,112 +1247,33 @@ describe("recording a script step with env", () => {
     expect(await drift("win32")).not.toContain("changed while the script");
   });
 
-  it("says which way the drift went when the names did not change", async () => {
-    const filePath = path.join(root, ".argent/e2e/valuedrift.yaml");
-    await write(
-      "scripts/edit.mjs",
-      `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(filePath)}, "env: { A: after }\\nsteps: []\\n");\n` +
-        `output.ok = true;`
-    );
-    await flowStartRecordingTool.execute({}, { name: "valuedrift", project_root: root });
-    await fs.writeFile(filePath, "env: { A: before }\nsteps: []\n", "utf8");
-
-    const added = (await flowAddScriptTool.execute(
-      {},
-      { name: "valuedrift", project_root: root, path: "../../scripts/edit.mjs" }
-    )) as { status: string; message: string };
-
-    expect(added.status).toBe("pass");
-    expect(added.message).toContain("it ran with env A and the recorded step will replay with");
-    expect(added.message).toContain("those same names, at least one of them carrying a different");
-  });
-
-  it("treats an empty env map and no env key as the same environment", async () => {
-    const filePath = path.join(root, ".argent/e2e/emptyenv.yaml");
-    await write(
-      "scripts/edit.mjs",
-      `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(filePath)}, "steps: []\\n");\n` +
-        `output.ok = true;`
-    );
-    await flowStartRecordingTool.execute({}, { name: "emptyenv", project_root: root });
-    await fs.writeFile(filePath, "env: {}\nsteps: []\n", "utf8");
-
-    const added = (await flowAddScriptTool.execute(
-      {},
-      { name: "emptyenv", project_root: root, path: "../../scripts/edit.mjs" }
-    )) as { status: string; message: string };
+  it.each<[string, string, string, Record<string, string>?]>([
+    ["an empty env map became no env key", "env: {}\nsteps: []\n", "steps: []\n"],
+    [
+      "an edit touched everything but env",
+      "env: { A: same }\nsteps: []\n",
+      "env: { A: same }\nexecutionPrerequisite: Settings open\nsteps: []\n",
+    ],
+    [
+      "the step's own env shadows the change",
+      "env: { A: flow-one }\nsteps: []\n",
+      "env: { A: flow-two }\nsteps: []\n",
+      { A: "step-wins" },
+    ],
+  ])("stays quiet when %s", async (_case, before, after, env) => {
+    const added = await recordDrift("quiet", before, after, env);
 
     expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "emptyenv" e2e test.');
-  });
-
-  it("stays quiet when a concurrent edit touched everything but env", async () => {
-    const filePath = path.join(root, ".argent/e2e/otheredit.yaml");
-    await write(
-      "scripts/edit.mjs",
-      `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(filePath)}, "env: { A: same }\\nexecutionPrerequisite: Settings open\\nsteps: []\\n");\n` +
-        `output.ok = true;`
-    );
-    await flowStartRecordingTool.execute({}, { name: "otheredit", project_root: root });
-    await fs.writeFile(filePath, "env: { A: same }\nsteps: []\n", "utf8");
-
-    const added = (await flowAddScriptTool.execute(
-      {},
-      { name: "otheredit", project_root: root, path: "../../scripts/edit.mjs" }
-    )) as { status: string; message: string };
-
-    expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "otheredit" e2e test.');
-  });
-
-  it("stays quiet when the step's own env provably shadows the change", async () => {
-    const filePath = path.join(root, ".argent/e2e/shadow.yaml");
-    await write(
-      "scripts/edit.mjs",
-      `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(filePath)}, "env: { A: flow-two }\\nsteps: []\\n");\n` +
-        `output.ok = true;`
-    );
-    await flowStartRecordingTool.execute({}, { name: "shadow", project_root: root });
-    await fs.writeFile(filePath, "env: { A: flow-one }\nsteps: []\n", "utf8");
-
-    const added = (await flowAddScriptTool.execute(
-      {},
-      {
-        name: "shadow",
-        project_root: root,
-        path: "../../scripts/edit.mjs",
-        env: { A: "step-wins" },
-      }
-    )) as { status: string; message: string };
-
-    expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "shadow" e2e test.');
+    expect(added.message).toBe('Added script step to "quiet" e2e test.');
   });
 
   it("replays a recorded step under a run-time env, over the file's own default", async () => {
     await write("scripts/probe.mjs", reporter("replayed", ["FROM_FILE", "FROM_STEP"]));
-    await flowStartRecordingTool.execute({}, { name: "roundtrip", project_root: root });
-    await fs.writeFile(
-      path.join(root, ".argent/e2e/roundtrip.yaml"),
-      "env: { FROM_FILE: file-default }\nsteps: []\n",
-      "utf8"
-    );
+    await startRecording("roundtrip", "env: { FROM_FILE: file-default }\nsteps: []\n");
 
-    await flowAddScriptTool.execute(
-      {},
-      {
-        name: "roundtrip",
-        project_root: root,
-        path: "../../scripts/probe.mjs",
-        env: { FROM_STEP: "step-value" },
-      }
-    );
+    await addScript("roundtrip", "probe.mjs", { FROM_STEP: "step-value" });
     expect(seen("replayed")).toEqual({ FROM_FILE: "file-default", FROM_STEP: "step-value" });
-    await flowFinishRecordingTool.execute({}, { name: "roundtrip", project_root: root });
+    await finishRecording("roundtrip");
 
     const { result } = await runFlow("roundtrip", {
       env: { FROM_FILE: "from-run", FROM_STEP: "from-run" },
@@ -1960,99 +1283,44 @@ describe("recording a script step with env", () => {
     expect(seen("replayed")).toEqual({ FROM_FILE: "from-run", FROM_STEP: "step-value" });
   });
 
-  it("proceeds when flow-add-script is given a plaintext value equal to a secret", async () => {
-    await write(".argent/secrets.env", "SHARED=https://api.example.com\n");
-    await write("scripts/plain.mjs", reporter("recplain", ["API_URL"]));
-    await flowStartRecordingTool.execute({}, { name: "recplain", project_root: root });
+  it("records an env map verbatim, a plaintext value equal to a secret's included", async () => {
+    await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\nSHARED=https://example.com\n");
+    await write("scripts/seed.mjs", reporter("verbatim", ["API_URL"]));
+    await startRecording("verbatim");
 
-    const added = (await flowAddScriptTool.execute(
+    const added = await addScript("verbatim", "seed.mjs", {
+      API_URL: "https://example.com",
+      API_KEY: "{{secret:API_KEY}}",
+    });
+    await flowInsertEchoTool.execute(
       {},
-      {
-        name: "recplain",
-        project_root: root,
-        path: "../../scripts/plain.mjs",
-        env: { API_URL: "https://api.example.com" },
-      }
-    )) as { status: string; message: string };
+      { name: "verbatim", project_root: root, message: "Calling https://example.com" }
+    );
+    const finished = await finishRecording("verbatim");
 
     expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "recplain" e2e test.');
-    expect(seen("recplain")).toEqual({ API_URL: "https://api.example.com" });
-
-    const finished = (await flowFinishRecordingTool.execute(
-      {},
-      { name: "recplain", project_root: root }
-    )) as { flowFile: string };
-    expect(finished.flowFile).toContain("https://api.example.com");
+    expect(added.message).toBe('Added script step to "verbatim" e2e test.');
+    expect(seen("verbatim")).toEqual({ API_URL: "https://example.com" });
+    const summary = finished.summary.join("\n");
+    expect(finished.flowFile).toContain("https://example.com");
+    expect(finished.flowFile).toContain("{{secret:API_KEY}}");
+    expect(summary).toContain("https://example.com");
+    expect(summary).toContain("{{secret:API_KEY}}");
+    expect(summary).not.toContain("sk-live-9d3f0a1b");
+    expect(summary).not.toContain("…");
   });
 
   it("caps a long env value in what the recorder echoes back", async () => {
     const huge = "s".repeat(10_054);
     await write("scripts/big.mjs", "output.ok = true;");
-    await flowStartRecordingTool.execute({}, { name: "bigenv", project_root: root });
+    await startRecording("bigenv");
 
-    const added = (await flowAddScriptTool.execute(
-      {},
-      {
-        name: "bigenv",
-        project_root: root,
-        path: "../../scripts/big.mjs",
-        env: { SERVICE_ACCOUNT_JSON: huge },
-      }
-    )) as { recorded: string };
-    const finished = (await flowFinishRecordingTool.execute(
-      {},
-      { name: "bigenv", project_root: root }
-    )) as { summary: string[]; flowFile: string };
+    const added = await addScript("bigenv", "big.mjs", { SERVICE_ACCOUNT_JSON: huge });
+    const finished = await finishRecording("bigenv");
 
     expect(added.recorded.length).toBeLessThan(400);
     expect(added.recorded).toContain("…(+9881 chars)");
     expect(finished.summary.join("\n").length).toBeLessThan(400);
     expect(finished.flowFile).toContain(huge);
-  });
-
-  it("proceeds when a run-time env value equals a secret's value", async () => {
-    await write(".argent/secrets.env", "SHARED=https://api.example.com\n");
-    await write("scripts/runplain.mjs", reporter("runplain", ["API_URL"]));
-    await flow("runplain", "steps:\n  - script: { path: ../../scripts/runplain.mjs }\n");
-
-    const { result } = await runFlow("runplain", {
-      env: { API_URL: "https://api.example.com" },
-    });
-
-    expect(result.ok).toBe(true);
-    expect(seen("runplain")).toEqual({ API_URL: "https://api.example.com" });
-    expect(JSON.stringify(result.steps[0])).not.toContain("{{secret:");
-  });
-
-  it("returns a recorded env map verbatim, plaintext and placeholder alike", async () => {
-    await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\n");
-    await write("scripts/seed.mjs", "output.ok = true;");
-    await flowStartRecordingTool.execute({}, { name: "verbatim", project_root: root });
-    await flowAddScriptTool.execute(
-      {},
-      {
-        name: "verbatim",
-        project_root: root,
-        path: "../../scripts/seed.mjs",
-        env: { API_URL: "https://example.com", API_KEY: "{{secret:API_KEY}}" },
-      }
-    );
-    await flowInsertEchoTool.execute(
-      {},
-      { name: "verbatim", project_root: root, message: "Calling https://example.com" }
-    );
-
-    const finished = (await flowFinishRecordingTool.execute(
-      {},
-      { name: "verbatim", project_root: root }
-    )) as { flowFile: string; summary: string[] };
-
-    expect(finished.flowFile).toContain("https://example.com");
-    expect(finished.flowFile).toContain("{{secret:API_KEY}}");
-    expect(finished.summary.join("\n")).toContain("https://example.com");
-    expect(finished.summary.join("\n")).toContain("{{secret:API_KEY}}");
-    expect(finished.summary.join("\n")).not.toContain("sk-live-9d3f0a1b");
-    expect(finished.summary.join("\n")).not.toContain("…");
   });
 });
