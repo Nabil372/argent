@@ -2313,6 +2313,28 @@ describe("debug finalization safeguards", () => {
     expect((error as Error).message).not.toMatch(/partial video|returning whatever/);
   });
 
+  it.each([
+    { message: "validation timed out", code: null, killed: true },
+    { message: "validation killed", code: null, signal: "SIGKILL" },
+    { message: "ffmpeg is unavailable", code: "ENOENT" },
+  ])("keeps output when $message", async (failure) => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    fakeChild().exitOnStdinEnd(1);
+    await startAndSettle(api, { mode: "debug" });
+    const outputFile = api.outputFile!;
+    const bytes = Buffer.alloc(64, 1);
+    await fs.writeFile(outputFile, bytes);
+    vi.mocked(verifyDebugVideo).mockRejectedValueOnce(
+      Object.assign(new Error(failure.message), failure)
+    );
+    const error = await stopCapture(api).catch((err: Error) => err);
+    expect(await fs.readFile(outputFile)).toEqual(bytes);
+    expect((error as Error).message).toContain("validation did not complete");
+    expect((error as Error).message).toContain(outputFile);
+    expect((error as Error).message).not.toContain("No readable debug video was saved");
+  });
+
   it("keeps the stop guard until deferred JPEG cleanup finishes", async () => {
     const api = await makeSession(iosDevice);
     fakeStream();

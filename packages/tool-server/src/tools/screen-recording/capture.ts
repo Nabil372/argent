@@ -870,17 +870,23 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
         (api.lastExitInfo?.stderr ? ` Encoder stderr: ${api.lastExitInfo.stderr}` : "")
       : "";
     let size: number;
+    let validationIncomplete = false;
     try {
       size = await statNonEmptyOutput(outputFile, "screen_recording_stop");
       if (encodingComplete === false) {
         const ffmpeg = await resolveFfmpeg();
-        if (!ffmpeg) throw new Error("ffmpeg is unavailable to check the failed debug output.");
+        if (!ffmpeg) {
+          validationIncomplete = true;
+          throw new Error("ffmpeg is unavailable to check the failed debug output.");
+        }
         try {
           await verifyDebugVideo(ffmpeg, outputFile);
         } catch (err) {
           const failure = err as Error & { code?: number; killed?: boolean };
           if (typeof failure.code === "number" && !failure.killed) {
             await fs.rm(outputFile, { force: true }).catch(() => {});
+          } else {
+            validationIncomplete = true;
           }
           throw err;
         }
@@ -889,7 +895,10 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
       if (!debugCapture) throw err;
       const message = err instanceof Error ? err.message : String(err);
       throw new FailureError(
-        `No readable debug video was saved at ${outputFile}. Captured JPEGs are discarded after failed encoding. ${message} ` +
+        (validationIncomplete
+          ? `Debug video validation did not complete. Output remains at ${outputFile}; check it before recording again. `
+          : `No readable debug video was saved at ${outputFile}. `) +
+          `Captured JPEGs are discarded after failed encoding. ${message} ` +
           [encodingStatus, debugCapture.warning].filter(Boolean).join(" "),
         {
           error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
