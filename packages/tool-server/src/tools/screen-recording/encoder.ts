@@ -115,6 +115,29 @@ export async function verifyDebugEncoder(ffmpeg: string, jpeg: Buffer): Promise<
   }
 }
 
+export async function verifyDebugVideo(ffmpeg: string, outputFile: string): Promise<void> {
+  await execFileAsync(
+    ffmpeg,
+    [
+      "-v",
+      "error",
+      "-xerror",
+      "-i",
+      outputFile,
+      "-map",
+      "0:v:0",
+      "-c:v",
+      "copy",
+      "-frames:v",
+      "1",
+      "-f",
+      "null",
+      "-",
+    ],
+    { timeout: 10_000, killSignal: "SIGKILL" }
+  );
+}
+
 export function encoderDiagnostics(stderr: string): string {
   return clip(
     stderr

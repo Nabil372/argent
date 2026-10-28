@@ -8,7 +8,7 @@ import { PNG } from "pngjs";
 import type { DeviceInfo } from "@argent/registry";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { screenRecordingSessionBlueprint } from "../src/blueprints/screen-recording-session";
-import { verifyDebugEncoder } from "../src/tools/screen-recording/encoder";
+import { verifyDebugEncoder, verifyDebugVideo } from "../src/tools/screen-recording/encoder";
 import { startDebugCapture } from "../src/tools/screen-recording/debug-capture";
 import { ffmpegArgs, startCapture, stopCapture } from "../src/tools/screen-recording/capture";
 import * as mjpegStreams from "../src/tools/screen-recording/mjpeg-stream";
@@ -503,3 +503,9 @@ it.skipIf(!hasEncoder || process.platform === "win32").each(["it's dir", "ci\\ru
     expect(JSON.parse(probe.stdout).streams[0].nb_read_frames).toBe("2");
   }
 );
+
+it.skipIf(!hasEncoder)("rejects a nonempty MP4 missing its movie metadata", async () => {
+  const file = path.join(scratch, "unplayable.mp4");
+  await fs.writeFile(file, Buffer.from("00000020ftypisom00000008mdat"));
+  await expect(verifyDebugVideo("ffmpeg", file)).rejects.toThrow();
+});

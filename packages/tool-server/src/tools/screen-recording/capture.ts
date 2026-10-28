@@ -10,6 +10,7 @@ import {
   encoderDiagnostics,
   finalizeEncoder,
   verifyDebugEncoder,
+  verifyDebugVideo,
 } from "./encoder";
 import {
   clearActiveScreenRecording,
@@ -843,34 +844,45 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
         api.lastExitInfo.signal === null &&
         api.lastExitInfo.framesEncoded === debugCapture.frameTimesUs.length
       : undefined;
+    const encodingStatus = debugCapture
+      ? `Debug encoder exited (code=${api.lastExitInfo?.code ?? "?"}, ` +
+        `signal=${api.lastExitInfo?.signal ?? "none"}, encoded=${api.lastExitInfo?.framesEncoded ?? 0}, ` +
+        `expected=${debugCapture.frameTimesUs.length}).` +
+        (api.lastExitInfo?.stderr ? ` Encoder stderr: ${api.lastExitInfo.stderr}` : "")
+      : "";
+    let size: number;
+    try {
+      size = await statNonEmptyOutput(outputFile, "screen_recording_stop");
+      if (encodingComplete === false) {
+        const ffmpeg = await resolveFfmpeg();
+        if (!ffmpeg) throw new Error("ffmpeg is unavailable to check the failed debug output.");
+        await verifyDebugVideo(ffmpeg, outputFile);
+      }
+    } catch (err) {
+      if (!debugCapture) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new FailureError(
+        `No readable debug video was saved at ${outputFile}. ${message} ` +
+          [encodingStatus, debugCapture.warning].filter(Boolean).join(" "),
+        {
+          error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
+          failure_stage: "screen_recording_stop",
+          failure_area: "tool_server",
+          error_kind: "subprocess",
+          ...subprocessFailureMetadata(api.lastExitInfo ?? {}, "ffmpeg"),
+        },
+        { cause: err instanceof Error ? err : new Error(String(err)) }
+      );
+    }
     if (encodingComplete === false) {
       warning = [
         warning,
-        `Debug video encoding did not complete (code=${api.lastExitInfo?.code ?? "?"}, ` +
-          `signal=${api.lastExitInfo?.signal ?? "none"}, encoded=${api.lastExitInfo?.framesEncoded ?? 0}, ` +
-          `expected=${debugCapture!.frameTimesUs.length}). The duration is unknown; ` +
-          `the partial video may omit captured frames.` +
-          (api.lastExitInfo?.stderr ? ` Encoder stderr: ${api.lastExitInfo.stderr}` : ""),
+        encodingStatus,
+        "The duration is unknown; the partial video may omit captured frames.",
       ]
         .filter(Boolean)
         .join(" ");
     }
-    const size = await statNonEmptyOutput(outputFile, "screen_recording_stop").catch(
-      (err: Error) => {
-        if (!debugCapture) throw err;
-        throw new FailureError(
-          [err.message, warning].filter(Boolean).join(" "),
-          {
-            error_code: FAILURE_CODES.SCREEN_RECORDING_OUTPUT_MISSING,
-            failure_stage: "screen_recording_stop",
-            failure_area: "tool_server",
-            error_kind: "subprocess",
-            ...subprocessFailureMetadata(api.lastExitInfo ?? {}, "ffmpeg"),
-          },
-          { cause: err }
-        );
-      }
-    );
     // Wall-clock capture length: after the cap fires (or the encoder dies) the
     // recording is over even if stop arrives much later.
     const wallClockMs =
@@ -903,8 +915,7 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
       ...(warning ? { warning } : {}),
     };
   } catch (err) {
-    // A stop only throws when the container is missing or empty
-    // (statNonEmptyOutput). Drop that 0-byte temp so a retry doesn't orphan it —
+    // Drop a 0-byte temp so a retry doesn't orphan it —
     // gated on the file genuinely being empty, never on "delete unless a success
     // flag was set", so no unexpected error can ever delete a real recording.
     const empty = await fs

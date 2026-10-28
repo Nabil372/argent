@@ -19,6 +19,7 @@ vi.mock("child_process", async (importOriginal) => {
 vi.mock("../src/tools/screen-recording/encoder", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/tools/screen-recording/encoder")>()),
   verifyDebugEncoder: vi.fn(async () => {}),
+  verifyDebugVideo: vi.fn(async () => {}),
 }));
 vi.mock("../src/tools/screen-recording/mjpeg-stream", async (importOriginal) => {
   const actual =
@@ -36,7 +37,7 @@ vi.mock("../src/tools/screen-recording/watermark", async (importOriginal) => {
 });
 
 import { spawn } from "child_process";
-import { verifyDebugEncoder } from "../src/tools/screen-recording/encoder";
+import { verifyDebugEncoder, verifyDebugVideo } from "../src/tools/screen-recording/encoder";
 import {
   screenRecordingSessionBlueprint,
   type ScreenRecordingSessionApi,
@@ -1877,7 +1878,11 @@ describe("debug finalization safeguards", () => {
           : failure === "disk full"
             ? "ENOSPC"
             : "Unknown encoder libx264";
-      await expect(stopCapture(api)).rejects.toThrow(message);
+      const error = await stopCapture(api).catch((err: Error) => err);
+      expect((error as Error).message).toContain(message);
+      expect((error as Error).message).not.toMatch(
+        /returning whatever|partial video|duration is unknown/
+      );
       expect(api.stopping).toBeNull();
     }
   );
@@ -2128,6 +2133,25 @@ describe("debug finalization safeguards", () => {
       expect(result.warning).toContain("may omit captured frames");
     }
   );
+
+  it("does not hand over a nonempty unreadable debug container", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    child.exitOnStdinEnd(1);
+    await startAndSettle(api, { mode: "debug" });
+    const file = api.outputFile!;
+    await fs.writeFile(file, Buffer.alloc(64, 1));
+    child.stderr.emit("data", Buffer.from("Error writing trailer: No space left on device"));
+    vi.mocked(verifyDebugVideo).mockRejectedValueOnce(new Error("moov atom not found"));
+    const error = await stopCapture(api).catch((err: Error) => err);
+    expect(verifyDebugVideo).toHaveBeenCalledWith("/fake/ffmpeg", file);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("No readable debug video");
+    expect((error as Error).message).toContain("moov atom not found");
+    expect((error as Error).message).toContain("No space left on device");
+    expect((error as Error).message).not.toMatch(/partial video|returning whatever/);
+  });
 
   it("keeps the stop guard until deferred JPEG cleanup finishes", async () => {
     const api = await makeSession(iosDevice);
