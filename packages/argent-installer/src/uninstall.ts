@@ -21,6 +21,7 @@ import {
   localUninstallCommand,
   isDeclaredLocally,
   isGloballyInstalled,
+  LEGACY_ARGENT_SKILL_NAMES,
   probeLocalInstall,
   resolveInstallMode,
   removeInstallRecord,
@@ -206,9 +207,13 @@ export function removeBundledSkillInstalls(
   for (const skillName of skillNames) {
     const targetPath = path.join(targetDir, skillName);
     try {
-      if (!fs.existsSync(targetPath)) continue;
+      // lstat, not existsSync: an editor dir holds symlinks into .agents/skills,
+      // which this run has already emptied, so the links are dangling.
+      // existsSync follows the link and reports them missing; lstat sees the
+      // link itself.
+      const stats = fs.lstatSync(targetPath, { throwIfNoEntry: false });
+      if (!stats) continue;
 
-      const stats = fs.lstatSync(targetPath);
       if (stats.isDirectory() && !stats.isSymbolicLink()) {
         fs.rmSync(targetPath, { recursive: true, force: true });
       } else {
@@ -508,9 +513,13 @@ export async function uninstall(args: string[]): Promise<void> {
         ? getManagedContentTargets(ALL_ADAPTERS, projectRoot, "global")
         : emptyTargets;
 
-      const bundledSkillNames = getBundledSkillNames(SKILLS_DIR);
+      // Legacy names too: an update that dropped a renamed skill can leave its
+      // dir behind untracked.
+      const argentSkillNames = [
+        ...new Set([...getBundledSkillNames(SKILLS_DIR), ...LEGACY_ARGENT_SKILL_NAMES]),
+      ].sort();
       pruneResults.push(
-        ...cleanupBundledSkills(bundledSkillNames, [
+        ...cleanupBundledSkills(argentSkillNames, [
           ...localTargets.skillTargets,
           ...globalTargets.skillTargets,
         ])
@@ -523,7 +532,7 @@ export async function uninstall(args: string[]): Promise<void> {
         try {
           const { removedSkills, removedFile } = cleanupSkillsLockFile(
             targetPath,
-            bundledSkillNames
+            argentSkillNames
           );
           if (removedSkills.length === 0 && !removedFile) continue;
 

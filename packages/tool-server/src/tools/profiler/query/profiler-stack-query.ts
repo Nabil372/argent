@@ -441,12 +441,17 @@ Modes:
 Use when drilling into native hang stacks, thread CPU breakdown, or memory leaks after native-profiler-analyze.
 Returns a markdown report with native call stacks, thread weights, or leak details for the selected mode.
 Fails if native-profiler-analyze has not been run or no parsed trace data is in memory.`,
+  readOnly: true,
   zodSchema,
   // No chromium entry: it has no native trace capture.
   capability: {
     apple: { simulator: true },
     android: { emulator: true, device: true, unknown: true },
   },
+  // The Android branch re-queries the .pftrace, so a cold trace-processor engine
+  // re-pays the full parse past the 30s MCP fetch timeout, whose abort replays
+  // rather than cancels.
+  longRunning: true,
   services: (params) => ({
     session: nativeProfilerSessionRef(resolveDevice(params.device_id)),
   }),

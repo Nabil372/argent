@@ -21,6 +21,7 @@ import {
   appIdForPlatform,
   authoringPlatform,
   chromiumLaunchSpec,
+  iosLaunchArgs,
   writeNewFlowFile,
   blockSteps,
   BLOCK_DIRECTIVE_KEYS,
@@ -169,7 +170,7 @@ describe("parseFlow", () => {
 
   it("throws on unrecognized entries", async () => {
     const content = 'executionPrerequisite: ""\nsteps:\n  - bogus: line\n';
-    expect(() => parseFlow(content)).toThrow("Unrecognized flow entry");
+    expect(() => parseFlow(content)).toThrow("Unrecognized e2e test entry");
   });
 
   it("renders a small unrecognized entry in full", async () => {
@@ -190,7 +191,7 @@ describe("parseFlow", () => {
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
-    expect(message).toContain("Unrecognized flow entry");
+    expect(message).toContain("Unrecognized e2e test entry");
     expect(message).toContain("…(+");
     expect(message).not.toContain("SECRET-TAIL");
     expect(message.length).toBeLessThan(400);
@@ -213,7 +214,7 @@ describe("parseFlow", () => {
     expect(signal?.error_code).toBe(FAILURE_CODES.FLOW_FILE_INVALID);
     // The yaml library's line/column detail must survive so the user can
     // locate the syntax error.
-    expect((thrown as Error).message).toContain("Invalid flow file:");
+    expect((thrown as Error).message).toContain("Invalid e2e test file:");
     expect((thrown as Error).message).toContain("line 1");
   });
 
@@ -238,7 +239,7 @@ describe("parseFlow", () => {
     ["a null", 'executionPrerequisite: ""\nsteps:\n  - ~\n'],
   ])("names the step shape when %s sits in the top-level steps list", (_shape, content) => {
     expect(entryRejectionMessage(content)).toContain(
-      "Unrecognized flow entry (step must be an object)"
+      "Unrecognized e2e test entry (step must be an object)"
     );
   });
 
@@ -249,8 +250,19 @@ describe("parseFlow", () => {
     // `when:` is only the vehicle — it is today's sole block directive, and the
     // guard it reaches is parseBlockSteps', shared by every block directive.
     expect(entryRejectionMessage(content)).toContain(
-      "Unrecognized flow entry (step must be an object)"
+      "Unrecognized e2e test entry (step must be an object)"
     );
+  });
+
+  it.each([
+    ["await.text.in", "steps:\n  - await: { text: { contains: Welcome } }\n"],
+    ["assert.text.in", "steps:\n  - assert: { text: { contains: Welcome } }\n"],
+    ["when.text.in", "steps:\n  - when: { text: { contains: Welcome } }\n    steps: [echo: hi]\n"],
+    ["type.into", "steps:\n  - type: { text: hello }\n"],
+  ])("classifies an omitted %s instead of crashing on the render", (where, content) => {
+    // An absent key reaches badEntry as `undefined`, which JSON.stringify
+    // renders as the value `undefined` rather than a string.
+    expect(entryRejectionMessage(content)).toContain(`Unrecognized e2e test entry (${where}:`);
   });
 
   it("sugars a bare-string selector into a loose { text } for tap", async () => {
@@ -341,7 +353,7 @@ describe("parseFlow", () => {
           parseFlow(`steps:\n  - tap: { text: ${yamlText}, ${field}: ${value} }\n`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const detail = /^Unrecognized flow entry \((.*)\): /.exec(message)?.[1];
+          const detail = /^Unrecognized e2e test entry \((.*)\): /.exec(message)?.[1];
           expect(detail).toBeDefined();
           return detail!;
         }
@@ -672,7 +684,7 @@ describe("parseFlow", () => {
           },
         ],
       })
-    ).toThrow("Cannot serialize flow await.timeout: needs a positive number of milliseconds");
+    ).toThrow("Cannot serialize e2e test await.timeout: needs a positive number of milliseconds");
   });
 
   it("rejects a timeout on an assert step (an assert is an immediate check)", async () => {
@@ -1601,7 +1613,7 @@ describe("chromium launch parsing", () => {
 
   it("rejects a chromium map with non-string args", async () => {
     expect(() =>
-      parseFlow("steps:\n  - launch: { chromium: { path: ./app, args: [1, 2] } }\n")
+      parseFlow("steps:\n  - launch: { chromium: { path: ./app, args: [[--flag]] } }\n")
     ).toThrow(/launch needs/);
   });
 });
@@ -1633,6 +1645,75 @@ describe("chromiumLaunchSpec", () => {
     );
     expect(appIdForPlatform({ chromium: "./app" }, "chromium")).toBe("./app");
     expect(appIdForPlatform({ ios: "com.acme.app" }, "chromium")).toBeNull();
+  });
+});
+
+describe("ios launch args", () => {
+  it("parses an ios { app, args } entry", async () => {
+    const flow = parseFlow(
+      'steps:\n  - launch: { ios: { app: com.acme.app, args: [-Flag, "YES"] }, android: com.acme.app }\n'
+    );
+    expect(flow.steps).toEqual([
+      {
+        kind: "launch",
+        app: { ios: { app: "com.acme.app", args: ["-Flag", "YES"] }, android: "com.acme.app" },
+      },
+    ]);
+  });
+
+  it("parses an ios { app } entry with no args", async () => {
+    const flow = parseFlow("steps:\n  - launch: { ios: { app: com.acme.app } }\n");
+    expect(flow.steps).toEqual([{ kind: "launch", app: { ios: { app: "com.acme.app" } } }]);
+  });
+
+  it("round-trips an ios { app, args } launch through YAML", async () => {
+    const flow: FlowFile = {
+      executionPrerequisite: "",
+      steps: [{ kind: "launch", app: { ios: { app: "com.acme.app", args: ["-Flag", "YES"] } } }],
+    };
+    expect(parseFlow(serializeFlow(flow)).steps).toEqual(flow.steps);
+  });
+
+  it("rejects an ios map with no app, an empty app, or non-string args", async () => {
+    expect(() => parseFlow("steps:\n  - launch: { ios: { args: [-Flag] } }\n")).toThrow(
+      /launch needs/
+    );
+    expect(() => parseFlow('steps:\n  - launch: { ios: { app: "" } }\n')).toThrow(/launch needs/);
+    expect(() =>
+      parseFlow("steps:\n  - launch: { ios: { app: com.acme.app, args: [[-Flag]] } }\n")
+    ).toThrow(/launch needs/);
+  });
+
+  it("names an unquoted number or boolean arg and says to quote it", async () => {
+    expect(() =>
+      parseFlow("steps:\n  - launch: { ios: { app: com.acme.app, args: [-Count, 5] } }\n")
+    ).toThrow('launch.ios.args[1] is a number (5); quote it so it stays a string: "5"');
+    expect(() =>
+      parseFlow("steps:\n  - launch: { ios: { app: com.acme.app, args: [-Flag, true] } }\n")
+    ).toThrow('launch.ios.args[1] is a boolean (true); quote it so it stays a string: "true"');
+    expect(() =>
+      parseFlow("steps:\n  - launch: { chromium: { path: ./app, args: [--port, 9222] } }\n")
+    ).toThrow("launch.chromium.args[1] is a number (9222)");
+  });
+
+  it("rejects an unknown key in an ios map", async () => {
+    expect(() =>
+      parseFlow("steps:\n  - launch: { ios: { app: com.acme.app, arg: [-Flag] } }\n")
+    ).toThrow(/launch.ios has unknown key `arg`/);
+  });
+
+  it("appIdForPlatform returns the bundle id for ios and ios-remote", async () => {
+    const app = { ios: { app: "com.acme.app", args: ["-Flag"] }, native: "com.acme.native" };
+    expect(appIdForPlatform(app, "ios")).toBe("com.acme.app");
+    expect(appIdForPlatform(app, "ios-remote")).toBe("com.acme.app");
+    expect(appIdForPlatform(app, "android")).toBe("com.acme.native");
+  });
+
+  it("iosLaunchArgs reads only an ios { app, args } entry", async () => {
+    expect(iosLaunchArgs({ ios: { app: "com.acme.app", args: ["-Flag"] } })).toEqual(["-Flag"]);
+    expect(iosLaunchArgs({ ios: "com.acme.app" })).toBeUndefined();
+    expect(iosLaunchArgs("com.acme.app")).toBeUndefined();
+    expect(iosLaunchArgs(undefined)).toBeUndefined();
   });
 });
 
@@ -1743,7 +1824,7 @@ describe("recording sessions", () => {
 
   it("throws when the key has no recording", async () => {
     await expect(requireRecordingSession("/tmp/proj-a", "my-flow")).rejects.toThrow(
-      /No active recording for flow "my-flow"/
+      /No active recording for e2e test "my-flow"/
     );
   });
 
@@ -1763,7 +1844,7 @@ describe("recording sessions", () => {
     await start("/tmp/proj-a", "checkout");
     await start("/tmp/proj-b", "login");
     await expect(requireRecordingSession("/tmp/proj-a", "chekout")).rejects.toThrow(
-      /No active recording for flow "chekout" in \/tmp\/proj-a\./
+      /No active recording for e2e test "chekout" in \/tmp\/proj-a\./
     );
     await expect(requireRecordingSession("/tmp/proj-a", "chekout")).rejects.toThrow(
       /Active recordings: "checkout" \(plus 1 in other projects\)\./
@@ -1861,7 +1942,7 @@ describe("recording sessions", () => {
     clearRecordingSession(await requireRecordingSession("/tmp/proj-a", "my-flow"));
     expect(await getRecordingSession("/tmp/proj-a", "my-flow")).toBeUndefined();
     await expect(requireRecordingSession("/tmp/proj-a", "my-flow")).rejects.toThrow(
-      /No active recording for flow "my-flow"/
+      /No active recording for e2e test "my-flow"/
     );
     // The unrelated recording is untouched.
     expect((await requireRecordingSession("/tmp/proj-a", "other-flow")).name).toBe("other-flow");
@@ -1876,7 +1957,7 @@ describe("recording sessions", () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "clear-moved-key-"));
     try {
       const root = path.join(dir, "proj");
-      const flows = path.join(root, ".argent", "flows");
+      const flows = path.join(root, ".argent", "e2e");
       await fs.mkdir(flows, { recursive: true });
       const first = path.join(dir, "first.yaml");
       const second = path.join(dir, "second.yaml");
@@ -2003,7 +2084,7 @@ describe("getFlowPath name validation", () => {
 
   it("accepts plain alphanumeric names", async () => {
     expect(getFlowPath(root, "my-flow_1")).toBe(
-      path.join(root, ".argent", "flows", "my-flow_1.yaml")
+      path.join(root, ".argent", "e2e", "my-flow_1.yaml")
     );
   });
 
@@ -2014,23 +2095,23 @@ describe("getFlowPath name validation", () => {
   });
 
   it("rejects path-traversal segments", async () => {
-    expect(() => getFlowPath(root, "../../etc/passwd")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath(root, "../foo")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "../../etc/passwd")).toThrow(/Invalid e2e test name/);
+    expect(() => getFlowPath(root, "../foo")).toThrow(/Invalid e2e test name/);
   });
 
   it("rejects path separators", async () => {
-    expect(() => getFlowPath(root, "foo/bar")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath(root, "/abs/path")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "foo/bar")).toThrow(/Invalid e2e test name/);
+    expect(() => getFlowPath(root, "/abs/path")).toThrow(/Invalid e2e test name/);
   });
 
   it("rejects names with spaces or shell metacharacters", async () => {
-    expect(() => getFlowPath(root, "foo bar")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath(root, "foo;bar")).toThrow(/Invalid flow name/);
-    expect(() => getFlowPath(root, "foo$(id)")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "foo bar")).toThrow(/Invalid e2e test name/);
+    expect(() => getFlowPath(root, "foo;bar")).toThrow(/Invalid e2e test name/);
+    expect(() => getFlowPath(root, "foo$(id)")).toThrow(/Invalid e2e test name/);
   });
 
   it("rejects empty names", async () => {
-    expect(() => getFlowPath(root, "")).toThrow(/Invalid flow name/);
+    expect(() => getFlowPath(root, "")).toThrow(/Invalid e2e test name/);
   });
 });
 

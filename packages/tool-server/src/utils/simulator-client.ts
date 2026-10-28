@@ -15,6 +15,7 @@ import {
 } from "./datachannel-proto";
 import type { MoqClient } from "./moq-client";
 import { assertAllowedSimServerEndpoint } from "./external-devices";
+import { captureOnDemandDropped } from "./profiling-devices";
 import { resolveLivePanel, screenLabel, unresolvedPanelNote, type FoldablePanel } from "./foldable";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -26,6 +27,14 @@ import { pathToFileURL } from "node:url";
 // as the lowest scale where Opus 5 and Haiku 4.5 both still read every label and
 // selected-tab underline (#878).
 const DEFAULT_SCREENSHOT_SCALE = 0.25;
+
+/**
+ * Long side of a TV capture (Apple TV, Android TV, Vega) with no scale
+ * requested. A pixel size, not a fraction: 4K and 1080p TVs render the same
+ * layout, so one fraction leaves the 1080p capture half as legible. Below this,
+ * Haiku 4.5 starts misreading tvOS Settings values (71% correct at 480).
+ */
+export const TV_DEFAULT_LONG_SIDE = 576;
 
 // A simulator-server captures from its live frame stream, so it answers HTTP 200
 // `{ error: "no image to export" }` until the first frame lands — reliably so for
@@ -98,6 +107,19 @@ interface CommandAck {
   id?: string;
   status?: string;
   message?: string;
+}
+
+/**
+ * The outstanding command an id-less parse error names, if it names one. serde
+ * reports a `cmd` the server has no variant for as "unknown variant `<cmd>`".
+ */
+function pendingIdNamedBy(conn: Connection, message: string | undefined): string | undefined {
+  const named = message?.match(/unknown variant `([^`]+)`/)?.[1];
+  if (named === undefined) return undefined;
+  for (const [id, entry] of conn.pending) {
+    if (entry.cmd === named) return id;
+  }
+  return undefined;
 }
 
 function failAllPending(conn: Connection, makeError: (cmd: string) => FailureError): void {
@@ -182,7 +204,10 @@ function getOrCreateConnection(api: SimulatorServerApi): Connection {
     if (ack.id != null && !conn.pending.has(ack.id)) return;
     // Only an id-less reply (i.e. an error) is matched positionally, against
     // the oldest outstanding command, which is what an in-order server means by it.
-    const id = ack.id ?? conn.pending.keys().next().value;
+    // One that names the command it could not parse goes to that command: an
+    // older server rejects `capture_on_demand` that way while a slow command
+    // sent before it (a foldable's `rotate`) still waits for its reply.
+    const id = ack.id ?? pendingIdNamedBy(conn, ack.message) ?? conn.pending.keys().next().value;
     if (id == null) return;
     const entry = conn.pending.get(id);
     if (entry == null) return;
@@ -217,6 +242,8 @@ function getOrCreateConnection(api: SimulatorServerApi): Connection {
   ws.on("close", () => {
     connections.delete(key);
     failAllPending(conn, (cmd) => transportError(cmd, key, "the connection closed"));
+    // The server drops the connection's capture_on_demand with it.
+    if (api.deviceId) captureOnDemandDropped(api.deviceId, key);
   });
 
   connections.set(key, conn);
@@ -236,10 +263,11 @@ function getOrCreateConnection(api: SimulatorServerApi): Connection {
  * those cases used to be indistinguishable from a landed tap
  * (https://github.com/software-mansion/argent/issues/932).
  *
- * MoQ has no per-command ack, so it reports less: a send the session refuses
- * (a closed track, a released machine) rejects, while a send that goes out is
- * reported as delivered. That is strictly narrower than the WebSocket ack, and
- * it is still the difference between a failed gesture and `{ tapped: true }`.
+ * MoQ has no per-command ack, so it reports less: a send rejects only once the
+ * session is closed - by `close()`, or when its transport is seen to close,
+ * which can lag a released machine by seconds. Any other send is reported as
+ * delivered. That is strictly narrower than the WebSocket ack, and it is still
+ * the difference between a failed gesture and `{ tapped: true }`.
  */
 export async function sendCommand(
   api: SimulatorServerApi,
@@ -585,11 +613,19 @@ async function pointerPost(
   }
 }
 
+/** What simulator-server's `{ error }` says when it refuses `sensitive` text. */
+const SENSITIVE_TEXT_REFUSED = "refused to set sensitive text";
+
 /**
  * Put `text` on the DEVICE clipboard through simulator-server's
- * `POST /api/clipboard/text`; the host clipboard is untouched. Resolves once the
- * device pasteboard holds the text, so a paste keystroke sent afterwards cannot
- * race the fill.
+ * `POST /api/clipboard/text`. Resolves once the device pasteboard holds the
+ * text, so a paste keystroke sent afterwards cannot race the fill.
+ *
+ * The host clipboard is untouched, unless Device Hub (Xcode 27) has the
+ * simulator open with Use Shared Clipboard on. With `sensitive`,
+ * simulator-server refuses the text on any simulator Device Hub has opened
+ * since it booted, whatever that setting, and this resolves `"refused"`
+ * without setting anything. Builds without `sensitive` ignore it.
  *
  * A simulator-server built without clipboard support — an older build, or a
  * provider's — answers the route with a bare 404, reported as "unsupported"
@@ -598,8 +634,9 @@ async function pointerPost(
 export async function setSimulatorClipboardText(
   api: SimulatorServerApi,
   text: string,
-  signal?: AbortSignal
-): Promise<void> {
+  options: { sensitive?: boolean; signal?: AbortSignal } = {}
+): Promise<"set" | "refused"> {
+  const { sensitive = false, signal } = options;
   if (api.external) assertAllowedSimServerEndpoint("/api/clipboard/text");
 
   let res: Response;
@@ -607,7 +644,7 @@ export async function setSimulatorClipboardText(
     res = await fetch(`${api.apiUrl}/api/clipboard/text`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(sensitive ? { text, sensitive } : { text }),
       signal,
     });
   } catch (err) {
@@ -636,6 +673,7 @@ export async function setSimulatorClipboardText(
   // Like the other simulator-server POST routes, this one answers HTTP 200 for
   // both outcomes and reports a failure in-band (`{ error }`).
   const body = (await res.json().catch(() => null)) as { status?: string; error?: string } | null;
+  if (sensitive && body?.error?.includes(SENSITIVE_TEXT_REFUSED)) return "refused";
   if (!res.ok || body?.status !== "ok") {
     throw new FailureError(
       `Paste failed: could not set the device clipboard (${body?.error ?? `HTTP ${res.status}`}).`,
@@ -647,6 +685,7 @@ export async function setSimulatorClipboardText(
       }
     );
   }
+  return "set";
 }
 
 /**
@@ -702,23 +741,32 @@ async function simulatorPost<T>(
 /** One warning per distinct value: the parse runs on every capture. */
 let warnedScaleValue: string | undefined;
 
-export function getScreenshotScale(): number {
+/** `ARGENT_SCREENSHOT_SCALE` when set to a valid scale, otherwise undefined. */
+export function getScreenshotScaleOverride(): number | undefined {
   const v = process.env.ARGENT_SCREENSHOT_SCALE;
-  if (v) {
-    const n = parseFloat(v);
-    // Below the floor the `scale` parameter enforces, a capture rounds towards
-    // zero pixels and screenshot-diff reports the resulting dimension mismatch
-    // as if the screens differed.
-    if (!Number.isNaN(n) && n >= 0.01 && n <= 1) return n;
-    if (v !== warnedScaleValue) {
-      warnedScaleValue = v;
-      console.warn(
-        `[screenshot] Ignoring ARGENT_SCREENSHOT_SCALE=${v}: expected a number between 0.01 and 1.0. ` +
-          `Using ${DEFAULT_SCREENSHOT_SCALE}.`
-      );
-    }
+  if (!v) return undefined;
+  const n = parseFloat(v);
+  // Below the floor the `scale` parameter enforces, a capture rounds towards
+  // zero pixels and screenshot-diff reports the resulting dimension mismatch
+  // as if the screens differed.
+  if (!Number.isNaN(n) && n >= 0.01 && n <= 1) return n;
+  if (v !== warnedScaleValue) {
+    warnedScaleValue = v;
+    console.warn(
+      `[screenshot] Ignoring ARGENT_SCREENSHOT_SCALE=${v}: expected a number between 0.01 and 1.0. ` +
+        `Using the default.`
+    );
   }
-  return DEFAULT_SCREENSHOT_SCALE;
+  return undefined;
+}
+
+export function getScreenshotScale(): number {
+  return getScreenshotScaleOverride() ?? DEFAULT_SCREENSHOT_SCALE;
+}
+
+/** The scale that takes a TV capture to {@link TV_DEFAULT_LONG_SIDE}, never above 1. */
+export function tvDefaultScale(width: number, height: number): number {
+  return Math.min(1, TV_DEFAULT_LONG_SIDE / Math.max(width, height));
 }
 
 /**

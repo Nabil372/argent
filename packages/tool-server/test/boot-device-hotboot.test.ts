@@ -316,6 +316,107 @@ describe("boot-device Android — hot-boot with cold-boot fallback", () => {
     }
   });
 
+  // A probe without the flag rejects a snapshot saved with it ("feature ...
+  // missing in the snapshot"), so hot boot must pass it to both.
+  it.each([
+    ["darwin", ["-feature", "-Vulkan"]],
+    ["linux", null],
+    ["win32", null],
+  ] as const)("on %s passes the guest Vulkan feature %j", async (platform, expected) => {
+    setPlatform(platform);
+    hasSnapshotMock.mockResolvedValue(true);
+    probeMock.mockResolvedValue({ loadable: true, reason: null });
+    mockHappyBootChain();
+
+    const tool = createBootDeviceTool(registry);
+    await tool.execute!({}, { avdName: "Pixel_7_API_34" });
+
+    const [, , probeOptions] = probeMock.mock.calls[0]!;
+    const hotArgs = spawnMock.mock.calls[0]![1] as string[];
+    for (const args of [(probeOptions as { extraArgs: string[] }).extraArgs, hotArgs]) {
+      const featureIdx = args.indexOf("-feature");
+      expect(featureIdx < 0 ? null : args.slice(featureIdx, featureIdx + 2)).toEqual(expected);
+    }
+  });
+
+  it("disables guest Vulkan on the macOS cold-boot spawn", async () => {
+    setPlatform("darwin");
+    hasSnapshotMock.mockResolvedValue(false);
+    mockHappyBootChain();
+
+    const tool = createBootDeviceTool(registry);
+    await tool.execute!({}, { avdName: "Pixel_7_API_34" });
+
+    const args = spawnMock.mock.calls[0]![1] as string[];
+    expect(args[args.indexOf("-feature") + 1]).toBe("-Vulkan");
+  });
+
+  it.each([
+    ["guestVulkan: true", { guestVulkan: true }, undefined, "Vulkan"],
+    ["ARGENT_EMULATOR_GUEST_VULKAN", {}, " Yes ", "Vulkan"],
+    ["guestVulkan: false over the env var", { guestVulkan: false }, "1", "-Vulkan"],
+  ] as const)("on macOS, %s passes -feature %s", async (_label, extra, env, expected) => {
+    setPlatform("darwin");
+    hasSnapshotMock.mockResolvedValue(false);
+    mockHappyBootChain();
+
+    const prev = process.env.ARGENT_EMULATOR_GUEST_VULKAN;
+    if (env !== undefined) process.env.ARGENT_EMULATOR_GUEST_VULKAN = env;
+    try {
+      const tool = createBootDeviceTool(registry);
+      await tool.execute!({}, { avdName: "Pixel_7_API_34", ...extra });
+      const args = spawnMock.mock.calls[0]![1] as string[];
+      expect(args.filter((a) => a === "-feature")).toHaveLength(1);
+      expect(args[args.indexOf("-feature") + 1]).toBe(expected);
+    } finally {
+      if (prev === undefined) delete process.env.ARGENT_EMULATOR_GUEST_VULKAN;
+      else process.env.ARGENT_EMULATOR_GUEST_VULKAN = prev;
+    }
+  });
+
+  // A reused emulator keeps the guest Vulkan mode it was started with.
+  it.each([
+    ["darwin", "ranchu", {}, /already running with guest Vulkan/],
+    ["darwin", "", { guestVulkan: true }, /already running without guest Vulkan/],
+    ["darwin", "", {}, undefined],
+    ["darwin", "ranchu", { guestVulkan: true }, undefined],
+    ["linux", "ranchu", {}, undefined],
+  ] as const)(
+    "on %s, a reused emulator with ro.boot.hardware.vulkan=%j and %j gets note %s",
+    async (platform, vulkanProp, extra, note) => {
+      setPlatform(platform);
+      execFileMock.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === "adb" && args[0] === "version")
+          return { stdout: "Android Debug Bridge\n", stderr: "" };
+        if (cmd === "emulator" && args[0] === "-list-avds")
+          return { stdout: "Pixel_7_API_34\n", stderr: "" };
+        if (cmd === "adb" && args[0] === "devices")
+          return { stdout: "List of devices attached\nemulator-5554\tdevice\n", stderr: "" };
+        if (cmd === "adb" && args[0] === "-s" && args[2] === "shell") {
+          const shellCmd = args[3] ?? "";
+          if (shellCmd === "getprop ro.boot.qemu.avd_name")
+            return { stdout: "Pixel_7_API_34\n", stderr: "" };
+          if (shellCmd === "getprop ro.boot.hardware.vulkan")
+            return { stdout: `${vulkanProp}\n`, stderr: "" };
+          if (shellCmd.startsWith("getprop")) return { stdout: "unknown\n", stderr: "" };
+          if (shellCmd.startsWith("screencap")) return { stdout: "1\n", stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      });
+
+      const tool = createBootDeviceTool(registry);
+      const result = (await tool.execute!({}, { avdName: "Pixel_7_API_34", ...extra })) as {
+        serial: string;
+        note?: string;
+      };
+
+      expect(spawnMock).not.toHaveBeenCalled();
+      expect(result.serial).toBe("emulator-5554");
+      if (note) expect(result.note).toMatch(note);
+      else expect(result).not.toHaveProperty("note");
+    }
+  );
+
   it.each([
     ["empty", ""],
     ["whitespace", "   "],
@@ -600,9 +701,9 @@ describe("boot-device Android — hot-boot with cold-boot fallback", () => {
 
       const tool = createBootDeviceTool(registry);
       const resultP = tool.execute!({}, { avdName: "Pixel_7_API_34" });
-      // Drain the 8 s polling budget + a margin for the post-fail cold-boot
-      // chain (also parks on setTimeout).
-      await vi.advanceTimersByTimeAsync(15_000);
+      // Drain the 8 s polling budget, the 30 s wait for the killed emulator,
+      // which this mock keeps listing, and a margin for the cold-boot chain.
+      await vi.advanceTimersByTimeAsync(45_000);
       const result = await resultP;
 
       expect(spawnMock).toHaveBeenCalledTimes(2);
@@ -613,6 +714,82 @@ describe("boot-device Android — hot-boot with cold-boot fallback", () => {
       vi.useRealTimers();
     }
   });
+
+  // The emulator takes the lowest free console port, so a spawn after a kill
+  // registers under the killed emulator's serial once adb has dropped it.
+  function mockSerialReuse(opts: { runningAtStart: boolean; blankAtSpawn: number | null }) {
+    let alive = opts.runningAtStart;
+    let spawns = 0;
+    let killedAt = -1;
+    spawnMock.mockImplementation(() => {
+      spawns += 1;
+      alive = true;
+      return fakeChild();
+    });
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === "emulator" && args[0] === "-list-avds")
+        return { stdout: "Pixel_7_API_34\n", stderr: "" };
+      if (cmd === "adb" && args[0] === "version")
+        return { stdout: "Android Debug Bridge\n", stderr: "" };
+      if (cmd === "adb" && args[0] === "devices") {
+        // adb keeps listing a killed emulator for a couple of polls.
+        const listed = alive || (killedAt >= 0 && Date.now() - killedAt < 1_500);
+        return {
+          stdout: `List of devices attached\n${listed ? "emulator-5554\tdevice\n" : ""}`,
+          stderr: "",
+        };
+      }
+      if (cmd === "adb" && args[0] === "-s" && args[2] === "emu") {
+        alive = false;
+        killedAt = Date.now();
+        return { stdout: "OK\n", stderr: "" };
+      }
+      if (cmd === "adb" && args[0] === "-s" && args[2] === "shell") {
+        const shellCmd = args[3] ?? "";
+        if (shellCmd === "getprop ro.boot.qemu.avd_name")
+          return { stdout: "Pixel_7_API_34\n", stderr: "" };
+        if (shellCmd.startsWith("getprop sys.boot_completed")) return { stdout: "1\n", stderr: "" };
+        if (shellCmd.startsWith("getprop")) return { stdout: "unknown\n", stderr: "" };
+        if (shellCmd === "pm path android")
+          return { stdout: "package:/system/framework/framework-res.apk\n", stderr: "" };
+        if (shellCmd.startsWith("screencap"))
+          return { stdout: spawns === opts.blankAtSpawn ? "0\n" : "1\n", stderr: "" };
+        return { stdout: "\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+  }
+
+  it.each([
+    ["force: true on a running AVD", true, null, { force: true }, 1],
+    ["a running AVD killed for a blank frame", true, 0, {}, 1],
+    ["a hot boot torn down for a blank frame", false, 1, {}, 2],
+  ] as const)(
+    "boots again under the same serial after %s",
+    async (_label, runningAtStart, blankAtSpawn, extra, expectedSpawns) => {
+      vi.useFakeTimers();
+      try {
+        hasSnapshotMock.mockResolvedValue(true);
+        probeMock.mockResolvedValue({ loadable: true, reason: null });
+        mockSerialReuse({ runningAtStart, blankAtSpawn });
+
+        const tool = createBootDeviceTool(registry);
+        const resultP = tool.execute!({}, { avdName: "Pixel_7_API_34", ...extra });
+        const settled = resultP.then(
+          (r) => ({ r }),
+          (e: unknown) => ({ e })
+        );
+        // Past the 30 s hot and 60 s cold registration budgets.
+        await vi.advanceTimersByTimeAsync(120_000);
+        const outcome = await settled;
+
+        expect(outcome).toEqual({ r: expect.objectContaining({ serial: "emulator-5554" }) });
+        expect(spawnMock).toHaveBeenCalledTimes(expectedSpawns);
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
 
   it("returns the already-running emulator without spawning when the AVD is live and its framebuffer is healthy", async () => {
     // adb devices reports the AVD already attached; getprop answers with the
