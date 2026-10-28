@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { maxHeaderSize } from "node:http";
 import * as path from "node:path";
+import { parse as parseYaml } from "yaml";
 
 import {
   encodeClientSecrets,
@@ -359,13 +360,24 @@ async function forwardedSecrets(args: unknown): Promise<Map<string, string> | un
       ...(wire.members ?? []).filter((member) => member.role === "flow"),
     ];
     for (const file of yaml) {
+      let text: string | undefined;
       if (typeof file.content === "string") {
-        scan(Buffer.from(file.content, "base64").toString("utf8"));
+        text = Buffer.from(file.content, "base64").toString("utf8");
       } else if (file.uploadId !== undefined && file.canonical !== undefined) {
         // Sent through `POST /upload`, so read where it was sent from. Gone
         // since then, it leaves its names to the tool-server.
-        scan(await readFile(file.canonical, "utf8").catch(() => ""));
+        text = await readFile(file.canonical, "utf8").catch(() => undefined);
       }
+      // The parsed values, as the runner reads them: a long string can fold
+      // inside a placeholder, and a comment is never typed. A file that does
+      // not parse fails on the tool-server too.
+      let parsed: unknown;
+      try {
+        parsed = text === undefined ? undefined : parseYaml(text);
+      } catch {
+        continue;
+      }
+      await visit(parsed);
     }
   };
   await visit(args);
@@ -389,6 +401,9 @@ export function forwardsSecretsTo(url: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "");
   return protocol === "https:" || ["127.0.0.1", "localhost", "::1"].includes(host);
 }
+
+/** Upper bound of the head bytes fetch adds to a call's own headers and URL. */
+const FETCH_HEAD_BYTES = 256;
 
 export function createToolsClient(options: CreateToolsClientOptions = {}): ToolsClient {
   let cached: ToolsServerHandle | null = null;
@@ -531,34 +546,46 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       );
     }
     const encodedSecrets = clientSecrets ? encodeClientSecrets(clientSecrets) : undefined;
-    // Past Node's header limit the tool-server refuses the call, and with a
-    // large body the socket closes mid-send instead of answering 431.
-    if (encodedSecrets !== undefined && encodedSecrets.length > maxHeaderSize) {
-      throw new Error(
-        `forward-secrets would send ${[...clientSecrets!.keys()].join(", ")} in an ` +
-          `${CLIENT_SECRETS_HEADER} header of ${encodedSecrets.length} bytes, more than the ` +
-          `${maxHeaderSize} bytes of request headers a tool-server accepts, so the call was not sent. ` +
-          `Define a secret this large on the machine running the tool-server instead.`
-      );
+    const toolUrl = `${url}/tools/${encodeURIComponent(meta?.name ?? name)}`;
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      // Tells the tool-server the call came over a link, a link to
+      // 127.0.0.1 included, which nothing else in the request shows.
+      ...(remote ? { [LINKED_CALL_HEADER]: "1" } : {}),
+      // Tells the tool-server this client writes recordings under
+      // `.argent/e2e/`; an older client writes only `.argent/flows/`.
+      [E2E_DIR_CLIENT_HEADER]: "1",
+      ...(encodedSecrets ? { [CLIENT_SECRETS_HEADER]: encodedSecrets } : {}),
+      // A proxy that compresses the stream holds each line until its buffer
+      // fills. `identity` keeps the stream uncompressed end to end.
+      ...(stream ? { "Accept": "application/x-ndjson", "Accept-Encoding": "identity" } : {}),
+      ...authHeaders(token),
+    };
+    if (encodedSecrets !== undefined) {
+      // Node's limit counts the whole head, fetch's own headers included. Past
+      // it the tool-server refuses the call, and with a large body the socket
+      // closes mid-send instead of answering 431.
+      const headBytes =
+        toolUrl.length +
+        FETCH_HEAD_BYTES +
+        Object.entries(headers).reduce(
+          (sum, [key, value]) => sum + key.length + value.length + 4,
+          0
+        );
+      if (headBytes > maxHeaderSize) {
+        throw new Error(
+          `forward-secrets would send ${[...clientSecrets!.keys()].join(", ")} in an ` +
+            `${CLIENT_SECRETS_HEADER} header of ${encodedSecrets.length} bytes, which takes the request ` +
+            `headers past the ${maxHeaderSize} bytes a tool-server accepts, so the call was not sent. ` +
+            `Define a secret this large on the machine running the tool-server instead.`
+        );
+      }
     }
     const res = await doFetch(
-      `${url}/tools/${encodeURIComponent(meta?.name ?? name)}`,
+      toolUrl,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          // Tells the tool-server the call came over a link, a link to
-          // 127.0.0.1 included, which nothing else in the request shows.
-          ...(remote ? { [LINKED_CALL_HEADER]: "1" } : {}),
-          // Tells the tool-server this client writes recordings under
-          // `.argent/e2e/`; an older client writes only `.argent/flows/`.
-          [E2E_DIR_CLIENT_HEADER]: "1",
-          ...(encodedSecrets ? { [CLIENT_SECRETS_HEADER]: encodedSecrets } : {}),
-          // A proxy that compresses the stream holds each line until its buffer
-          // fills. `identity` keeps the stream uncompressed end to end.
-          ...(stream ? { "Accept": "application/x-ndjson", "Accept-Encoding": "identity" } : {}),
-          ...authHeaders(token),
-        },
+        headers,
         body: JSON.stringify(finalArgs ?? {}),
         signal: opts?.signal,
         // A followed redirect would re-send the values to wherever it points.

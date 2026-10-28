@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stringify as yamlStringify } from "yaml";
 import { redirectHomeTo } from "./helpers/home-redirect.js";
 
 let createToolsClient: typeof import("../src/tools-client.js").createToolsClient;
@@ -201,10 +202,44 @@ describe("forward-secrets", () => {
   it("does not send a header over Node's header limit", async () => {
     writeFileSync(join(project, ".argent", "secrets.env"), `BIG=${"s".repeat(20_000)}\n`);
     await expect(client().callTool("keyboard", { text: "{{secret:BIG}}" })).rejects.toThrow(
-      "forward-secrets would send BIG in an x-argent-client-secrets header of 26680 bytes, more than " +
-        "the 16384 bytes of request headers a tool-server accepts, so the call was not sent."
+      "forward-secrets would send BIG in an x-argent-client-secrets header of 26680 bytes, which takes " +
+        "the request headers past the 16384 bytes a tool-server accepts, so the call was not sent."
     );
     expect(sent).toEqual([]);
+  });
+
+  it("counts the other request headers against Node's header limit", async () => {
+    // Under 16384 bytes on its own, over it with the rest of the head.
+    writeFileSync(join(project, ".argent", "secrets.env"), `BIG=${"s".repeat(12_200)}\n`);
+    await expect(client().callTool("keyboard", { text: "{{secret:BIG}}" })).rejects.toThrow(
+      "header of 16280 bytes, which takes the request headers past the 16384 bytes"
+    );
+    expect(sent).toEqual([]);
+  });
+
+  it.each([
+    [431, ""],
+    [400, "<html>400 Bad Request</html>"],
+  ])("keeps a plain %i for a call that forwards no secret", async (status, body) => {
+    answerCalls(status, { "Content-Type": "text/html" }, body);
+    await expect(client().callTool("keyboard", { text: "plain" })).rejects.toThrow(
+      new RegExp(`^${status} `)
+    );
+  });
+
+  it("follows a redirect for a call that forwards no secret", async () => {
+    const sink = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: { followed: true } }));
+    });
+    await new Promise<void>((resolve) => sink.listen(0, "127.0.0.1", resolve));
+    answerCalls(307, { Location: `http://127.0.0.1:${(sink.address() as AddressInfo).port}/x` });
+    try {
+      const result = await client().callTool("keyboard", { text: "plain" });
+      expect(result.data).toEqual({ followed: true });
+    } finally {
+      sink.close();
+    }
   });
 
   it("keeps the tool-server's own 400 error", async () => {
@@ -267,17 +302,22 @@ describe("forward-secrets", () => {
   it("reads names from YAML file inputs and flow members only", async () => {
     writeFileSync(join(project, ".argent", "secrets.env"), "A=1\nB=2\nC=3\nD=4\nE=5\nF=6\n");
     await client().callTool("keyboard", {
-      yml: wire({ path: "/p/login.yml", content: base64("{{secret:A}}") }),
+      yml: wire({ path: "/p/login.yml", content: base64('text: "{{secret:A}}"') }),
       upper: wire({
         path: "/p/LOGIN.YAML",
-        content: base64("{{secret:B}}"),
+        content: base64('text: "{{secret:B}}"'),
         members: [
-          { role: "flow", key: "k1", path: "/p/frag", content: base64("{{secret:C}}") },
-          { role: "tool", key: "k2", path: "/p/arg.yaml", content: base64("{{secret:D}}") },
-          { role: "baseline", key: "k3", path: "/p/b.png", content: base64("{{secret:E}}") },
+          { role: "flow", key: "k1", path: "/p/frag", content: base64('text: "{{secret:C}}"') },
+          { role: "tool", key: "k2", path: "/p/arg.yaml", content: base64('text: "{{secret:D}}"') },
+          {
+            role: "baseline",
+            key: "k3",
+            path: "/p/b.png",
+            content: base64('text: "{{secret:E}}"'),
+          },
         ],
       }),
-      text: wire({ path: "/p/notes.txt", content: base64("{{secret:F}}") }),
+      text: wire({ path: "/p/notes.txt", content: base64('text: "{{secret:F}}"') }),
     });
     expect(lastSecrets()).toEqual({ A: "1", B: "2", C: "3" });
   });
@@ -304,5 +344,18 @@ describe("forward-secrets", () => {
       }),
     });
     expect(lastSecrets()).toEqual({ A: "1" });
+  });
+
+  it("reads a placeholder that a long YAML string folds, and not one in a comment", async () => {
+    writeFileSync(join(project, ".argent", "secrets.env"), "API_KEY=s3cr3t\nOLD=x\n");
+    // As serializeFlow writes it: the fold escapes a line break inside the placeholder.
+    const text =
+      "Login: https://staging.example.com/auth/callback?redirect=/home&s={{secret:API_KEY}}";
+    const yaml = `# was {{secret:OLD}}\n${yamlStringify({ steps: [{ type: { text } }] }, { blockQuote: false })}`;
+    expect(yaml).not.toContain("{{secret:API_KEY}}");
+    await client().callTool("keyboard", {
+      flow: wire({ path: "/p/login.yaml", content: base64(yaml) }),
+    });
+    expect(lastSecrets()).toEqual({ API_KEY: "s3cr3t" });
   });
 });
