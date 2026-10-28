@@ -492,6 +492,8 @@ describe("screen-recording session blueprint", () => {
       expect(message).toContain("stop-all-simulator-servers");
       // Nothing else in the process still knows this path exists.
       expect(message).toContain(output);
+      expect(message).toContain("Check that it plays");
+      expect(message).not.toContain("may already have been delivered");
       expect(getFailureSignal(err)?.error_code).toBe(
         FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
       );
@@ -1981,9 +1983,13 @@ describe("debug finalization safeguards", () => {
     }
   );
 
-  it.each([true, false])(
-    "preserves diagnostics when teardown follows a completed stop (saved: %s)",
-    async (saved) => {
+  it.each([
+    { saved: true, removed: false },
+    { saved: true, removed: true },
+    { saved: false, removed: false },
+  ])(
+    "preserves diagnostics when teardown follows a completed stop ($saved, removed: $removed)",
+    async ({ saved, removed }) => {
       const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
         device: iosDevice,
       } as never);
@@ -1993,6 +1999,7 @@ describe("debug finalization safeguards", () => {
       const outputFile = instance.api.outputFile!;
       if (saved) await fs.writeFile(outputFile, Buffer.alloc(64, 1));
       await stopCapture(instance.api).catch(() => {});
+      if (removed) await fs.rm(outputFile);
       await instance.dispose();
       const error = await stopCapture(await makeSession(iosDevice), outputFile).catch(
         (err: Error) => err
@@ -2002,12 +2009,34 @@ describe("debug finalization safeguards", () => {
       else {
         expect((error as Error).message).toContain("may already have been delivered");
         expect((error as Error).message).toContain("Teardown ended its retry state");
+        if (removed) {
+          expect((error as Error).message).toContain("is no longer available at");
+          expect((error as Error).message).not.toContain("No recording output was saved");
+        }
       }
       expect(getFailureSignal(error)?.error_code).toBe(
         FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
       );
     }
   );
+
+  it("describes possibly partial output after a failed stop and teardown", async () => {
+    const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+      device: iosDevice,
+    } as never);
+    fakeStream();
+    fakeChild().exitOnStdinEnd(1);
+    await startAndSettle(instance.api, { mode: "debug" });
+    const outputFile = instance.api.outputFile!;
+    await fs.writeFile(outputFile, Buffer.alloc(64, 1));
+    mockResolveFfmpeg.mockResolvedValueOnce(null);
+    await expect(stopCapture(instance.api)).rejects.toThrow("validation did not complete");
+    await instance.dispose();
+    const error = await stopCapture(await makeSession(iosDevice)).catch((err: Error) => err);
+    expect((error as Error).message).toContain(outputFile);
+    expect((error as Error).message).toContain("Check that it plays");
+    expect((error as Error).message).not.toContain("may already have been delivered");
+  });
 
   it.each([0, 1])("removes disposed debug JPEGs after encoder exit %s", async (exitCode) => {
     const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {

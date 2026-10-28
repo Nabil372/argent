@@ -337,13 +337,13 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
             recordReapedSession(
               "screen-recording",
               state.deviceId,
-              outputExists
-                ? stopResult && !(stopResult instanceof Error)
-                  ? `The completed recording is at ${abandonedOutput}. It may already have been delivered. Teardown ended its retry state.`
-                  : `The recording output is at ${abandonedOutput}. Check that it plays before re-recording.`
-                : stopResult instanceof Error
-                  ? stopResult.message
-                  : "No recording output was saved."
+              stopResult && !(stopResult instanceof Error)
+                ? `The completed recording ${outputExists ? "is at" : "is no longer available at"} ${abandonedOutput}. It may already have been delivered. Teardown ended its retry state.`
+                : outputExists
+                  ? `The recording output is at ${abandonedOutput}. Check that it plays before re-recording.`
+                  : stopResult instanceof Error
+                    ? stopResult.message
+                    : "No recording output was saved."
             );
           }
         }
