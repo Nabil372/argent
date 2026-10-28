@@ -1132,10 +1132,10 @@ function commitOutput(outputJson: string): Pick<FlowScriptResult, "ok" | "output
 /**
  * How deep a document may nest; the size cap alone allows ~500 000 levels. A
  * fixed number rather than a trial encode, so the verdict does not depend on the
- * host's Node: above the `.mjs` runner's own recursion limit, below where
- * `JSON.stringify` (bare in `flow-add-script.ts`) overflows on Node 24 and older.
+ * host: well below where the recursive `JSON.stringify` of Node 24 and older
+ * overflows on every platform (Windows x64 already does below 4096).
  */
-const MAX_OUTPUT_DEPTH = 4096;
+const MAX_OUTPUT_DEPTH = 1024;
 
 /** Enough of a path to place a value. */
 const MAX_PROBLEM_PATH_CHARS = 80;

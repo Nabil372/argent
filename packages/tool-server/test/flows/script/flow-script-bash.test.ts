@@ -341,19 +341,18 @@ describe("the document a bash step returns", () => {
   }, 30_000);
 
   // Size does not bound depth, and a later step's `JSON.stringify` of the
-  // document is recursive. The bound sits above what the runner's own `walk`
-  // takes from a `.mjs`, so an ordinary document passes.
+  // document is recursive on Node 24 and older.
   it("refuses a document nested past the depth a later step can encode, and no shallower", async () => {
     const ws = workspace();
     const nested = (depth: number) => `${'{"a":'.repeat(depth)}1${"}".repeat(depth)}`;
     const copy = (file: string) =>
       `cp ${JSON.stringify(file)} "$ARGENT_OUTPUT.n"\nmv "$ARGENT_OUTPUT.n" "$ARGENT_OUTPUT"`;
-    const deep = await runBash(ws, "deep", copy(ws.write("deep.json", nested(5_000))));
-    const ok = await runBash(ws, "deep-ok", copy(ws.write("ok.json", nested(3_000))));
+    const deep = await runBash(ws, "deep", copy(ws.write("deep.json", nested(1_025))));
+    const ok = await runBash(ws, "deep-ok", copy(ws.write("ok.json", nested(1_024))));
 
     expect(deep.failure?.kind).toBe("output");
     expect(deep.failure?.message).toContain("nests deeper than");
-    // Not the 5000-segment path.
+    // Not the 1025-segment path.
     expect(deep.failure!.message.length).toBeLessThan(200);
     expect(ok.failure).toBeUndefined();
   }, 30_000);
