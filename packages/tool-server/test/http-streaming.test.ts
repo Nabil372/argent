@@ -321,7 +321,7 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     }
   );
 
-  it.each(["sequence", "flow"])(
+  it.each(["sequence", "flow", "flow-fold", "flow-tap", "flow-launch", "flow-snapshot"])(
     "propagates shutdown out of a real %s orchestrator",
     async (kind) => {
       const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
@@ -366,11 +366,18 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
             file,
             serializeFlow({
               executionPrerequisite: "",
-              steps: [0, 1].map(() => ({
-                kind: "tool" as const,
-                name: "keyboard",
-                args: { text: "test" },
-              })),
+              steps: [
+                { kind: "tool", name: "keyboard", args: { text: "test" } },
+                kind === "flow-fold"
+                  ? { kind: "fold", posture: "open" }
+                  : kind === "flow-tap"
+                    ? { kind: "tap", x: 0.5, y: 0.5 }
+                    : kind === "flow-launch"
+                      ? { kind: "launch", app: "com.example.test" }
+                      : kind === "flow-snapshot"
+                        ? { kind: "snapshot", name: "test", maxMismatch: 0.5 }
+                        : { kind: "tool", name: "keyboard", args: { text: "test" } },
+              ],
             })
           );
           const tool = createRunFlowTool(registry);
