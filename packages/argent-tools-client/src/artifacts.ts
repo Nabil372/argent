@@ -27,7 +27,6 @@ import {
   open,
   readFile,
   readdir,
-  readlink,
   realpath,
   rename,
   rm,
@@ -35,10 +34,11 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { tmpdir, hostname, platform } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 
+import { processNamespaceId } from "@argent/registry";
 import { safeExtractTarGz } from "@argent/archive";
 import { argentHomeDir, findProjectRoot, getConfigValueByKey } from "@argent/configuration-core";
 
@@ -282,21 +282,6 @@ async function writeDurableUnique(
   return null;
 }
 
-async function downloadPrefix(): Promise<string | null> {
-  let identity = hostname();
-  if (platform() === "linux") {
-    try {
-      identity += await readFile("/proc/sys/kernel/random/boot_id", "utf8");
-      identity += await readlink("/proc/self/ns/pid");
-    } catch {
-      return null;
-    }
-  } else if (platform() !== "darwin") {
-    return null;
-  }
-  return `.argent-download-${createHash("sha1").update(identity).digest("hex").slice(0, 12)}-`;
-}
-
 async function cleanupDownloads(dir: string, prefix: string): Promise<void> {
   for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
     if (!entry.isDirectory() || !entry.name.startsWith(prefix)) continue;
@@ -317,7 +302,8 @@ async function saveDurableFile(
   filename: string,
   write: (partial: string) => Promise<void>
 ): Promise<string> {
-  const prefix = await downloadPrefix();
+  const namespace = await processNamespaceId();
+  const prefix = namespace ? `.argent-download-${namespace}-` : null;
   if (prefix) await cleanupDownloads(dir, prefix);
   const staging = await mkdtemp(join(dir, `${prefix ?? ".argent-download-"}${process.pid}-`));
   try {

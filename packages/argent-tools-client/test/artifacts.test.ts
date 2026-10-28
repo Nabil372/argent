@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, rm, readFile, writeFile, stat, symlink, readdir } from "node:fs/promises";
-import * as os from "node:os";
+import { processNamespaceId } from "@argent/registry";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import {
@@ -16,9 +16,11 @@ import {
 } from "../src/artifacts.js";
 import { redirectHomeTo } from "./helpers/home-redirect.js";
 
-vi.mock("node:os", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:os")>()),
+vi.mock("@argent/registry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/registry")>()),
+  processNamespaceId: vi.fn(async () => "aaaaaaaaaaaa"),
 }));
+beforeEach(() => vi.mocked(processNamespaceId).mockResolvedValue("aaaaaaaaaaaa"));
 
 vi.mock("node:fs/promises", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs/promises")>()),
@@ -1175,87 +1177,63 @@ describe("materializeArtifacts durable destination", () => {
     }
   });
 
-  it.each(["darwin", "linux"] as const)(
-    "reaps only dead-owner partials in the current PID namespace on %s",
-    async (platform) => {
-      const platformMock = vi.spyOn(os, "platform").mockReturnValue(platform);
-      const readlink = vi.spyOn(fs, "readlink").mockResolvedValue("pid:[1234]");
-      const originalRead = fs.readFile;
-      const boot = vi
-        .spyOn(fs, "readFile")
-        .mockImplementation(((...args: Parameters<typeof fs.readFile>) =>
-          String(args[0]) === "/proc/sys/kernel/random/boot_id"
-            ? Promise.resolve("boot-id")
-            : originalRead(...args)) as typeof fs.readFile);
-      const create = vi.spyOn(fs, "mkdtemp");
-      const dir = join(projectRoot, ".argent/recordings");
-      const save = () =>
-        materializeArtifacts(
-          {
-            video: {
-              ...handle("saved", "saved.mp4", "video/mp4"),
-              size: MP4.length,
-              saveDir: ".argent/recordings",
-            },
+  it("reaps only dead-owner partials in the current process namespace", async () => {
+    const create = vi.spyOn(fs, "mkdtemp");
+    const dir = join(projectRoot, ".argent/recordings");
+    const save = () =>
+      materializeArtifacts(
+        {
+          video: {
+            ...handle("saved", "saved.mp4", "video/mp4"),
+            size: MP4.length,
+            saveDir: ".argent/recordings",
           },
-          {
-            toolsUrl: "http://remote:3001",
-            fetchImpl: vi.fn(async () => new Response(Buffer.from(MP4))),
-          }
-        );
+        },
+        {
+          toolsUrl: "http://remote:3001",
+          fetchImpl: vi.fn(async () => new Response(Buffer.from(MP4))),
+        }
+      );
+    try {
+      await save();
+      const template = String(
+        create.mock.calls.find(([p]) => String(p).includes(".argent-download-"))![0]
+      );
+      expect(template).toMatch(new RegExp(`\\.argent-download-[a-f0-9]{12}-${process.pid}-$`));
+      const prefix = template.slice(
+        template.lastIndexOf(".argent-download-"),
+        -`${process.pid}-`.length
+      );
+      const dead = `${prefix}91919191-dead`;
+      const alive = `${prefix}${process.pid}-alive`;
+      const denied = `${prefix}81818181-denied`;
+      const other = `.argent-download-${prefix.includes("000000000000") ? "111111111111" : "000000000000"}-91919191-dead`;
+      for (const name of [dead, alive, denied, other, "recording-completed"]) {
+        await mkdir(join(dir, name), { recursive: true });
+        await writeFile(join(dir, name, "recording.part"), "part");
+      }
+      const probe = vi.spyOn(process, "kill").mockImplementation((pid) => {
+        if (pid === 91919191) throw Object.assign(new Error("gone"), { code: "ESRCH" });
+        if (pid === 81818181) throw Object.assign(new Error("denied"), { code: "EPERM" });
+        return true;
+      });
       try {
         await save();
-        const template = String(
-          create.mock.calls.find(([p]) => String(p).includes(".argent-download-"))![0]
+        expect(await readdir(dir)).toEqual(
+          expect.arrayContaining([alive, denied, other, "recording-completed", "saved.mp4"])
         );
-        expect(template).toMatch(new RegExp(`\\.argent-download-[a-f0-9]{12}-${process.pid}-$`));
-        const prefix = template.slice(
-          template.lastIndexOf(".argent-download-"),
-          -`${process.pid}-`.length
-        );
-        const dead = `${prefix}91919191-dead`;
-        const alive = `${prefix}${process.pid}-alive`;
-        const denied = `${prefix}81818181-denied`;
-        const other = `.argent-download-${prefix.includes("000000000000") ? "111111111111" : "000000000000"}-91919191-dead`;
-        for (const name of [dead, alive, denied, other, "recording-completed"]) {
-          await mkdir(join(dir, name), { recursive: true });
-          await writeFile(join(dir, name, "recording.part"), "part");
-        }
-        const probe = vi.spyOn(process, "kill").mockImplementation((pid) => {
-          if (pid === 91919191) throw Object.assign(new Error("gone"), { code: "ESRCH" });
-          if (pid === 81818181) throw Object.assign(new Error("denied"), { code: "EPERM" });
-          return true;
-        });
-        try {
-          await save();
-          expect(await readdir(dir)).toEqual(
-            expect.arrayContaining([alive, denied, other, "recording-completed", "saved.mp4"])
-          );
-          expect(await readdir(dir)).not.toContain(dead);
-        } finally {
-          probe.mockRestore();
-        }
+        expect(await readdir(dir)).not.toContain(dead);
       } finally {
-        create.mockRestore();
-        boot.mockRestore();
-        readlink.mockRestore();
-        platformMock.mockRestore();
+        probe.mockRestore();
       }
+    } finally {
+      create.mockRestore();
     }
-  );
+  });
 
   it.each(["different", "unavailable"])(
     "preserves another writer when its PID namespace is %s",
     async (namespace) => {
-      const platformMock = vi.spyOn(os, "platform").mockReturnValue("linux");
-      const readlink = vi.spyOn(fs, "readlink").mockResolvedValue("pid:[1234]");
-      const originalRead = fs.readFile;
-      const boot = vi
-        .spyOn(fs, "readFile")
-        .mockImplementation(((...args: Parameters<typeof fs.readFile>) =>
-          String(args[0]) === "/proc/sys/kernel/random/boot_id"
-            ? Promise.resolve("boot-id")
-            : originalRead(...args)) as typeof fs.readFile);
       const probe = vi.spyOn(process, "kill").mockImplementation(() => {
         throw Object.assign(new Error("not visible here"), { code: "ESRCH" });
       });
@@ -1283,8 +1261,9 @@ describe("materializeArtifacts durable destination", () => {
           )!;
           expect((await stat(join(dir, staging, "recording.part"))).size).toBe(4);
         });
-        if (namespace === "different") readlink.mockResolvedValue("pid:[5678]");
-        else readlink.mockRejectedValue(Object.assign(new Error("no proc"), { code: "ENOENT" }));
+        vi.mocked(processNamespaceId).mockResolvedValue(
+          namespace === "different" ? "bbbbbbbbbbbb" : null
+        );
         await materializeArtifacts(
           { video: { ...video, id: "second", filename: "second.mp4", size: MP4.length } },
           {
@@ -1299,9 +1278,6 @@ describe("materializeArtifacts durable destination", () => {
         expect((await readFile(join(dir, "first.mp4"))).toString()).toBe("partrest");
       } finally {
         probe.mockRestore();
-        boot.mockRestore();
-        readlink.mockRestore();
-        platformMock.mockRestore();
       }
     }
   );

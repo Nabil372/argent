@@ -1,15 +1,18 @@
 import { promises as fs, renameSync } from "node:fs";
 import os from "node:os";
+import { processNamespaceId } from "@argent/registry";
 import path from "node:path";
 
 const PREFIX = "argent-recording-frames-";
 
 export async function cleanupAbandonedFrames(): Promise<void> {
+  const namespace = await processNamespaceId();
+  if (!namespace) return;
   for (const entry of await fs.readdir(os.tmpdir(), { withFileTypes: true })) {
     if (!entry.isDirectory() || !entry.name.startsWith(PREFIX)) continue;
     const directory = path.join(os.tmpdir(), entry.name);
-    const owner = /^(\d+)-/.exec(entry.name.slice(PREFIX.length));
-    if (!owner) continue;
+    const owner = /^(\d+)-([a-f0-9]{12})-/.exec(entry.name.slice(PREFIX.length));
+    if (!owner || owner[2] !== namespace) continue;
     try {
       process.kill(Number(owner[1]), 0);
       continue;
@@ -26,7 +29,8 @@ export async function cleanupAbandonedFrames(): Promise<void> {
 
 export async function createFrameDirectory(): Promise<string> {
   await cleanupAbandonedFrames();
-  return fs.mkdtemp(path.join(os.tmpdir(), `${PREFIX}${process.pid}-`));
+  const namespace = await processNamespaceId();
+  return fs.mkdtemp(path.join(os.tmpdir(), `${PREFIX}${process.pid}-${namespace ?? "unknown"}-`));
 }
 
 // The encoder can outlive the tool-server's shutdown grace.

@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
+import { processNamespaceId } from "@argent/registry";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
@@ -9,9 +10,15 @@ import {
 } from "../src/tools/screen-recording/frame-directory";
 import { redirectTmpdir } from "./helpers/tmpdir-env";
 
+vi.mock("@argent/registry", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@argent/registry")>()),
+  processNamespaceId: vi.fn(async () => "aaaaaaaaaaaa"),
+}));
+
 let root = "";
 let restore = () => {};
 beforeEach(async () => {
+  vi.mocked(processNamespaceId).mockResolvedValue("aaaaaaaaaaaa");
   root = await fs.mkdtemp(path.join(os.tmpdir(), "argent-spool-test-"));
   restore = redirectTmpdir(root);
 });
@@ -22,8 +29,8 @@ afterEach(async () => {
 });
 
 it("reaps dead owners and leaves every live process's spools alone", async () => {
-  const dead = path.join(root, "argent-recording-frames-999999-dead");
-  const live = path.join(root, "argent-recording-frames-12345-live");
+  const dead = path.join(root, "argent-recording-frames-999999-aaaaaaaaaaaa-dead");
+  const live = path.join(root, "argent-recording-frames-12345-aaaaaaaaaaaa-live");
   await fs.mkdir(dead);
   await fs.mkdir(live);
   vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
@@ -57,8 +64,8 @@ it("leaves ownerless, malformed and unrelated directories alone regardless of ag
 });
 
 it("reports an undeletable spool and still cleans the next one and creates a new capture", async () => {
-  const blocked = path.join(root, "argent-recording-frames-123-blocked");
-  const removable = path.join(root, "argent-recording-frames-124-removable");
+  const blocked = path.join(root, "argent-recording-frames-123-aaaaaaaaaaaa-blocked");
+  const removable = path.join(root, "argent-recording-frames-124-aaaaaaaaaaaa-removable");
   await fs.mkdir(blocked);
   await fs.mkdir(removable);
   vi.spyOn(process, "kill").mockImplementation(() => {
@@ -92,3 +99,18 @@ it("keeps an orphan encoder's spool until its own process exits", async () => {
   await cleanupAbandonedFrames();
   await expect(fs.access(directory)).rejects.toThrow();
 });
+
+it.each(["bbbbbbbbbbbb", null])(
+  "does not sweep another or unknown namespace (%s)",
+  async (namespace) => {
+    const directory = await createFrameDirectory();
+    await fs.writeFile(path.join(directory, "0.jpg"), "frame");
+    vi.mocked(processNamespaceId).mockResolvedValue(namespace);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("not visible"), { code: "ESRCH" });
+    });
+    await cleanupAbandonedFrames();
+    expect(kill).not.toHaveBeenCalled();
+    expect(await fs.readFile(path.join(directory, "0.jpg"), "utf8")).toBe("frame");
+  }
+);
