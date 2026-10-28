@@ -276,6 +276,8 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     });
     let signal: AbortSignal | undefined;
     let completed = false;
+    const subsequentWork = vi.fn();
+    let flowCompleted = false;
     registry.registerTool({
       id: "screen-recording-stop",
       services: () => ({}),
@@ -293,8 +295,16 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       id: "e2e-execute",
       longRunning: true,
       services: () => ({}),
-      execute: async (_services, _args, ctx) =>
-        invokeSubTool(registry, ctx, "screen-recording-stop", {}),
+      execute: async (_services, _args, ctx) => {
+        const result = await invokeSubTool(registry, ctx, "screen-recording-stop", {});
+        try {
+          ctx?.signal?.throwIfAborted();
+          subsequentWork();
+          return result;
+        } finally {
+          flowCompleted = true;
+        }
+      },
     });
     handle = createHttpApp(registry);
     const response = supertest(handle.app)
@@ -314,7 +324,10 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     expect(signal?.aborted).toBe(false);
     expect(completed).toBe(false);
     finish();
-    await vi.waitFor(() => expect(completed).toBe(true));
+    await vi.waitFor(() => expect(flowCompleted).toBe(true));
+    expect(completed).toBe(true);
+    expect(signal?.aborted).toBe(true);
+    expect(subsequentWork).not.toHaveBeenCalled();
   });
 
   it("waits the full shutdown grace and aborts unfinished non-recording calls", async () => {

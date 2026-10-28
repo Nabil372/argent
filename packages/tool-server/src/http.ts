@@ -1107,10 +1107,12 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           outputFiles: [...recordings].map((recording) => recording.outputFile),
         });
       let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
+      let shutdownGraceExpired = false;
       let interrupt!: () => void;
       const interrupted = new Promise<never>((_resolve, reject) => {
         interrupt = () => {
           shutdownTimer = setTimeout(() => {
+            shutdownGraceExpired = true;
             reject(shutdownFailure());
             if (![...recordings].some((recording) => recording.stopping)) controller.abort();
           }, 1_500);
@@ -1126,6 +1128,12 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
             recordings.add(recording);
             return () => {
               recording.stopping = false;
+              if (
+                shutdownGraceExpired &&
+                ![...recordings].some((recording) => recording.stopping)
+              ) {
+                controller.abort();
+              }
             };
           },
           ...(resolvedFileInputs ? { fileInputs: resolvedFileInputs } : {}),
