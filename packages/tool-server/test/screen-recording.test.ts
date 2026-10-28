@@ -2339,6 +2339,22 @@ describe("debug finalization safeguards", () => {
     expect((error as Error).message).not.toContain("No readable debug video was saved");
   });
 
+  it("keeps output and reports uncertainty when ffmpeg cannot be resolved at stop", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    fakeChild().exitOnStdinEnd(1);
+    await startAndSettle(api, { mode: "debug" });
+    const outputFile = api.outputFile!;
+    const bytes = Buffer.alloc(64, 1);
+    await fs.writeFile(outputFile, bytes);
+    mockResolveFfmpeg.mockResolvedValueOnce(null);
+    const error = await stopCapture(api).catch((err: Error) => err);
+    expect(await fs.readFile(outputFile)).toEqual(bytes);
+    expect((error as Error).message).toContain("ffmpeg is unavailable");
+    expect((error as Error).message).toContain("validation did not complete");
+    expect((error as Error).message).not.toContain("No readable debug video was saved");
+  });
+
   it("keeps the stop guard until deferred JPEG cleanup finishes", async () => {
     const api = await makeSession(iosDevice);
     fakeStream();
