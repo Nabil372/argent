@@ -32,7 +32,7 @@ export function startDebugCapture(
     attach(stream) {
       if (finishing) return;
       unsubscribe?.();
-      unsubscribe = stream.subscribe((frame, receivedAtMs) => {
+      unsubscribe = stream.subscribe((frame, parsedAtMs) => {
         if (finishing) return;
         if (queuedBytes + frame.length > MAX_BUFFERED_BYTES) {
           capture.warning =
@@ -41,9 +41,9 @@ export function startDebugCapture(
           ended();
           return;
         }
-        const receivedAtUs = Math.max(0, Math.round((receivedAtMs - startedAtMs) * 1_000));
+        const parsedAtUs = Math.max(0, Math.round((parsedAtMs - startedAtMs) * 1_000));
         const previous = capture.frameTimesUs.at(-1);
-        const ptsUs = previous !== undefined ? Math.max(receivedAtUs, previous + 1) : 0;
+        const ptsUs = previous !== undefined ? Math.max(parsedAtUs, previous + 1) : 0;
         const index = capture.frameTimesUs.length;
         const file = path.join(directory, `${index}.jpg`);
         const lane = index % WRITE_CONCURRENCY;
@@ -69,14 +69,14 @@ export function startDebugCapture(
       if (finishing) return finishing;
       unsubscribe?.();
       unsubscribe = null;
-      const receivedAtUs = Math.round((performance.now() - startedAtMs) * 1_000);
+      const parsedAtUs = Math.round((performance.now() - startedAtMs) * 1_000);
       finishing = (async () => {
         await Promise.all(writes);
         const missing = files.findIndex((file) => file === undefined);
         if (missing !== -1) files.splice(missing);
         capture.frameTimesUs.splice(files.length);
         if (files.length > 0) {
-          const ptsUs = Math.max(receivedAtUs, capture.frameTimesUs.at(-1)! + 1);
+          const ptsUs = Math.max(parsedAtUs, capture.frameTimesUs.at(-1)! + 1);
           capture.frameTimesUs.push(ptsUs);
           files.push(files.at(-1)!);
         }

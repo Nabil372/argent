@@ -42,7 +42,7 @@ import {
  * Screen capture off simulator-server's MJPEG stream. Light mode is paced onto a fixed 30fps
  * timeline and piped into one ffmpeg process that encodes (and optionally
  * watermarks) straight to the final mp4. Debug saves each delivered JPEG and
- * encodes at stop using host arrival timestamps.
+ * encodes at stop using tool-server parse timestamps.
  *
  * Pacing here rather than letting ffmpeg read the stream is what keeps the
  * timeline honest: the device only emits a frame when the screen CHANGES, so a

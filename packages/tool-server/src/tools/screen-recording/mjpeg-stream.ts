@@ -6,7 +6,7 @@ import { FAILURE_CODES, FailureError } from "@argent/registry";
  * renders. It is a `multipart/x-mixed-replace` producer that emits a JPEG only
  * when the device screen CHANGES (a still screen produces no frames), so this
  * client keeps the latest frame for light mode's pump in `capture.ts` and
- * delivers every parsed frame with its host arrival time to debug subscribers.
+ * delivers every parsed frame with its tool-server parse time to debug subscribers.
  */
 
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
@@ -18,7 +18,7 @@ export interface MjpegStream {
   readonly error: Error | null;
   /** Resolves with the first frame; rejects on timeout or a stream drop. */
   waitForFirstFrame(timeoutMs: number): Promise<Buffer>;
-  subscribe(listener: (frame: Buffer, receivedAtMs: number) => void): () => void;
+  subscribe(listener: (frame: Buffer, parsedAtMs: number) => void): () => void;
   close(): void;
 }
 
@@ -80,9 +80,9 @@ export function openMjpegStream(url: string, connectTimeoutMs = 10_000): Promise
         latest: null as Buffer | null,
         frameCount: 0,
         error: null as Error | null,
-        receivedAtMs: 0,
+        parsedAtMs: 0,
       };
-      const listeners = new Set<(frame: Buffer, receivedAtMs: number) => void>();
+      const listeners = new Set<(frame: Buffer, parsedAtMs: number) => void>();
       let firstFrameResolve: ((frame: Buffer) => void) | null = null;
       let firstFrameReject: ((err: Error) => void) | null = null;
 
@@ -103,9 +103,9 @@ export function openMjpegStream(url: string, connectTimeoutMs = 10_000): Promise
             // alive for as long as the frame is held.
             const frame = Buffer.from(buffer.subarray(frameStart, frameEnd));
             state.latest = frame;
-            state.receivedAtMs = performance.now();
+            state.parsedAtMs = performance.now();
             state.frameCount++;
-            for (const listener of listeners) listener(frame, state.receivedAtMs);
+            for (const listener of listeners) listener(frame, state.parsedAtMs);
             if (firstFrameResolve) {
               firstFrameResolve(frame);
               firstFrameResolve = null;
@@ -153,7 +153,7 @@ export function openMjpegStream(url: string, connectTimeoutMs = 10_000): Promise
         },
         subscribe(listener) {
           listeners.add(listener);
-          if (state.latest) listener(state.latest, state.receivedAtMs);
+          if (state.latest) listener(state.latest, state.parsedAtMs);
           return () => listeners.delete(listener);
         },
         waitForFirstFrame(timeoutMs: number) {

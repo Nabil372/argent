@@ -35,7 +35,7 @@ const zodSchema = z.object({
         "Use debug for animation flicker or frame analysis: retain each JPEG delivered by the same " +
         "simulator-server stream, with variable host-monotonic timestamps, high-quality H.264 encoding, " +
         "no trimming or watermark, and optional touch markers (off by default). " +
-        "Host receipt times are not device presentation times; upstream JPEG compression or frame loss remains."
+        "Timestamps mark tool-server parsing and can be delayed by server load; they are not device presentation times. Upstream compression or frame loss remains."
     ),
   timeLimitSeconds: z
     .number()
@@ -88,7 +88,7 @@ export function createScreenRecordingStartTool(
     capability,
     description: `Start recording the device screen to an H.264 MP4 using simulator-server's existing frame stream.
 Use mode: "light" (default) for bug reports and PR videos: 30 fps, static trimming, touch markers and the configured watermark.
-Use mode: "debug" for flicker and frame-by-frame animation inspection. It keeps every delivered frame without trimming or a watermark. Touch markers default off; enable them with showTouches: true. Timestamps measure host arrival, not native device presentation, and upstream frames can be omitted. Debug saves JPEGs in temporary storage and encodes at stop, which can take longer. Capture ends early with a warning if writes fail or cannot keep up. Debug capture is not crash-safe; a hard tool-server kill can lose unencoded frames.
+Use mode: "debug" for flicker and frame-by-frame animation inspection. It keeps every delivered frame without trimming or a watermark. Touch markers default off; enable them with showTouches: true. Timestamps mark tool-server parsing, which server load can delay, not device presentation. Upstream frames can be omitted. The final frame repeats the last image at stop time to preserve the final hold; it is not a device update. Debug saves JPEGs in temporary storage and encodes at stop, which can take longer. Capture ends early with a warning if writes fail or cannot keep up. Debug capture is not crash-safe; a hard tool-server kill can lose unencoded frames.
 The recording keeps running across other tool calls (every result carries a reminder) until \`screen-recording-stop\` is called or timeLimitSeconds elapses. Immediately after starting, set yourself a reminder/wakeup for the expected end of the recording so it is never left running.
 Use when the user wants a video of an interaction, animation, or app behavior; for a single still frame use \`screenshot\` instead.
 Returns { status: "recording", timeLimitSeconds, outputFile }. The video is retrieved later by \`screen-recording-stop\`, not by reading outputFile directly.

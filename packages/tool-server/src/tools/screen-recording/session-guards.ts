@@ -136,10 +136,9 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
 }
 
 /**
- * Reject a start that resumed after the session was disposed. Call
- * synchronously right before spawn, with no await between this check and the
- * spawn/pendingChild stamp, so no capture is launched that dispose's teardown
- * can no longer reap.
+ * Reject a start if disposal wins an initialization await. Check synchronously
+ * before spawn/pendingChild, then after readiness and touch setup. Pass outputFile
+ * only after capture owns the encoder, so the error can identify possible saved output.
  *
  * `dispose()` runs on process shutdown but also whenever
  * `stop-all-simulator-servers` reaps this device-owned session (commonly another
