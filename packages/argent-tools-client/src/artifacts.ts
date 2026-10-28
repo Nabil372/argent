@@ -577,9 +577,11 @@ export async function materializeArtifacts(
             warn?.(
               `Could not retrieve recording ${value.filename}: ${reason} ` +
                 `The capture already stopped. ` +
-                (value.hostPath
-                  ? `Retry screen-recording-stop with outputFile: ${JSON.stringify(value.hostPath)} before another recording starts or the session ends. `
-                  : "") +
+                (!localPath && value.size > MAX_DURABLE_BYTES
+                  ? "A repeated stop cannot bypass the 2 GiB download limit; transfer this recording directly from the server. "
+                  : value.hostPath
+                    ? `Fix client storage or directory errors before retrying. For a transient download failure, retry screen-recording-stop with outputFile: ${JSON.stringify(value.hostPath)} before another recording starts or the session ends. `
+                    : "") +
                 `Check the tool-server at ${value.hostPath ?? `artifact ${value.id}`} for the output.`
             );
           }

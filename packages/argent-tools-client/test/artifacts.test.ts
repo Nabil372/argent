@@ -770,6 +770,27 @@ describe("materializeArtifacts durable destination", () => {
     expect((result as { video: null }).video).toBeNull();
   });
 
+  it("does not recommend retrying an oversized remote recording", async () => {
+    const fetchImpl = vi.fn();
+    const { result } = await materializeArtifacts(
+      {
+        video: {
+          ...handle("large", "large.mp4", "video/mp4"),
+          kind: "screen-recording",
+          size: 3 * 1024 ** 3,
+          hostPath: "/remote/large.mp4",
+          saveDir: ".argent/recordings",
+        },
+      },
+      { toolsUrl: "http://remote:3001", fetchImpl }
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect((result as { warning: string }).warning).toContain(
+      "A repeated stop cannot bypass the 2 GiB download limit"
+    );
+    expect((result as { warning: string }).warning).not.toContain("retry screen-recording-stop");
+  });
+
   it("refuses a size:0 durable download — an unverifiable body is never persisted", async () => {
     // A durable file survives temp-cache GC, so a length that can't be checked
     // (size 0) must not be persisted. A remote server that announces size:0 and
@@ -836,6 +857,7 @@ describe("materializeArtifacts durable destination", () => {
       [ARTIFACT_MARKER]: true,
       id: "evilsym",
       kind: "screen-recording",
+      hostPath: "/remote/capture.mp4",
       filename: "pwned.mp4",
       mimeType: "video/mp4",
       size: MP4.length,
@@ -852,6 +874,9 @@ describe("materializeArtifacts durable destination", () => {
       video: null,
       warning: expect.stringContaining("resolves outside its allowed location"),
     });
+    expect((result as { warning: string }).warning).toContain(
+      "Fix client storage or directory errors before retrying"
+    );
   });
 
   it("never overwrites an existing durable recording — lands the new file alongside", async () => {
@@ -1376,7 +1401,7 @@ describe("materializeArtifacts durable destination", () => {
       const warning = (result as typeof report).steps[1]!.result!.warning;
       if (failure === "HTTP") expect(warning).toContain("Artifact download failed with HTTP 404.");
       expect(warning).toContain(
-        'Retry screen-recording-stop with outputFile: "/remote/tmp/recording.mp4"'
+        'retry screen-recording-stop with outputFile: "/remote/tmp/recording.mp4"'
       );
     }
   );
@@ -1414,6 +1439,7 @@ describe("materializeArtifacts durable destination", () => {
           video: {
             ...handle("denied", "denied.mp4", "video/mp4"),
             kind: "screen-recording",
+            hostPath: "/remote/capture.mp4",
             size: 8,
             saveDir: ".argent/recordings",
           },
@@ -1424,6 +1450,9 @@ describe("materializeArtifacts durable destination", () => {
         video: null,
         warning: expect.stringMatching(/permission denied.*already stopped/),
       });
+      expect((result as { warning: string }).warning).toContain(
+        "Fix client storage or directory errors before retrying"
+      );
       expect(cancel).toHaveBeenCalledOnce();
       expect(body.locked).toBe(false);
       expect(await absent(join(projectRoot, ".argent/recordings", "denied.mp4"))).toBe(true);
