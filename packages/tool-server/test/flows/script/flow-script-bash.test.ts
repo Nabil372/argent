@@ -967,7 +967,8 @@ describe("a bash step checked out with CRLF", () => {
   );
 
   it("keeps the document of a script that also left a stray sibling", async () => {
-    const stray = posix ? "\r" : "";
+    // Git Bash names a stray carriage return with U+F00D (see the table above).
+    const stray = posix ? "\r" : "\uF00D";
     const result = await runBash(
       workspace(),
       "stray-sibling",

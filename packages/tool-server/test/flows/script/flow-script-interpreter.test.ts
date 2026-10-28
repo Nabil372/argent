@@ -741,8 +741,19 @@ describe("no bash anywhere", () => {
     setPlatform("win32");
     hostWith(undefined);
     execFileMock.mockReturnValue(new Error("INFO: Could not find files"));
+    // No Git for Windows layout either, even on a runner that has one installed.
+    const noLayouts = Object.fromEntries(
+      [
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "LOCALAPPDATA",
+        "SCOOP",
+        "SCOOP_GLOBAL",
+        "ProgramData",
+      ].map((name) => [name, undefined])
+    );
 
-    const problem = problemOf(await resolveBashInterpreter());
+    const problem = problemOf(await withEnv(noLayouts, () => resolveBashInterpreter()));
     expect(problem).toContain("No bash was found");
     expect(problem).toContain("Git for Windows");
     expect(problem).toContain("scripts.bash");
