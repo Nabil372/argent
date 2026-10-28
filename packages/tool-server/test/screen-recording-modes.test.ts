@@ -43,6 +43,14 @@ describe("recording mode defaults", () => {
     expect(start.mock.calls[0][1].pointer).toBeDefined();
   });
 
+  it("reports a started recording to the enclosing invocation", async () => {
+    const onRecordingOutput = vi.fn();
+    const result = await tool.execute({ session: {} }, { udid: "emulator-5554" }, {
+      onRecordingOutput,
+    } as never);
+    expect(onRecordingOutput).toHaveBeenCalledWith("emulator-5554", result.outputFile);
+  });
+
   it("defaults debug to no trimming, markers or watermark", async () => {
     await tool.execute({ session: {} }, { udid: "emulator-5554", mode: "debug" }, {} as never);
     expect(start.mock.calls[0][1]).toMatchObject({

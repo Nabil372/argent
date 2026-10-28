@@ -2295,7 +2295,7 @@ describe("debug finalization safeguards", () => {
   });
 
   it.each([true, false])(
-    "reports the real stop lifetime to its enclosing invocation (saved: %s)",
+    "reports the real stop output to its enclosing invocation (saved: %s)",
     async (saved) => {
       const api = await makeSession(iosDevice);
       fakeStream();
@@ -2303,24 +2303,21 @@ describe("debug finalization safeguards", () => {
       await startAndSettle(api, { mode: "debug" });
       const outputFile = api.outputFile!;
       if (saved) await fs.writeFile(outputFile, Buffer.alloc(64, 1));
-      const release = vi.fn();
-      const onRecordingStop = vi.fn(() => release);
+      const onRecordingOutput = vi.fn();
       const stopping = screenRecordingStopTool.execute(
         { session: api },
         { udid: IOS_UDID },
         {
           artifacts: new ArtifactStore(),
-          onRecordingStop,
+          onRecordingOutput,
         }
       );
       const outcome = stopping.catch((err: Error) => err);
-      expect(onRecordingStop).toHaveBeenCalledWith(IOS_UDID, outputFile);
-      expect(release).not.toHaveBeenCalled();
+      expect(onRecordingOutput).toHaveBeenCalledWith(IOS_UDID, outputFile);
       await api.debugCapture!.finish();
       child.exit(0);
       const result = await outcome;
       expect(result instanceof Error).toBe(!saved);
-      expect(release).toHaveBeenCalledOnce();
     }
   );
 

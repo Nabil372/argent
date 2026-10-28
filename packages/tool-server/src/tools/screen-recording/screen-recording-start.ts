@@ -104,7 +104,7 @@ Fails if a recording is already running on the device, the device is not booted,
       assertRecordingNotTerminating(registry, device);
       return { session: screenRecordingSessionRef(device) };
     },
-    async execute(services, params) {
+    async execute(services, params, ctx) {
       const api = services.session as ScreenRecordingSessionApi;
       const device = resolveDevice(params.udid);
       assertSupported("screen-recording-start", capability, device);
@@ -201,6 +201,7 @@ Fails if a recording is already running on the device, the device is not booted,
         pointer,
         followPanel,
       });
+      ctx?.onRecordingOutput?.(device.id, started.outputFile);
       return warning !== undefined ? { ...started, warning } : started;
     },
   };

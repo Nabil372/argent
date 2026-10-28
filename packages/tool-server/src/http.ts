@@ -499,7 +499,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   const activeUploads = new Set<() => void>();
   const pendingCalls = new Set<{
     interrupt: () => void;
-    recordings: Set<{ deviceId: string; outputFile: string; stopping: boolean }>;
+    recordings: Map<string, string>;
   }>();
   // Settled bytes plus bytes of streams still in flight, so the cap holds against
   // a burst of parallel uploads instead of only settled ones.
@@ -1100,21 +1100,19 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         res.flushHeaders();
       }
 
-      const recordings = new Set<{ deviceId: string; outputFile: string; stopping: boolean }>();
+      const recordings = new Map<string, string>();
       const shutdownFailure = () =>
         serverShutdownError(name, parsedData, {
           admitted: true,
-          outputFiles: [...recordings].map((recording) => recording.outputFile),
+          outputFiles: [...recordings.values()],
         });
       let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
-      let shutdownGraceExpired = false;
       let interrupt!: () => void;
       const interrupted = new Promise<never>((_resolve, reject) => {
         interrupt = () => {
           shutdownTimer = setTimeout(() => {
-            shutdownGraceExpired = true;
             reject(shutdownFailure());
-            if (![...recordings].some((recording) => recording.stopping)) controller.abort();
+            controller.abort();
           }, 1_500);
         };
       });
@@ -1123,18 +1121,8 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       try {
         const invocation = registry.invokeTool(name, parsedData, {
           signal: controller.signal,
-          onRecordingStop: (deviceId, outputFile) => {
-            const recording = { deviceId, outputFile, stopping: true };
-            recordings.add(recording);
-            return () => {
-              recording.stopping = false;
-              if (
-                shutdownGraceExpired &&
-                ![...recordings].some((recording) => recording.stopping)
-              ) {
-                controller.abort();
-              }
-            };
+          onRecordingOutput: (deviceId, outputFile) => {
+            recordings.set(deviceId, outputFile);
           },
           ...(resolvedFileInputs ? { fileInputs: resolvedFileInputs } : {}),
           // The argent client marks every call it sends over a link. A false
@@ -1330,11 +1318,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       if (disposed) return;
       disposed = true;
       shutdownRecordings = new Map([
-        ...[...pendingCalls].flatMap((call) =>
-          [...call.recordings].map(
-            (recording) => [recording.deviceId, recording.outputFile] as const
-          )
-        ),
+        ...[...pendingCalls].flatMap((call) => [...call.recordings]),
         ...getActiveScreenRecordings().flatMap((recording) =>
           recording.outputFile ? [[recording.deviceId, recording.outputFile] as const] : []
         ),

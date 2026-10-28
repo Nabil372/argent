@@ -89,34 +89,29 @@ Fails if no running, pending, or cached completed recording exists for the given
     assertSupported("screen-recording-stop", capability, device);
 
     const outputFile = api.outputFile ?? api.finishedRecording?.outputFile;
-    const releaseStop = outputFile ? ctx?.onRecordingStop?.(api.deviceId, outputFile) : undefined;
-    try {
-      // The capture encodes straight to the final mp4, so the file is ready as
-      // soon as this returns — no post-processing pass.
-      const stopped = await stopCapture(api, params.outputFile);
+    if (outputFile) ctx?.onRecordingOutput?.(api.deviceId, outputFile);
+    // The capture encodes straight to the final mp4, so the file is ready as
+    // soon as this returns — no post-processing pass.
+    const stopped = await stopCapture(api, params.outputFile);
 
-      // After the stop, so a "no active recording" failure isn't masked by a
-      // missing artifact store.
-      const artifacts = requireArtifacts(ctx);
-      const video = await artifacts.register({
-        hostPath: stopped.outputFile,
-        kind: "screen-recording",
-        mimeType: "video/mp4",
-        // Drop the internal `argent-` temp-file prefix from the saved name.
-        filename: basename(stopped.outputFile).replace(/^argent-/, ""),
-        saveDir: RECORDINGS_DIR,
-      });
-      const result: ScreenRecordingStopResult = { video, durationMs: stopped.durationMs };
-      if (stopped.encodingComplete !== undefined)
-        result.encodingComplete = stopped.encodingComplete;
-      if (stopped.wallClockMs !== undefined) result.wallClockMs = stopped.wallClockMs;
-      if (stopped.trimmedMs !== undefined) result.trimmedMs = stopped.trimmedMs;
-      if (stopped.panelSwitches !== undefined) result.panelSwitches = stopped.panelSwitches;
-      if (stopped.warning) result.warning = stopped.warning;
-      return result;
-    } finally {
-      releaseStop?.();
-    }
+    // After the stop, so a "no active recording" failure isn't masked by a
+    // missing artifact store.
+    const artifacts = requireArtifacts(ctx);
+    const video = await artifacts.register({
+      hostPath: stopped.outputFile,
+      kind: "screen-recording",
+      mimeType: "video/mp4",
+      // Drop the internal `argent-` temp-file prefix from the saved name.
+      filename: basename(stopped.outputFile).replace(/^argent-/, ""),
+      saveDir: RECORDINGS_DIR,
+    });
+    const result: ScreenRecordingStopResult = { video, durationMs: stopped.durationMs };
+    if (stopped.encodingComplete !== undefined) result.encodingComplete = stopped.encodingComplete;
+    if (stopped.wallClockMs !== undefined) result.wallClockMs = stopped.wallClockMs;
+    if (stopped.trimmedMs !== undefined) result.trimmedMs = stopped.trimmedMs;
+    if (stopped.panelSwitches !== undefined) result.panelSwitches = stopped.panelSwitches;
+    if (stopped.warning) result.warning = stopped.warning;
+    return result;
   },
 };
 
