@@ -480,8 +480,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       toolId === "screen-recording-stop"
         ? shutdownRecordings.get(extractDeviceArg(args) ?? "")
         : undefined;
-    const outputFiles =
-      toolId === undefined ? [...shutdownRecordings.values()] : outputFile ? [outputFile] : [];
+    const outputFiles = outputFile ? [outputFile] : [];
     const error = serverShutdownError(toolId, args, { outputFiles });
     res.status(503).json({ error: error.message, ...errorSignalFields(error) });
   }
@@ -743,9 +742,18 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     ws.on("error", (err: Error) => abort(500, err.message));
   });
 
-  app.get("/tools", (_req: Request, res: Response) => {
+  app.get("/tools", (req: Request, res: Response) => {
     if (disposed) {
-      rejectDuringShutdown(res);
+      let call: { tool?: string; udid?: string; outputFile?: string } | undefined;
+      try {
+        const value = JSON.parse(
+          decodeURIComponent(firstHeader(req.headers["x-argent-call"]) ?? "")
+        );
+        if (value && typeof value === "object" && typeof value.tool === "string") call = value;
+      } catch {
+        // A listing without call context receives generic shutdown guidance.
+      }
+      rejectDuringShutdown(res, call?.tool, call);
       return;
     }
     idleTimer.touch();

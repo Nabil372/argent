@@ -358,12 +358,37 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     return { url, token };
   }
 
-  async function fetchTools(opts?: { signal?: AbortSignal }): Promise<ToolMeta[]> {
+  async function fetchTools(
+    opts?: { signal?: AbortSignal },
+    call?: { name: string; args: unknown }
+  ): Promise<ToolMeta[]> {
     opts?.signal?.throwIfAborted();
     const { url, token } = await baseUrl();
+    const args =
+      call?.args && typeof call.args === "object" ? (call.args as Record<string, unknown>) : {};
+    const context = call
+      ? {
+          tool: call.name,
+          udid:
+            typeof args.udid === "string"
+              ? args.udid
+              : typeof args.device_id === "string"
+                ? args.device_id
+                : undefined,
+          ...(call.name === "screen-recording-stop"
+            ? { outputFile: typeof args.outputFile === "string" ? args.outputFile : undefined }
+            : {}),
+        }
+      : undefined;
     const res = await doFetch(
       `${url}/tools`,
-      { headers: authHeaders(token), signal: opts?.signal },
+      {
+        headers: {
+          ...authHeaders(token),
+          ...(context ? { "X-Argent-Call": encodeURIComponent(JSON.stringify(context)) } : {}),
+        },
+        signal: opts?.signal,
+      },
       { longRunning: false, carriesUpload: false }
     );
     if (!res.ok) {
@@ -402,7 +427,7 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
     // File boundary, outbound: wrap args the tool declares as file paths so the
     // server can read them in place (local) or from inlined content (routed).
     let finalArgs = args;
-    const tools = await fetchTools({ signal: opts?.signal });
+    const tools = await fetchTools({ signal: opts?.signal }, { name, args });
     const meta = findTool(tools, name);
     // An older tool-server reads saved tests only from `.argent/flows/`, and
     // lists its tools by their `flow-*` ids only.

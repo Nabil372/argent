@@ -147,7 +147,7 @@ describe("createToolsClient options", () => {
       const message =
         "The tool-server is shutting down. Check /server/original.mp4 after encoding finishes. A restart loses retrieval state.";
       const fetchImpl = vi.fn(
-        async (_url: string) =>
+        async (_url: string, _init: RequestInit) =>
           new Response(
             JSON.stringify({
               error: message,
@@ -178,6 +178,10 @@ describe("createToolsClient options", () => {
       });
       expect(fetchImpl).toHaveBeenCalledOnce();
       expect(fetchImpl.mock.calls[0][0]).toBe(`${url}/tools`);
+      const context = new Headers(fetchImpl.mock.calls[0][1].headers).get("X-Argent-Call");
+      expect(context ? JSON.parse(decodeURIComponent(context)) : null).toEqual(
+        operation === "callTool" ? { tool: "screen-recording-stop", udid: "device" } : null
+      );
     }
   );
 

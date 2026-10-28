@@ -158,6 +158,19 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       const response = request.then((res) => res);
       await entered;
       handle.dispose();
+      const admission = await supertest(handle.app)
+        .post("/tools/screen-recording-stop")
+        .send({ udid: "device" })
+        .expect(503);
+      expect(admission.body.error).toContain("/server/recording.mp4");
+      const discovery = await supertest(handle.app)
+        .get("/tools")
+        .set(
+          "X-Argent-Call",
+          encodeURIComponent(JSON.stringify({ tool: "screen-recording-stop", udid: "device" }))
+        )
+        .expect(503);
+      expect(discovery.body.error).toContain("/server/recording.mp4");
       const result = await response;
       expect(result.status).toBe(stream ? 200 : 503);
       const body = stream ? parseLines(result.body as string)[0] : result.body;
@@ -211,8 +224,14 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     handle = createHttpApp(stubRegistry(async () => ({})));
     handle.dispose();
     clearActiveScreenRecording("device");
-    const listing = await supertest(handle.app).get("/tools").expect(503);
-    expect(listing.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+    const listing = await supertest(handle.app)
+      .get("/tools")
+      .set(
+        "X-Argent-Call",
+        encodeURIComponent(JSON.stringify({ tool: "screen-recording-stop", udid: "device" }))
+      )
+      .expect(503);
+    expect(listing.body.error_code).toBe(FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN);
     expect(listing.body.error).toContain("/server/original.mp4");
     const response = await supertest(handle.app)
       .post("/tools/screen-recording-stop")
@@ -220,6 +239,44 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       .expect(503);
     expect(response.body.error).toContain("/server/original.mp4");
     expect(response.body.error).toContain("This call was not started");
+  });
+
+  it("scopes discovery and stop admission paths to the requested device", async () => {
+    registerActiveScreenRecording("A", Date.now(), 60, "/server/a.mp4");
+    registerActiveScreenRecording("B", Date.now(), 60, "/server/b.mp4");
+    handle = createHttpApp(stubRegistry(async () => ({})));
+    handle.dispose();
+    clearActiveScreenRecording("A");
+    clearActiveScreenRecording("B");
+    for (const tool of ["screen-recording-stop", "screenshot"]) {
+      for (const udid of ["A", "B", "C"]) {
+        for (const method of ["discovery", "post"]) {
+          const request =
+            method === "discovery"
+              ? supertest(handle.app)
+                  .get("/tools")
+                  .set("X-Argent-Call", encodeURIComponent(JSON.stringify({ tool, udid })))
+              : supertest(handle.app).post(`/tools/${tool}`).send({ udid });
+          const response = await request.expect(503);
+          const recording = tool === "screen-recording-stop";
+          expect(response.body.error_code).toBe(
+            recording
+              ? FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+              : FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN
+          );
+          for (const [device, file] of [
+            ["A", "/server/a.mp4"],
+            ["B", "/server/b.mp4"],
+          ]) {
+            expect(response.body.error.includes(file)).toBe(recording && udid === device);
+          }
+          if (!recording) expect(response.body.error).toContain("Reconnect after the server exits");
+        }
+      }
+    }
+    const listing = await supertest(handle.app).get("/tools").expect(503);
+    expect(listing.body.error).not.toContain(".mp4");
+    expect(listing.body.error).toContain("Reconnect after the server exits");
   });
 
   it.each(["resolve", "invoke"])(
@@ -446,7 +503,13 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       registry.beginShutdown();
       handle.dispose();
       clearActiveScreenRecording("device");
-      const listing = await supertest(handle.app).get("/tools").expect(503);
+      const listing = await supertest(handle.app)
+        .get("/tools")
+        .set(
+          "X-Argent-Call",
+          encodeURIComponent(JSON.stringify({ tool: "screen-recording-stop", udid: "device" }))
+        )
+        .expect(503);
       expect(listing.body.error).toContain("/server/current.mp4");
       expect(listing.body.error).not.toContain("/server/previous.mp4");
       const result = await response;
