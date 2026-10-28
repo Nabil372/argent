@@ -124,7 +124,7 @@ Linked recording downloads have a 2 GiB limit. Larger recordings remain on the t
 
 Extract debug frames with `ffmpeg -i recording.mp4 -fps_mode passthrough -enc_time_base 1:1000000 frame-%06d.png` to avoid resampling. Use frame PTS, not the guessed `r_frame_rate`, to inspect the recorded timeline. The final frame repeats the last image at stop time to preserve the final hold. It does not represent a device update.
 
-Call `screen-recording-stop` to retrieve the video, including after the time limit ends capture. Debug returns `encodingComplete` to indicate whether encoding succeeded. Partial videos include a warning and an unknown duration. If no readable video exists, stop fails with encoder diagnostics. Failed encoding can discard the captured JPEGs. Repeat stop after a lost connection to retrieve the completed video. This result remains available until another recording starts or the session is torn down.
+Call `screen-recording-stop` to retrieve the video, including after the time limit ends capture. Debug returns `encodingComplete` to indicate whether encoding succeeded. Partial videos include a warning and an unknown duration. If no readable video exists, stop fails with encoder diagnostics. Failed encoding can discard the captured JPEGs. After a lost connection, repeat stop with the `outputFile` returned by start to retrieve its completed result or failure. This result remains available until another recording starts or the session is torn down.
 
 Both modes require ffmpeg with `libx264`. Debug also requires `-fps_mode` support.
 

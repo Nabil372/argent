@@ -128,9 +128,10 @@ it.each([true, false])(
     expect(screenRecordingStopTool.longRunning).toBe(true);
     const result = await screenRecordingStopTool.execute(
       { session: {} },
-      { udid: "emulator-5554" },
+      { udid: "emulator-5554", outputFile: "/tmp/video.mp4" },
       { artifacts: { register } } as never
     );
+    expect(stopCapture).toHaveBeenCalledWith({}, "/tmp/video.mp4");
     expect(result).toMatchObject({
       video,
       encodingComplete: complete,

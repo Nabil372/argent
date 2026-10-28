@@ -15,6 +15,13 @@ const zodSchema = z.object({
   udid: z
     .string()
     .describe("Target device id from `list-devices` (iOS Simulator UDID or Android serial)."),
+  outputFile: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Expected outputFile from start. Required to retrieve a completed stop again after a lost connection."
+    ),
 });
 
 /**
@@ -66,7 +73,7 @@ export const screenRecordingStopTool: ToolDefinition<
   },
   capability,
   description: `Stop the screen recording started by \`screen-recording-start\` and retrieve the video: frame capture ends and ffmpeg finalizes the mp4.
-Debug encoding can take longer to finish. For a partial video, debug returns encodingComplete: false, durationMs: null and an encoding warning. If no readable video was saved, the tool fails with encoder diagnostics. Failed encoding can discard captured JPEGs. Repeating stop returns the completed video until another recording starts or the session is torn down; use this after a lost stop connection.
+Debug encoding can take longer to finish. For a partial video, debug returns encodingComplete: false, durationMs: null and an encoding warning. If no readable video was saved, the tool fails with encoder diagnostics. Failed encoding can discard captured JPEGs. After a lost stop connection, pass the outputFile returned by start to retrieve the completed result or failure again. This retry is available until another recording starts or the session is torn down.
 Also retrieves the video when the recording already ended on its own (time limit reached, capture process died); call it even after the cap fired.
 Use when the interaction being captured is finished, or a tool-result note reminds you a recording is still running.
 Returns { video, durationMs, wallClockMs?, trimmedMs?, panelSwitches?, encodingComplete?, warning? }; video is a downloadable artifact materialized to a local path. When static-frame trimming removed dead air, durationMs is the trimmed video length and wallClockMs/trimmedMs report the real duration and how much was cut. On a foldable simulator, the recording follows the panel that shows the UI. panelSwitches gives the number of panel changes. The video keeps the size of the first panel. warning is set when argent could not find that panel during the recording.
@@ -83,7 +90,7 @@ Fails if no running, pending, or cached completed recording exists for the given
 
     // The capture encodes straight to the final mp4, so the file is ready as
     // soon as this returns — no post-processing pass.
-    const stopped = await stopCapture(api);
+    const stopped = await stopCapture(api, params.outputFile);
 
     // After the stop, so a "no active recording" failure isn't masked by a
     // missing artifact store.

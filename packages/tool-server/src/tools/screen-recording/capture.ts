@@ -739,14 +739,29 @@ function waitForEncoderReady(
   });
 }
 
-export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopRecordingFile> {
-  assertStoppableSession(api, "screen_recording_stop");
-  if (api.finishedRecording) return api.finishedRecording;
+export async function stopCapture(
+  api: ScreenRecordingSessionApi,
+  outputFile?: string
+): Promise<StopRecordingFile> {
+  assertStoppableSession(api, "screen_recording_stop", outputFile);
+  if (api.finishedRecording) {
+    const { result } = api.finishedRecording;
+    if (result instanceof Error) throw result;
+    await statNonEmptyOutput(result.outputFile, "screen_recording_stop");
+    return result;
+  }
+  const captureOutput = api.outputFile!;
   api.stopping = stopCaptureLocked(api);
   try {
     const result = await api.stopping;
-    api.finishedRecording = result;
+    api.finishedRecording = { outputFile: captureOutput, result };
     return result;
+  } catch (err) {
+    api.finishedRecording = {
+      outputFile: captureOutput,
+      result: err instanceof Error ? err : new Error(String(err)),
+    };
+    throw err;
   } finally {
     api.stopping = null;
   }

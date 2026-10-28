@@ -7,6 +7,7 @@ import {
   getFailureSignal,
   FAILURE_CODES,
   ServiceState,
+  ArtifactStore,
   type Registry,
   type DeviceInfo,
 } from "@argent/registry";
@@ -52,6 +53,7 @@ import {
 import { setPointerTrail, setPointerVisible } from "../src/utils/simulator-client";
 import { createStopAllSimulatorServersTool } from "../src/tools/simulator/stop-all-simulator-servers";
 import { makePointerControl } from "../src/tools/screen-recording/screen-recording-start";
+import { screenRecordingStopTool } from "../src/tools/screen-recording/screen-recording-stop";
 import type { SimulatorServerApi } from "../src/blueprints/simulator-server";
 import { openMjpegStream, readJpegDimensions } from "../src/tools/screen-recording/mjpeg-stream";
 import {
@@ -2151,7 +2153,18 @@ describe("debug finalization safeguards", () => {
     await api.debugCapture!.finish();
     child.exit(0);
     const result = await stopping;
-    expect(await stopCapture(api)).toBe(result);
+    await expect(stopCapture(api)).rejects.toThrow("already stopped");
+    expect(await stopCapture(api, file)).toBe(result);
+    await expect(stopCapture(api, "/tmp/another-recording.mp4")).rejects.toThrow(
+      "not the current recording"
+    );
+    fakeStream();
+    mockResolveFfmpeg.mockResolvedValueOnce(null);
+    await expect(startAndSettle(api)).rejects.toThrow();
+    await expect(stopCapture(api)).rejects.toThrow("already stopped");
+    expect(await stopCapture(api, file)).toBe(result);
+    await fs.rm(file);
+    await expect(stopCapture(api, file)).rejects.toThrow("no video file exists");
     expect(child.stdin.end).toHaveBeenCalledOnce();
     fakeStream();
     const next = fakeChild();
@@ -2160,6 +2173,45 @@ describe("debug finalization safeguards", () => {
     expect(api.finishedRecording).toBeNull();
     await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
     expect((await stopCapture(api)).outputFile).not.toBe(result.outputFile);
+  });
+
+  it("does not publish stale or missing captures through the stop tool", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    fakeChild().exitOnStdinEnd();
+    await startAndSettle(api);
+    const outputFile = api.outputFile!;
+    await fs.writeFile(outputFile, Buffer.alloc(64, 1));
+    const artifacts = new ArtifactStore();
+    const stop = (path?: string) =>
+      screenRecordingStopTool.execute({ session: api }, { udid: IOS_UDID, outputFile: path }, {
+        artifacts,
+      } as never);
+    const result = await stop();
+    expect(result.video.size).toBe(64);
+    await expect(stop()).rejects.toThrow("already stopped");
+    fakeStream({ waitForFirstFrame: vi.fn().mockRejectedValue(new Error("connection refused")) });
+    await expect(startAndSettle(api)).rejects.toThrow("connection refused");
+    await expect(stop()).rejects.toThrow("already stopped");
+    expect(artifacts.list()).toHaveLength(1);
+    await fs.rm(outputFile);
+    await expect(stop(outputFile)).rejects.toThrow("no video file exists");
+    expect(artifacts.list()).toHaveLength(1);
+  });
+
+  it("repeats failed stop diagnostics only for an explicit recording retry", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    child.exitOnStdinEnd(1);
+    await startAndSettle(api, { mode: "debug" });
+    const file = api.outputFile!;
+    child.stderr.emit("data", Buffer.from("encoder failed before output"));
+    const error = await stopCapture(api).catch((err: Error) => err);
+    expect((error as Error).message).toContain("encoder failed before output");
+    await expect(stopCapture(api)).rejects.toThrow("already stopped");
+    await expect(stopCapture(api, file)).rejects.toBe(error);
+    expect(child.stdin.end).toHaveBeenCalledOnce();
   });
 
   it("waits for queued JPEG writes before starting the encoding stall watchdog", async () => {

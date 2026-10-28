@@ -84,7 +84,11 @@ export function assertNoActiveRecording(api: ScreenRecordingSessionApi, stage: s
  * running start/stop is rejected: two concurrent finalize sequences would race
  * into the same host file.
  */
-export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: string): void {
+export function assertStoppableSession(
+  api: ScreenRecordingSessionApi,
+  stage: string,
+  outputFile?: string
+): void {
   if (api.startPending) {
     // A stop admitted now (e.g. against a previous finalized capture) would
     // wipe the superseding capture's session the moment it stamps, leaving that
@@ -103,7 +107,7 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
   if (api.stopping) {
     throw new FailureError(
       `A screen-recording-stop is already in progress on device ${api.deviceId}. ` +
-        `Wait for finalization, then retry stop if the original connection was lost. ` +
+        `Wait for finalization, then retry stop with the outputFile returned by start if the connection was lost. ` +
         `The expected output is ${api.outputFile}.`,
       {
         error_code: FAILURE_CODES.SCREEN_RECORDING_STOP_IN_PROGRESS,
@@ -113,8 +117,21 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
       }
     );
   }
+  const captureOutput = api.outputFile ?? api.finishedRecording?.outputFile;
+  if (outputFile && captureOutput && outputFile !== captureOutput) {
+    throw new FailureError(
+      `The requested recording at ${outputFile} is not the current recording on device ${api.deviceId}.`,
+      {
+        error_code: FAILURE_CODES.SCREEN_RECORDING_NO_ACTIVE_SESSION,
+        failure_stage: stage,
+        failure_area: "tool_server",
+        error_kind: "not_found",
+      }
+    );
+  }
   const recoverable =
-    (api.pendingRetrieval && api.outputFile !== null) || api.finishedRecording !== null;
+    (api.pendingRetrieval && api.outputFile !== null) ||
+    (outputFile !== undefined && api.finishedRecording !== null);
   if (!api.recordingActive && !recoverable) {
     // A teardown reaps this device's session and the registry nulls the
     // instance, so the session resolved above never heard of the capture that
@@ -124,7 +141,10 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
     throw new FailureError(
       reaped
         ? describeReapedSession(reaped, "screen recording")
-        : `No active screen recording on device ${api.deviceId}. Call \`screen-recording-start\` first.`,
+        : api.finishedRecording
+          ? `The previous recording on device ${api.deviceId} already stopped. ` +
+            `To retrieve its result again, pass outputFile: ${api.finishedRecording.outputFile}.`
+          : `No active screen recording on device ${api.deviceId}. Call \`screen-recording-start\` first.`,
       {
         error_code: reaped
           ? FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN

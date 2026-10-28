@@ -60,7 +60,7 @@ export interface ScreenRecordingSessionApi {
   startPending: boolean;
   /** The in-flight stop, awaited by disposal before it clears shared capture state. */
   stopping: Promise<StopRecordingFile> | null;
-  finishedRecording: StopRecordingFile | null;
+  finishedRecording: { outputFile: string; result: StopRecordingFile | Error } | null;
   /**
    * Set the moment dispose() begins — process shutdown, or a
    * `stop-all-simulator-servers` reaping this device (scoped or machine-wide).
