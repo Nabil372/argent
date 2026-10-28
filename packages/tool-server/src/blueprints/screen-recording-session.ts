@@ -258,9 +258,7 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
         // instead of spawning an orphan the teardown below can no longer reap.
         state.disposed = true;
         clearActiveScreenRecording(state.deviceId);
-        // Decided BEFORE the teardown below clears the flags it reads: a
-        // capture still encoding, a start mid-flight and one waiting to be
-        // handed over all owe the caller a video.
+        // Decide before teardown clears capture and completed-stop retry state.
         const hadCapture =
           state.recordingActive ||
           state.startPending ||
@@ -340,7 +338,9 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
               "screen-recording",
               state.deviceId,
               outputExists
-                ? `The recording output is at ${abandonedOutput}. Check that it plays before re-recording.`
+                ? stopResult && !(stopResult instanceof Error)
+                  ? `The completed recording is at ${abandonedOutput}. It may already have been delivered. Teardown ended its retry state.`
+                  : `The recording output is at ${abandonedOutput}. Check that it plays before re-recording.`
                 : stopResult instanceof Error
                   ? stopResult.message
                   : "No recording output was saved."

@@ -1999,6 +1999,10 @@ describe("debug finalization safeguards", () => {
       );
       expect((error as Error).message).toContain(outputFile);
       if (!saved) expect((error as Error).message).toContain("Debug encoder exited");
+      else {
+        expect((error as Error).message).toContain("may already have been delivered");
+        expect((error as Error).message).toContain("Teardown ended its retry state");
+      }
       expect(getFailureSignal(error)?.error_code).toBe(
         FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
       );
