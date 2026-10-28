@@ -202,8 +202,8 @@ export type OnDiskSpelling =
  * readdir, not realpath: realpath rewrites a symlinked flow to its target's
  * name, and a flow deliberately runs — and composes — under the link's own
  * name. Every call site hands a pure-ASCII basename (the flow-name charset,
- * plus ".yaml", ".mjs" or ".sh"), so Unicode-normalizing filesystems cannot make
- * the comparison lie.
+ * plus ".yaml", ".mjs" or ".sh"), so Unicode-normalizing filesystems cannot make the
+ * comparison lie.
  *
  * What an `absent` verdict means is the caller's to decide, and they differ:
  * `flow_path` arrives with the boundary's stat already vouching for the file,

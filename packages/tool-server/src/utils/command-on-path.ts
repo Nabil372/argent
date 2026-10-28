@@ -14,11 +14,8 @@ const execFileAsync = promisify(execFile);
  * current directory *before* PATH, so CWD matches are dropped: an `adb.exe`
  * planted in the tool-server's working directory must never beat the real one.
  *
- * `accept` filters the matches the resolver offers, for a caller that has to
- * reject a name PATH resolves to the wrong program — Windows' own
- * `System32\bash.exe`, which is the WSL launcher rather than a bash that can
- * see this filesystem. `where` lists every match, so a rejected first hit still
- * finds a later one; `command -v` answers once, so a rejected answer is a miss.
+ * `accept` filters the matches, e.g. to skip the WSL launcher `System32\bash.exe`.
+ * `where` lists every match, so a later one can win; `command -v` gives just one.
  */
 export async function commandOnPath(
   name: string,

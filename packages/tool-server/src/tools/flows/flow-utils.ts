@@ -3114,16 +3114,8 @@ export function hasScriptExtension(scriptPath: string): boolean {
  * script's own import all run before the first line the limit is meant to
  * bound.
  *
- * A `.sh` adds the interpreter lookup, the exchange directory and bash's own
- * start in front of the script, and the floor was re-measured rather than
- * assumed when bash arrived: on the published bundle layout, 30 runs each, the
- * lookup is 5-9ms (almost all of it the processes it starts - on POSIX, the
- * PATH probe and the run that asks the candidate for its version), the exchange
- * directory is under a millisecond, and a whole `.sh` step costs 8-14ms more
- * than the `.mjs` step beside it at the median — the same order as the Node
- * boot both pay. The floor stands for both, and for both it is tight rather
- * than generous: a step that asks for 100ms is asking to be bounded by its own
- * start.
+ * A `.sh` adds the interpreter lookup and bash's own start, a few milliseconds
+ * more; the floor stands for both.
  *
  * No other millisecond option shares that floor. Each draws its bound from the
  * work it measures: `await`'s `timeout` takes 1
