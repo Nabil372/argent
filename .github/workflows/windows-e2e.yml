@@ -78,7 +78,7 @@ on:
       - "packages/tool-server/test/helpers/host-bash.ts"
       - "packages/tool-server/test/helpers/flow-script-workspace.ts"
       # The same rule, applied to the rest of the import graph of those tests
-      # (the next eight entries).
+      # (the next nine entries).
       # Resolving every import of the three test files transitively gives a
       # 33-file graph, and naming files one by one left 18 of them out. Two of
       # those decided a Windows outcome: `configuration-core/src/paths.ts` holds
@@ -96,6 +96,7 @@ on:
       - "packages/tool-server/src/utils/capability.ts"
       - "packages/tool-server/src/utils/electron-env.ts"
       - "packages/tool-server/src/utils/format-error.ts"
+      - "packages/tool-server/src/utils/harmony-flag.ts"
       - "packages/tool-server/src/utils/secrets.ts"
       - "packages/tool-server/src/utils/timing.ts"
       - "packages/tool-server/test/helpers/temp-home.ts"

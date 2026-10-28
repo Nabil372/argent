@@ -39,7 +39,7 @@ interface ScriptExecuteCommon {
   maxOutputBytes: number;
 }
 
-export interface ScriptExecuteNodeRequest extends ScriptExecuteCommon {
+interface ScriptExecuteNodeRequest extends ScriptExecuteCommon {
   interpreter: Extract<ScriptInterpreter, "node">;
   /**
    * The script, as the real-path file URL Node resolved its entry module to.
@@ -50,7 +50,7 @@ export interface ScriptExecuteNodeRequest extends ScriptExecuteCommon {
   outputJson: string;
 }
 
-export interface ScriptExecuteBashRequest extends ScriptExecuteCommon {
+interface ScriptExecuteBashRequest extends ScriptExecuteCommon {
   interpreter: Extract<ScriptInterpreter, "bash">;
   /** Absolute, resolved by the parent; the runner runs what it is told. */
   interpreterPath: string;
@@ -78,13 +78,7 @@ export interface ScriptExecuteBashRequest extends ScriptExecuteCommon {
 export type ScriptExecuteRequest = ScriptExecuteNodeRequest | ScriptExecuteBashRequest;
 
 export type ScriptFailureType =
-  | "load"
-  | "runtime"
-  | "output"
-  | "exit"
-  | "protocol"
-  | "spawn"
-  | "signal";
+  "load" | "runtime" | "output" | "exit" | "protocol" | "spawn" | "signal";
 
 /**
  * Child → parent. `started` is the only thing that lets the parent tell "the
