@@ -120,9 +120,21 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       });
       expect(response.status).toBe(200);
       const reader = response.body!.getReader();
-      await vi.advanceTimersByTimeAsync(310_000);
-      const keepalive = await reader.read();
-      expect(new TextDecoder().decode(keepalive.value)).toMatch(/^\n+$/);
+      let received = false;
+      const first = reader.read().then((chunk) => {
+        received = true;
+        return chunk;
+      });
+      await vi.advanceTimersByTimeAsync(14_999);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(received).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(new TextDecoder().decode((await first).value)).toBe("\n");
+      for (let i = 0; i < 20; i++) {
+        const next = reader.read();
+        await vi.advanceTimersByTimeAsync(15_000);
+        expect(new TextDecoder().decode((await next).value)).toBe("\n");
+      }
       finish();
       let result = "";
       for (;;) {

@@ -88,7 +88,7 @@ beforeEach(async () => {
     if (req.method === "POST" && req.url === "/tools/slow") {
       if (req.headers.accept?.includes("application/x-ndjson")) {
         res.writeHead(200, { "Content-Type": "application/x-ndjson" });
-        res.end(`${JSON.stringify({ event: "result", data: { ok: true } })}\n`);
+        res.end(`\n\n${JSON.stringify({ event: "result", data: { ok: true } })}\n`);
         return;
       }
       return json({ data: { ok: true } });
