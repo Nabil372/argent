@@ -2309,6 +2309,7 @@ describe("debug finalization safeguards", () => {
         { udid: IOS_UDID },
         {
           artifacts: new ArtifactStore(),
+          signal: AbortSignal.abort(),
           onRecordingOutput,
         }
       );

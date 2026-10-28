@@ -1203,7 +1203,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         }
       } catch (error: unknown) {
         const err =
-          getFailureSignal(error)?.error_code === FAILURE_CODES.REGISTRY_SHUTTING_DOWN
+          getFailureSignal(error)?.error_code === FAILURE_CODES.REGISTRY_SHUTTING_DOWN ||
+          (disposed &&
+            getFailureSignal(error)?.error_code === FAILURE_CODES.REGISTRY_SERVICE_TERMINATING)
             ? shutdownFailure()
             : error;
         /**

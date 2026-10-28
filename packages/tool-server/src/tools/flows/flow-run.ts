@@ -3046,6 +3046,12 @@ async function execLeafStep(
         }
         return { ...base, status: "pass", tool: step.name, result, outputHint, args };
       } catch (err) {
+        const code = getFailureSignal(err)?.error_code;
+        if (
+          code === FAILURE_CODES.REGISTRY_SHUTTING_DOWN ||
+          code === FAILURE_CODES.REGISTRY_SERVICE_TERMINATING
+        )
+          throw err;
         // A gesture tool that consults the signal rejects when the run is
         // cancelled mid-dispatch. Per ABORTED_OUTCOME that is a skip, never a
         // step failure carrying the tool's own "aborted after N frames".

@@ -112,10 +112,7 @@ it("prevents a running sequence from recreating disposed services while an admit
   await registry.dispose();
   expect(dispose).toHaveBeenCalledOnce();
   finishStep();
-  expect(await sequence).toMatchObject({
-    completed: 1,
-    steps: [{ result: { ok: true } }, { error: expect.stringContaining("shutting down") }],
-  });
+  await expect(sequence).rejects.toThrow("The registry is shutting down.");
   expect(factory).toHaveBeenCalledOnce();
   expect(registry.getServiceState("Later:device")).toBe(ServiceState.IDLE);
   finishRecording();

@@ -16,6 +16,7 @@ import {
   ToolExecutionError,
   Registry,
   type InvokeToolOptions,
+  TypedEventEmitter,
 } from "@argent/registry";
 
 vi.mock("../src/utils/check-deps", async (importOriginal) => ({
@@ -319,6 +320,136 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       expect(result.body.error).not.toContain("This call was not started");
     }
   );
+
+  it.each(["sequence", "flow"])(
+    "propagates shutdown out of a real %s orchestrator",
+    async (kind) => {
+      const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+      const { tmpdir } = await import("node:os");
+      const { join } = await import("node:path");
+      const registry = new Registry();
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      registry.registerTool({
+        id: "keyboard",
+        services: () => ({}),
+        execute: async () => {
+          enter();
+          await pending;
+          return {};
+        },
+      });
+      const directory = await mkdtemp(join(tmpdir(), "argent-http-flow-"));
+      try {
+        let name: string;
+        let args: Record<string, unknown>;
+        if (kind === "sequence") {
+          const { createRunSequenceTool } = await import("../src/tools/run-sequence");
+          registry.registerTool(createRunSequenceTool(registry));
+          name = "run-sequence";
+          args = {
+            udid: "emulator-5554",
+            steps: [0, 1].map(() => ({ tool: "keyboard", args: { text: "test" }, delayMs: 0 })),
+          };
+        } else {
+          const { createRunFlowTool } = await import("../src/tools/flows/flow-run");
+          const { serializeFlow } = await import("../src/tools/flows/flow-utils");
+          await mkdir(join(directory, ".argent", "flows"), { recursive: true });
+          const file = join(directory, ".argent", "flows", "test.yaml");
+          await writeFile(
+            file,
+            serializeFlow({
+              executionPrerequisite: "",
+              steps: [0, 1].map(() => ({
+                kind: "tool" as const,
+                name: "keyboard",
+                args: { text: "test" },
+              })),
+            })
+          );
+          const tool = createRunFlowTool(registry);
+          registry.registerTool(tool);
+          name = tool.id;
+          args = { project_root: directory, name: "test", device: "emulator-5554" };
+        }
+        handle = createHttpApp(registry);
+        const response = supertest(handle.app)
+          .post(`/tools/${name}`)
+          .send(args)
+          .then((res) => res);
+        await Promise.race([
+          entered,
+          response.then((res) => {
+            throw new Error(
+              `Orchestrator did not enter its first step: ${JSON.stringify(res.body)}`
+            );
+          }),
+        ]);
+        registry.beginShutdown();
+        handle.dispose();
+        finish();
+        const result = await response;
+        expect(result.status).toBe(503);
+        expect(result.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+        expect(result.body.error).toContain("The tool may have run");
+        expect(result.body).not.toHaveProperty("data");
+      } finally {
+        finish();
+        await registry.dispose();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it("normalizes a service terminated during shutdown initialization", async () => {
+    const registry = new Registry();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    registry.registerBlueprint({
+      namespace: "Delayed",
+      getURN: () => "Delayed:device",
+      factory: async () => {
+        enter();
+        await pending;
+        return { api: {}, events: new TypedEventEmitter(), dispose: async () => {} };
+      },
+    });
+    registry.registerTool({
+      id: "describe",
+      services: () => ({ delayed: "Delayed:device" }),
+      execute: async () => ({}),
+    });
+    handle = createHttpApp(registry);
+    const response = supertest(handle.app)
+      .post("/tools/describe")
+      .send({})
+      .then((res) => res);
+    await entered;
+    registry.beginShutdown();
+    handle.dispose();
+    const disposal = registry.dispose();
+    finish();
+    try {
+      const result = await response;
+      expect(result.status).toBe(503);
+      expect(result.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+      expect(result.body.error).toContain("The tool may have run");
+    } finally {
+      await disposal;
+    }
+  });
 
   it.each(["screen-recording-start", "screen-recording-stop"])(
     "preserves nested %s context while a flow is interrupted",
