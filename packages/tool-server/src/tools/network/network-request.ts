@@ -95,13 +95,11 @@ const zodSchema = z.object({
   device_id: z
     .string()
     .describe(
-      "Device id from list-devices (iOS simulator UDID or Android serial), the same id used with debugger-connect. For an ID starting with android- (from native-network-logs), any id of that device works and no debugger connection is needed."
+      "Device id from list-devices (iOS simulator UDID or Android serial), the same id used with debugger-connect. An android- ID needs no debugger connection."
     ),
   requestId: z
     .string()
-    .describe(
-      "The requestId to get full details for: an ID from view-network-logs, or on Android an ID starting with android- from native-network-logs"
-    ),
+    .describe("The requestId from view-network-logs, or an android- ID from native-network-logs"),
   includeBody: z
     .boolean()
     .default(true)
@@ -193,12 +191,10 @@ export const networkRequestTool: ToolDefinition<
     failedMsg: ({ params, failureSignal }) =>
       `Failed to read network request ${params.requestId}: ${failureSignal.error_code}`,
   },
-  description: `Get full details of a specific network request by its requestId.
-IDs come from view-network-logs, or on Android from native-network-logs (IDs starting with android-). An android- ID needs no debugger connection and works with any device_id of that device. Its details also include the final URL and any redirects.
-On iOS, native-network-logs returns each event in full, and this tool does not read those events.
+  description: `Get full details of a specific network request by its requestId (from view-network-logs, or an android- ID from native-network-logs on Android).
 Returns request/response headers (sensitive headers redacted), status, timing, the request body, and optionally the response body.
 Request and response bodies over 1000 chars are cut to 1000 under a "[TRUNCATED: ...]" line that gives the full size; a binary response body is replaced by "[body omitted: binary <mime>, N bytes]". Use when you need headers, body, or timing for a specific request after listing logs.
-If the requestId is not found, list the requests again with view-network-logs, or native-network-logs for an android- ID.`,
+Returns an error message string if the requestId is not found: use view-network-logs, or native-network-logs for an android- ID, to get valid requestId values.`,
   readOnly: true,
   zodSchema,
   capability: DEBUGGER_TOOL_CAPABILITY,

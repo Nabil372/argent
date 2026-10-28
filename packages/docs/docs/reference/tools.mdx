@@ -110,15 +110,15 @@ Argent supports physical iPhones; physical iPads are not supported yet. `list-de
 
 ## Native devtools
 
-| Tool                                     | Description                                                                             |
-| ---------------------------------------- | --------------------------------------------------------------------------------------- |
-| `native-devtools-status`                 | Check whether native devtools are connected and injection is prepared (iOS)             |
-| `native-describe-screen`                 | Read the app's native accessibility screen description                                  |
-| `native-full-hierarchy`                  | Get the complete UIKit view tree                                                        |
-| `native-find-views`                      | Search views by class, accessibility id, label, tag, or `nativeID`                      |
-| `native-view-at-point`                   | Inspect the deepest visible view at a native window point                               |
-| `native-user-interactable-view-at-point` | Inspect the deepest view at a point that would receive touch input                      |
-| `native-network-logs`                    | Read native HTTP requests on iOS and Android, or stop native network capture on Android |
+| Tool                                     | Description                                                                 |
+| ---------------------------------------- | --------------------------------------------------------------------------- |
+| `native-devtools-status`                 | Check whether native devtools are connected and injection is prepared (iOS) |
+| `native-describe-screen`                 | Read the app's native accessibility screen description                      |
+| `native-full-hierarchy`                  | Get the complete UIKit view tree                                            |
+| `native-find-views`                      | Search views by class, accessibility id, label, tag, or `nativeID`          |
+| `native-view-at-point`                   | Inspect the deepest visible view at a native window point                   |
+| `native-user-interactable-view-at-point` | Inspect the deepest view at a point that would receive touch input          |
+| `native-network-logs`                    | Read native HTTP requests on iOS and Android                                |
 
 ### Native network capture on Android
 
@@ -138,7 +138,6 @@ To capture a request:
 | `port`     | The Metro port. Argent removes the Metro traffic on this port from the list. The default is the Metro port of the device. |
 | `limit`    | The maximum number of requests in the list. Argent returns the most recent requests, oldest first. The default is 50.     |
 | `clear`    | Remove the current requests from the later lists. Their IDs stay valid.                                                   |
-| `stop`     | Stop native network capture for this app. The capture of a different app continues.                                       |
 
 The result contains `header`, `armed`, `capture`, `count`, `total` and `requests`. The `capture` field and the `header` line show the state of the capture. The `capture` field is absent when `armed` is `false`. These are the states:
 
@@ -148,7 +147,7 @@ The result contains `header`, `armed`, `capture`, `count`, `total` and `requests
 | waiting     | The app did not load OkHttp yet. The capture starts when the app loads it.           |
 | unavailable | The in-app agent cannot capture in this process. The `header` line gives the reason. |
 
-Each request has an ID with the format `android-<4 hex digits>-<number>`, for example `android-3f9a-12`. An ID is valid only in the tool-server that listed it. An ID is not valid after `native-network-logs` with `stop: true` or `stop-all-simulator-servers` stops the capture, or after the tool-server stops. Give the ID to `view-network-request-details` together with an id of the same device. This needs no debugger connection. The details contain these items:
+Each request has an ID with the format `android-<4 hex digits>-<number>`, for example `android-3f9a-12`. An ID is valid only in the tool-server that listed it. An ID is not valid after `stop-all-simulator-servers` stops the capture, or after the tool-server stops. Give the ID to `view-network-request-details` together with an id of the same device. This needs no debugger connection. The details contain these items:
 
 - The request headers that went on the wire, for example `Cookie` and `User-Agent`. When Argent knows only the headers that the app set, the details say so.
 - Each redirect with the request headers that went on the wire for it and the headers of its response, for example `Location`.
@@ -169,7 +168,7 @@ While native network capture is on for an app, these tools tell you:
 
 A process of the app can also start in a different way, for example from a launcher tap, from a link or after a crash. The next call of `native-network-logs` attaches the in-app agent to this process.
 
-Native network capture stays on until `native-network-logs` with `stop: true` stops it for the app, or `stop-all-simulator-servers` stops the services of the device. After that, call `restart-app` to start the app without the in-app agent. See [Network inspection](/docs/features/network) for the limits.
+Native network capture stays on until `stop-all-simulator-servers` stops the services of the device. After that, call `restart-app` to start the app without the in-app agent. See [Network inspection](/docs/features/network) for the limits.
 
 ## Chromium and Electron
 

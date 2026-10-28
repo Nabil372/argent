@@ -48,9 +48,10 @@ import {
   sessionKeys,
   type AndroidNetworkInspectorApi,
 } from "../src/blueprints/android-network-inspector";
-import { createNativeNetworkLogsTool } from "../src/tools/native-devtools/native-network-logs";
+import { nativeNetworkLogsTool } from "../src/tools/native-devtools/native-network-logs";
 import { networkRequestTool } from "../src/tools/network/network-request";
 import { DEVICE_OWNED_NAMESPACES, deviceIdOwningUrn } from "../src/tools/simulator/device-services";
+import { createStopAllSimulatorServersTool } from "../src/tools/simulator/stop-all-simulator-servers";
 
 const SERIAL = "emulator-5554";
 const PKG = "com.example.demo";
@@ -58,8 +59,6 @@ const OTHER = "com.example.other";
 const DEVICE = { id: SERIAL, platform: "android" as const, kind: "emulator" as const };
 const APP_UID = 10212;
 const SECRET_SHAPE = /^[0-9a-f]{64}$/;
-
-const nativeNetworkLogsTool = createNativeNetworkLogsTool(new Registry());
 
 function dirFor(packageName = PKG, user = 0): string {
   return `/data/user/${user}/${packageName}/code_cache/.argent-inspector`;
@@ -550,7 +549,8 @@ async function armedInspector(metroPort = 8081): Promise<AndroidNetworkInspector
 function toolRegistry(): Registry {
   const registry = new Registry();
   registry.registerBlueprint(androidNetworkInspectorBlueprint);
-  registry.registerTool(createNativeNetworkLogsTool(registry));
+  registry.registerTool(nativeNetworkLogsTool);
+  registry.registerTool(createStopAllSimulatorServersTool(registry));
   registries.push(registry);
   return registry;
 }
@@ -2390,7 +2390,7 @@ describe("attaching and the app's lifecycle", () => {
     const note = await attachAndroidNetworkInspectorToLaunch(SERIAL, PKG);
 
     expect(note).toBe(
-      `native network capture is attached to ${PKG} (pid 5300); native-network-logs with stop: true ends it`
+      `native network capture is attached to ${PKG} (pid 5300); stop-all-simulator-servers for this device ends it`
     );
   });
 
@@ -3445,7 +3445,7 @@ describe("the tools on the Android native layer", () => {
     expect(attachCommands()).toHaveLength(1);
   });
 
-  it("native-network-logs with stop ends native capture for that app only", async () => {
+  it("stop-all-simulator-servers for the device ends native capture for its apps", async () => {
     device.processes.set(OTHER, { pid: 6100, startTime: 70_000 });
     const registry = toolRegistry();
     for (const bundleId of [PKG, OTHER]) {
@@ -3462,65 +3462,21 @@ describe("the tools on the Android native layer", () => {
     agent.request(agent.rid(1), "https://example.com/a");
     await vi.waitFor(() => expect(api.records(8081)).toHaveLength(1));
     const id = api.records(8081)[0]!.id;
-    const port = session().port;
+    const ports = [session().port, session(dirFor(OTHER)).port];
 
-    const result = await registry.invokeTool("native-network-logs", {
-      udid: SERIAL,
-      bundleId: PKG,
-      stop: true,
-    });
+    const result = await registry.invokeTool("stop-all-simulator-servers", { devices: [SERIAL] });
 
-    expect(result).toEqual({
-      status: "ok",
-      stopped: true,
-      message: expect.stringContaining(
-        `native network capture stopped for ${PKG}; the agent stays loaded in pid 4722`
-      ),
-    });
+    expect(result).toEqual({ stopped: [urn, otherUrn] });
     expect(agent.received).toContain("Network.disable");
-    expect(registry.getServiceState(urn)).toBe(ServiceState.IDLE);
+    for (const stopped of [urn, otherUrn]) {
+      expect(registry.getServiceState(stopped)).toBe(ServiceState.IDLE);
+    }
     expect(device.files.has(dirFor())).toBe(false);
-    expect(device.reverses.has(port)).toBe(false);
+    expect(device.files.has(dirFor(OTHER))).toBe(false);
+    for (const port of ports) expect(device.reverses.has(port)).toBe(false);
     expect(findAndroidNativeRecord(id)).toBeUndefined();
-    expect(liveAndroidNetworkCaptures(SERIAL)).toEqual([OTHER]);
+    expect(liveAndroidNetworkCaptures(SERIAL)).toEqual([]);
     expect(await attachAndroidNetworkInspectorToLaunch(SERIAL, PKG)).toBeUndefined();
-
-    // The other app keeps its capture, its session and its tunnel.
-    expect(registry.getServiceState(otherUrn)).toBe(ServiceState.RUNNING);
-    expect(otherApi.state().armed).toBe(true);
-    expect(device.reverses.has(session(dirFor(OTHER)).port)).toBe(true);
-  });
-
-  it("native-network-logs with stop creates no inspector for an app without capture", async () => {
-    const registry = toolRegistry();
-    expect(
-      await registry.invokeTool("native-network-logs", { udid: SERIAL, bundleId: PKG, stop: true })
-    ).toEqual({
-      status: "ok",
-      stopped: false,
-      message: `native network capture was not on for ${PKG} on ${SERIAL}`,
-    });
-    expect(registry.getSnapshot().services.size).toBe(0);
-    expect(device.commands).toEqual([]);
-  });
-
-  it("native-network-logs rejects stop on iOS, where capture cannot be turned off", async () => {
-    const registry = toolRegistry();
-    const err = await registry
-      .invokeTool("native-network-logs", {
-        udid: "12345678-1234-1234-1234-123456789ABC",
-        bundleId: "com.example.ios",
-        stop: true,
-      })
-      .then(
-        () => undefined,
-        (e: unknown) => e
-      );
-    expect(getFailureSignal(err)?.error_code).toBe(
-      FAILURE_CODES.NATIVE_NETWORK_LOGS_STOP_UNSUPPORTED
-    );
-    expect((err as Error).message).toContain("stop applies to Android only");
-    expect(registry.getSnapshot().services.size).toBe(0);
   });
 
   it("routes an android- id in view-network-request-details to the body from the fake socket, and an unknown id to not found", async () => {
