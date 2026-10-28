@@ -115,6 +115,81 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     expect(stop.body.error).not.toContain("Retry after");
   });
 
+  it.each([false, true])(
+    "reports an interrupted recording stop before shutdown closes the connection (stream: %s)",
+    async (stream) => {
+      let enter!: () => void;
+      const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      });
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      let completed = false;
+      let signal: AbortSignal | undefined;
+      const registry = stubRegistry(async (options) => {
+        signal = options?.signal;
+        enter();
+        await pending;
+        completed = true;
+        return { video: "saved.mp4" };
+      });
+      const def = registry.getTool("test-tool")!;
+      vi.mocked(registry.getTool).mockReturnValue({
+        ...def,
+        id: "screen-recording-stop",
+        longRunning: true,
+      });
+      handle = createHttpApp(registry);
+      let request = supertest(handle.app)
+        .post("/tools/screen-recording-stop")
+        .send({ udid: "device", outputFile: "/server/recording.mp4" });
+      if (stream)
+        request = request.set("Accept", "application/x-ndjson").buffer(true).parse(collectText);
+      const response = request.then((res) => res);
+      await entered;
+      handle.dispose();
+      const result = await response;
+      const body = stream ? parseLines(result.body as string)[0] : result.body;
+      expect(body.error_code).toBe(FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN);
+      expect(body.error).toContain("/server/recording.mp4");
+      expect(body.error).toContain("does not confirm a saved video");
+      expect(body.error).toContain("restart loses result retrieval state");
+      if (stream) expect(body.event).toBe("error");
+      expect(completed).toBe(false);
+      expect(signal?.aborted).toBe(false);
+      finish();
+      await vi.waitFor(() => expect(completed).toBe(true));
+    }
+  );
+
+  it("delivers a stop that finishes inside the shutdown grace", async () => {
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    handle = createHttpApp(
+      stubRegistry(async () => {
+        enter();
+        await pending;
+        return { video: "saved.mp4" };
+      })
+    );
+    const response = supertest(handle.app)
+      .post("/tools/test-tool")
+      .send({})
+      .then((res) => res);
+    await entered;
+    handle.dispose();
+    finish();
+    expect((await response).body).toEqual({ data: { video: "saved.mp4" } });
+  });
+
   it("streams each emitProgress event as a line, then the terminal result", async () => {
     const registry = stubRegistry(async (options) => {
       options?.emitProgress?.({ index: 0, status: "pass" });

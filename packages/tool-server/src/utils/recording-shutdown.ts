@@ -13,7 +13,7 @@ export function beginRecordingShutdown(registry: Registry): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       process.stderr.write(
-        "[screen-recording] Shutdown grace ended; pending recording output may be incomplete. Stop recordings before shutting down to retrieve them.\n"
+        "[screen-recording] Shutdown grace ended; pending recording output may be incomplete. Check the outputFile returned by start on the tool-server after encoding finishes; a server exit loses retrieval state.\n"
       );
       resolve();
     }, 1_500);

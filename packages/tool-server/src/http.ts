@@ -475,6 +475,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   // orphans from aborted or failed calls.
   const uploads = new Map<string, UploadEntry & { expireAt: number; bytes: number }>();
   const activeUploads = new Set<() => void>();
+  const pendingCalls = new Set<() => void>();
   // Settled bytes plus bytes of streams still in flight, so the cap holds against
   // a burst of parallel uploads instead of only settled ones.
   let inFlightUploadBytes = 0;
@@ -1054,7 +1055,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // plain-JSON status codes — streaming is committed to only once they pass.
       const wantsStream = Boolean(req.headers.accept?.includes("application/x-ndjson"));
       const writeLine = (payload: unknown): void => {
-        res.write(`${JSON.stringify(payload)}\n`);
+        if (!res.writableEnded && !res.destroyed) res.write(`${JSON.stringify(payload)}\n`);
       };
       const streamKeepAlive = wantsStream ? setInterval(() => res.write("\n"), 15_000) : null;
       if (streamKeepAlive) {
@@ -1074,8 +1075,19 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         res.flushHeaders();
       }
 
+      let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
+      let interrupt!: () => void;
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        interrupt = () => {
+          shutdownTimer = setTimeout(() => {
+            reject(serverShutdownError(name, parsedData));
+            if (name !== "screen-recording-stop") controller.abort();
+          }, 1_500);
+        };
+      });
+      pendingCalls.add(interrupt);
       try {
-        const data = await registry.invokeTool(name, parsedData, {
+        const invocation = registry.invokeTool(name, parsedData, {
           signal: controller.signal,
           ...(resolvedFileInputs ? { fileInputs: resolvedFileInputs } : {}),
           // The argent client marks every call it sends over a link. A false
@@ -1093,6 +1105,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
             ? { emitProgress: (event: unknown) => writeLine({ event: "progress", data: event }) }
             : {}),
         });
+        const data = await Promise.race([invocation, interrupted]);
         // Gate on `updateInstallable`, not `updateAvailable`, and advertise the
         // version the resolver would install: both honour the release-age policy.
         const { updateInstallable, currentVersion, installableVersion } = getUpdateState();
@@ -1233,6 +1246,8 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
           .status(500)
           .json({ error: attribute(formatErrorForAgent(err)), ...errorSignalFields(err) });
       } finally {
+        pendingCalls.delete(interrupt);
+        clearTimeout(shutdownTimer);
         if (keepAlive) clearInterval(keepAlive);
         if (streamKeepAlive) clearInterval(streamKeepAlive);
         releaseInvocationMeta?.();
@@ -1251,7 +1266,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   return {
     app,
     dispose: () => {
+      if (disposed) return;
       disposed = true;
+      for (const interrupt of pendingCalls) interrupt();
       idleTimer.dispose();
       clearInterval(uploadSweeper);
       for (const cancel of activeUploads) cancel();
