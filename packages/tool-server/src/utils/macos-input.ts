@@ -106,14 +106,7 @@ export async function macosClick(
   for (let i = 1; i <= (opts.clickCount ?? 1); i++) {
     const event = { x, y, button: opts.button, clickCount: i };
     await macosMouse(app, { ...event, type: "down" });
-    try {
-      await macosMouse(app, { ...event, type: "up" });
-    } catch (err) {
-      // Release a button the library may still hold, so later moves do not
-      // drag. Best effort: the caller keeps the original error.
-      await macosMouse(app, { ...event, type: "up" }).catch(() => {});
-      throw err;
-    }
+    await macosMouse(app, { ...event, type: "up" });
   }
   await sleep(MACOS_CLICK_SETTLE_MS);
 }

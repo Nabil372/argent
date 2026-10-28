@@ -57,20 +57,18 @@ describe("service plumbing", () => {
 });
 
 describe("macosClick", () => {
-  it("releases the button when the up fails, and keeps the original error", async () => {
-    let ups = 0;
+  it("sends only the up to run late", async () => {
     const { app, calls } = fakeMacosApp({
       "Input.mouse": (p) => {
-        if (p.type === "up" && ups++ === 0) throw new Error("request timed out");
+        if (p.type === "up") throw new Error("request timed out");
         return {};
       },
     });
     await expect(macosClick(app, 0.5, 0.5)).rejects.toThrow("request timed out");
-    // Only an up runs after its call timed out: a late press or move would surprise the caller.
+    // A late press or move would surprise the caller; a late release never does.
     expect(calls.map((c) => [c.params.type, c.opts])).toEqual([
       ["move", undefined],
       ["down", undefined],
-      ["up", { runLate: true }],
       ["up", { runLate: true }],
     ]);
   });
