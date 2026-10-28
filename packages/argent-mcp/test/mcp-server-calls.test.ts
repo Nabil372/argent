@@ -160,10 +160,10 @@ async function startStub({
   };
 }
 
-async function connect(paths: ToolsServerPaths): Promise<Client> {
+async function connect(paths: ToolsServerPaths, clientName = "probe"): Promise<Client> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await startMcpServer({ paths, transport: serverTransport });
-  const client = new Client({ name: "probe", version: "1" });
+  const client = new Client({ name: clientName, version: "1" });
   await client.connect(clientTransport);
   return client;
 }
@@ -319,6 +319,72 @@ describe("startMcpServer tool calls", () => {
     const content = result.content as Array<{ type: string; text?: string }>;
     expect(content[0]).toEqual({ type: "text", text: "a note" });
     expect(textOf(result)).toContain('"ok": true');
+  });
+});
+
+describe("startMcpServer tool listing per client", () => {
+  const listing = {
+    tools: [
+      {
+        name: "rows",
+        description: "Rows",
+        inputSchema: {
+          type: "object",
+          properties: { top_n: { type: "integer", default: 20, description: "Rows to show." } },
+        },
+      },
+    ],
+  };
+  let stub: Stub;
+  let client: Client;
+
+  beforeEach(async () => {
+    stub = await startStub({ listing });
+    vi.stubEnv("ARGENT_TOOLS_URL", stub.url);
+    vi.stubEnv("ARGENT_MCP_LOG", join(TEST_HOME, "mcp-calls.log"));
+  });
+
+  afterEach(async () => {
+    await client.close();
+    vi.unstubAllEnvs();
+    await stub.close();
+  });
+
+  const topN = async (clientName: string) => {
+    client = await connect(
+      {
+        bundlePath: join(TEST_HOME, "missing", "tool-server.cjs"),
+        simulatorServerDir: "",
+        nativeDevtoolsDir: "",
+      },
+      clientName
+    );
+    const { tools } = await client.listTools();
+    return (tools[0]!.inputSchema.properties as Record<string, unknown>).top_n;
+  };
+
+  it("states keyword-only facts for a client that drops the keywords", async () => {
+    expect(await topN("codex-mcp-client")).toEqual({
+      type: "integer",
+      default: 20,
+      description: "Rows to show. Default: 20.",
+    });
+  });
+
+  it("states keyword-only facts for an unknown client", async () => {
+    expect(await topN("some-new-client")).toEqual({
+      type: "integer",
+      default: 20,
+      description: "Rows to show. Default: 20.",
+    });
+  });
+
+  it("leaves the schema as it is for a client that shows the keywords", async () => {
+    expect(await topN("claude-code")).toEqual({
+      type: "integer",
+      default: 20,
+      description: "Rows to show.",
+    });
   });
 });
 
