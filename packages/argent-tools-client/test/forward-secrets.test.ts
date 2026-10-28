@@ -217,6 +217,28 @@ describe("forward-secrets", () => {
     expect(sent).toEqual([]);
   });
 
+  it("sends the largest secret Node's header limit takes, and none it refuses", async () => {
+    const outcomes = new Map<number, string>();
+    for (let size = 11_900; size <= 12_050; size += 1) {
+      writeFileSync(join(project, ".argent", "secrets.env"), `BIG=${"s".repeat(size)}\n`);
+      outcomes.set(
+        size,
+        await client()
+          .callTool("keyboard", { text: "{{secret:BIG}}" })
+          .then(
+            () => "sent",
+            (err: Error) =>
+              err.message.includes("so the call was not sent") ? "held" : err.message
+          )
+      );
+    }
+    // This server keeps Node's default limit, so a refused head would come back as a 431.
+    expect(new Set(outcomes.values())).toEqual(new Set(["sent", "held"]));
+    expect(Math.max(...[...outcomes].filter(([, o]) => o === "sent").map(([size]) => size))).toBe(
+      11_963
+    );
+  });
+
   it.each([
     [431, ""],
     [400, "<html>400 Bad Request</html>"],
