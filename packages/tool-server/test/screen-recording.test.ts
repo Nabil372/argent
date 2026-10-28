@@ -74,6 +74,7 @@ const ANDROID_SERIAL = "emulator-5554";
 const STREAM_URL = "http://127.0.0.1:54321/stream.mjpeg";
 /** Grace the start holds after spawning ffmpeg before declaring it live. */
 const READY_GRACE_MS = 800;
+const ENCODER_PID = 91919191;
 
 /** Minimal JPEG: SOI + SOF0 declaring the frame size + EOI. */
 function fakeJpeg(width = 1320, height = 2868): Buffer {
@@ -104,7 +105,7 @@ class FakeStdin extends EventEmitter {
 }
 
 class FakeChild extends EventEmitter {
-  pid = process.pid;
+  pid = ENCODER_PID;
   stdout = new EventEmitter();
   stderr = Object.assign(new EventEmitter(), { readableEnded: false });
   stdin = new FakeStdin();
@@ -252,10 +253,15 @@ beforeEach(async () => {
   mockOpenStream.mockReset();
   mockResolveFfmpeg.mockReset();
   mockResolveFfmpeg.mockResolvedValue("/fake/ffmpeg");
+  const kill = process.kill.bind(process);
+  vi.spyOn(process, "kill").mockImplementation((pid, signal) =>
+    pid === ENCODER_PID && signal === 0 ? true : kill(pid, signal)
+  );
   vi.useFakeTimers();
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   restoreTmpdir();
   await fs.rm(scratch, { recursive: true, force: true });
@@ -1836,6 +1842,7 @@ describe("debug finalization safeguards", () => {
     const directory = (await fs.readdir(scratch)).find((name) =>
       name.startsWith(`argent-recording-frames-${child.pid}-`)
     )!;
+    expect(directory).toBeDefined();
     const disposing = instance.dispose();
     expect(getActiveScreenRecordings()).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(5_000);

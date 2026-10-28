@@ -81,12 +81,10 @@ it("keeps an orphan encoder's spool until its own process exits", async () => {
   const encoderPid = 12345;
   const directory = setFrameDirectoryOwner(await createFrameDirectory(), encoderPid);
   await fs.writeFile(path.join(directory, "0.jpg"), "frame");
-  const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
-    expect(pid).toBe(encoderPid);
-    expect(signal).toBe(0);
-    return true;
-  });
+  expect(path.basename(directory)).toMatch(/^argent-recording-frames-12345-/);
+  const kill = vi.spyOn(process, "kill").mockReturnValue(true);
   await cleanupAbandonedFrames();
+  expect(kill).toHaveBeenCalledWith(encoderPid, 0);
   expect(await fs.readFile(path.join(directory, "0.jpg"), "utf8")).toBe("frame");
   kill.mockImplementation(() => {
     throw Object.assign(new Error("gone"), { code: "ESRCH" });
