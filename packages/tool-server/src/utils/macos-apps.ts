@@ -105,8 +105,8 @@ const LIBRARY_NAME = "libNativeDevtoolsMacos.dylib";
  * The directory is named after the files' contents, so a new release gets a
  * new directory and a running app keeps the files it has mapped. A complete
  * directory is never written again: it is built under a temporary name and
- * renamed into place, and an incomplete one is moved aside. Old directories
- * are kept, because an app may still have one mapped.
+ * renamed into place, and an incomplete one is moved aside. The directories
+ * of other builds go once no app maps them ({@link removeUnusedLibraries}).
  */
 export function stageMacosLibraries(
   bootstrapPath: string,
@@ -130,6 +130,14 @@ export function stageMacosLibraries(
 
   fs.mkdirSync(libRoot, { recursive: true, mode: 0o700 });
   fs.chmodSync(macosArgentDir(), 0o700);
+  // The time a tool-server last chose the directory, which the removal reads.
+  try {
+    const now = new Date();
+    fs.utimesSync(target, now, now);
+  } catch {
+    // Not staged yet.
+  }
+  void removeUnusedLibraries(libRoot, hash);
   if (isComplete()) return staged;
   if (fs.existsSync(target)) {
     fs.renameSync(target, path.join(libRoot, `.damaged-${name}-${process.pid}-${Date.now()}`));
@@ -148,6 +156,47 @@ export function stageMacosLibraries(
     throw err;
   }
   return staged;
+}
+
+const UNUSED_LIBRARY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Removes the staged directories in `libRoot` of builds other than `keep`
+ * (another release, another argent install) that no process maps, as `lsof`
+ * reports, and that no tool-server chose for a day: a tool-server that has just
+ * chosen one may not have started its app yet. Never fails.
+ */
+export async function removeUnusedLibraries(libRoot: string, keep: string): Promise<void> {
+  try {
+    const root = fs.realpathSync(libRoot);
+    let open: string;
+    try {
+      ({ stdout: open } = await execFileAsync("lsof", ["-Fn", "+D", root], {
+        timeout: 30_000,
+        maxBuffer: 16 * 1024 * 1024,
+      }));
+    } catch (err) {
+      // `lsof +D` exits 1 whether or not it lists files. Any other failure keeps everything.
+      const { code, stdout } = err as { code?: unknown; stdout?: string };
+      if (code !== 1) return;
+      open = stdout ?? "";
+    }
+    const used = new Set(
+      open
+        .split("\n")
+        .filter((line) => line.startsWith(`n${root}/`))
+        .map((line) => line.slice(root.length + 2).split("/")[0])
+    );
+    const cutoff = Date.now() - UNUSED_LIBRARY_MS;
+    for (const name of fs.readdirSync(root)) {
+      if (name.startsWith(keep) || used.has(name)) continue;
+      const dir = path.join(root, name);
+      const stat = fs.statSync(dir, { throwIfNoEntry: false });
+      if (stat && stat.mtimeMs < cutoff) fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    // The directory is gone, or a removal failed: the next start tries again.
+  }
 }
 
 /** The team of a file's code signature, from `codesign -dv`. */
@@ -246,6 +295,16 @@ export function macosListenSocket(
 
 function fitsSocketPath(p: string): boolean {
   return Buffer.byteLength(p, "utf8") <= MAX_SOCKET_PATH_BYTES;
+}
+
+/** For an app with no listening socket: argent reaches it only through the connection of its start. */
+export function noListenSocketNote(bundleId: string): string {
+  return (
+    `The bundle id ${bundleId} is too long for a listening socket, so argent reaches the app ` +
+    `only through the connection of this start. Once that closes (a tool-server restart, ` +
+    `stop-simulator-server), quit the app or start it again with boot-device force: true. ` +
+    `A shorter bundle id avoids this.`
+  );
 }
 
 // ── Tracked apps ─────────────────────────────────────────────────────────────
@@ -453,18 +512,23 @@ async function gitWorktreeOf(dir: string): Promise<{ top: string; common: string
 
 /**
  * The top folder of another git worktree of the project's repository when the
- * build at `appPath` lies in that worktree, else null: the same worktree,
+ * build at `appPath` comes from that worktree, else null: the same worktree,
  * another repository, or no git. A flow `launch` starts the build argent
  * recorded last for the bundle id, whoever booted it, so in one worktree a
- * flow could test the build of another. A build outside every worktree (Xcode's
- * shared DerivedData) is not checked.
+ * flow could test the build of another. A build in Xcode's DerivedData
+ * (`<DerivedData>/<name>-<hash>/Build/Products/<configuration>/<app>.app`)
+ * comes from the project its `info.plist` names as `WorkspacePath`.
  */
 export async function otherWorktreeOfBuild(
   appPath: string,
   projectRoot: string
 ): Promise<string | null> {
+  const derivedData = /^(.*)\/Build\/Products\/[^/]+\/[^/]+\.app$/.exec(appPath)?.[1];
+  const workspace = derivedData
+    ? await plistValue(path.join(derivedData, "info.plist"), "WorkspacePath")
+    : null;
   const [build, project] = await Promise.all([
-    gitWorktreeOf(path.dirname(appPath)),
+    gitWorktreeOf(path.dirname(workspace ?? appPath)),
     gitWorktreeOf(projectRoot),
   ]);
   if (!build || !project) return null;
@@ -630,6 +694,33 @@ export async function inspectMacosApp(appPath: string): Promise<MacosAppInfo> {
 }
 
 /**
+ * An Electron app or a Chromium browser draws its pages in a web view that the
+ * argent library cannot read, so argent drives it as a Chromium device.
+ */
+export function chromiumRefusal(info: MacosAppInfo): string | null {
+  if (info.chromium === "electron") {
+    return (
+      `${info.bundleId} is an Electron app: argent drives Electron apps through boot-device ` +
+      `with electronAppPath, not as a Mac app.`
+    );
+  }
+  if (info.chromium === "browser") {
+    return (
+      `${info.bundleId} is a Chromium browser: argent drives its web pages when the browser ` +
+      `runs with --remote-debugging-port (a Chromium device in list-devices), not as a Mac app.`
+    );
+  }
+  return null;
+}
+
+/** Darwin 23.4 is macOS 14.4, the oldest macOS that the argent library supports. */
+export function macosVersionRefusal(darwinRelease: string): string | null {
+  const [major = 0, minor = 0] = darwinRelease.split(".").map(Number);
+  if (major > 23 || (major === 23 && minor >= 4)) return null;
+  return `Native Mac apps need macOS 14.4 or newer; this Mac runs an older macOS (Darwin ${darwinRelease}).`;
+}
+
+/**
  * With the hardened runtime, macOS loads the argent library only when the app
  * lets dyld read `DYLD_*` variables (`get-task-allow`, or
  * `allow-dyld-environment-variables`) AND accepts the library's signature:
@@ -647,19 +738,11 @@ export function hardenedRuntimeRefusal(info: MacosAppInfo): string | null {
   const { getTaskAllow, disableLibraryValidation, allowDyldEnvironmentVariables } =
     info.entitlements;
   if (!getTaskAllow && !allowDyldEnvironmentVariables) {
-    const chromium =
-      info.chromium === "electron"
-        ? ` It is an Electron app: argent drives Electron apps through boot-device with ` +
-          `electronAppPath.`
-        : info.chromium === "browser"
-          ? ` It is a Chromium browser: argent drives its web pages when the browser runs with ` +
-            `--remote-debugging-port (a Chromium device in list-devices).`
-          : "";
     return (
       `${info.bundleId} is a release build with the hardened runtime, so macOS does not load ` +
       `the argent library into it, and argent cannot drive it. Notarized apps, including apps ` +
       `from other developers, are built this way. argent drives Debug builds of your own app: ` +
-      `if this app is yours, start its Debug build.${chromium}`
+      `if this app is yours, start its Debug build.`
     );
   }
   if (disableLibraryValidation || info.teamId) return null;

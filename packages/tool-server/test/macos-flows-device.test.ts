@@ -98,7 +98,11 @@ async function run(
 
 describe("macos in the flow file platform lists", () => {
   it("parses a macos launch map, alone and beside the other platforms, and round-trips it", () => {
-    for (const app of [{ macos: APP }, { ios: "com.argent.ios", macos: APP }]) {
+    for (const app of [
+      { macos: APP },
+      { ios: "com.argent.ios", macos: APP },
+      { macos: { app: APP, args: ["-Flag", "1"] } },
+    ]) {
       const yaml = `steps:\n  - launch: ${JSON.stringify(app)}\n`;
       const flow = parseFlow(yaml);
       expect(flow.steps[0]).toEqual({ kind: "launch", app });
@@ -119,6 +123,7 @@ describe("macos in the flow file platform lists", () => {
     expect(appIdForPlatform({ macos: APP, native: "com.native" }, "macos")).toBe(APP);
     expect(appIdForPlatform({ native: "com.native" }, "macos")).toBe("com.native");
     expect(appIdForPlatform(APP, "macos")).toBe(APP);
+    expect(appIdForPlatform({ macos: { app: APP, args: ["-Flag"] } }, "macos")).toBe(APP);
     expect(appIdForPlatform({ ios: "com.ios" }, "macos")).toBeNull();
     // The macos key is not a chromium app path, and not read for another platform.
     expect(appIdForPlatform({ macos: APP }, "ios")).toBeNull();
@@ -152,15 +157,15 @@ describe("resolveFlowDevice with Mac app rows", () => {
     });
   });
 
-  it("counts a running Mac app as a candidate for an unscoped run", async () => {
-    const { registry } = makeRegistry({
-      devices: [
-        row(APP),
-        { platform: "ios", udid: "00000000-0000-0000-0000-0000000000ab", state: "Booted" },
-      ],
+  it("never picks a running Mac app for a run without --platform macos", async () => {
+    const sim = { platform: "ios", udid: "00000000-0000-0000-0000-0000000000ab", state: "Booted" };
+    const { registry } = makeRegistry({ devices: [row(APP), sim] });
+    await expect(resolveFlowDevice(registry, undefined, {})).resolves.toMatchObject({
+      id: sim.udid,
     });
-    await expect(resolveFlowDevice(registry, undefined, {})).rejects.toThrow(
-      /2 booted devices matched.*macos-app-com\.argent\.probe \(macos, running\)/
+    const alone = makeRegistry({ devices: [row(APP)] }).registry;
+    await expect(resolveFlowDevice(alone, undefined, {})).rejects.toThrow(
+      /No booted device found\..*A Mac app is picked only with --platform macos or --device\./
     );
   });
 
@@ -178,22 +183,34 @@ describe("resolveFlowDevice with Mac app rows", () => {
 });
 
 describe("the device of a flow led by a macOS launch", () => {
-  it.each<[string, Launch, Record<string, unknown>]>([
-    ["a macos launch map", { macos: APP }, {}],
-    ["a bare-string launch under --platform macos", APP, { platform: "macos" }],
+  it.each<[string, Launch, Record<string, unknown>, string[]]>([
+    ["a macos launch map", { macos: APP }, {}, []],
+    [
+      "a macos launch map with args",
+      { macos: { app: APP, args: ["-Flag", "1"] } },
+      {},
+      ["-Flag", "1"],
+    ],
+    ["a bare-string launch under --platform macos", APP, { platform: "macos" }, []],
     [
       "the macos entry of a multi-platform launch under --platform macos",
-      { ios: "com.argent.ios", macos: APP },
+      { ios: { app: "com.argent.ios", args: ["-Ios"] }, macos: APP },
       { platform: "macos" },
+      [],
     ],
-  ])("runs %s on macos-app-<bundle id>, without listing devices", async (_label, app, extra) => {
-    await writeFlow("e2e", { executionPrerequisite: "", steps: [{ kind: "launch", app }] });
-    const { registry, calls } = makeRegistry();
-    const result = await run(registry, "e2e", extra);
-    expect(result.device).toBe(MAC_DEVICE);
-    expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:pass"]);
-    expect(calls).toEqual([{ tool: "restart-app", args: { bundleId: APP, udid: MAC_DEVICE } }]);
-  });
+  ])(
+    "runs %s on macos-app-<bundle id> with exactly its args, without listing devices",
+    async (_label, app, extra, launchArgs) => {
+      await writeFlow("e2e", { executionPrerequisite: "", steps: [{ kind: "launch", app }] });
+      const { registry, calls } = makeRegistry();
+      const result = await run(registry, "e2e", extra);
+      expect(result.device).toBe(MAC_DEVICE);
+      expect(result.steps.map((s) => `${s.kind}:${s.status}`)).toEqual(["launch:pass"]);
+      expect(calls).toEqual([
+        { tool: "restart-app", args: { bundleId: APP, launchArgs, udid: MAC_DEVICE } },
+      ]);
+    }
+  );
 
   it("leaves a multi-platform launch with no --platform to device auto-detection", async () => {
     await writeFlow("ambiguous", {

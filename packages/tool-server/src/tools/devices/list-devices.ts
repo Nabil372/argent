@@ -19,7 +19,11 @@ import {
 } from "../../utils/device-info";
 import { listHarmonyInstances, listHarmonyHdcTargets } from "../../utils/harmony-devices";
 import { isHarmonyEnabled } from "../../utils/harmony-flag";
-import { isMacosAppsEnabled, listTrackedMacosApps } from "../../utils/macos-apps";
+import {
+  isMacosAppsEnabled,
+  listTrackedMacosApps,
+  noListenSocketNote,
+} from "../../utils/macos-apps";
 import { discoverChromiumDevices, type ChromiumDevice } from "../../utils/chromium-discovery";
 import {
   listVegaDevices,
@@ -119,6 +123,8 @@ type MacosAppDevice = {
   appPath: string;
   pid: number;
   state: "Running";
+  /** The app has no listening socket. */
+  note?: string;
 };
 
 type ListedDevice =
@@ -229,6 +235,7 @@ async function listMacosApps(): Promise<MacosAppDevice[]> {
     appPath: app.appPath,
     pid: app.pid,
     state: "Running",
+    ...(app.listenSocket ? {} : { note: noListenSocketNote(app.bundleId) }),
   }));
 }
 

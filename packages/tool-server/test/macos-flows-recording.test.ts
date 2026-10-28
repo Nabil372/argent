@@ -129,6 +129,19 @@ describe("a tap recorded on a Mac app", () => {
     expect(appIdForPlatform(BUNDLE, "macos")).toBe(BUNDLE);
   });
 
+  it("records the arguments the restarted app got, also those of its last start", async () => {
+    serve([], "macos-devtools");
+    await start("args", "");
+    const reg = registry();
+    vi.mocked(reg.invokeTool).mockResolvedValueOnce({ restarted: true, args: ["-Flag", "1"] });
+
+    await record("args", "restart-app", { bundleId: BUNDLE }, reg);
+
+    expect(await recordedSteps("args")).toEqual([
+      { kind: "launch", app: { macos: { app: BUNDLE, args: ["-Flag", "1"] } } },
+    ]);
+  });
+
   it("refuses a tool without macOS support before it runs, as the runner does", async () => {
     serve([], "macos-devtools");
     await start("swipe");

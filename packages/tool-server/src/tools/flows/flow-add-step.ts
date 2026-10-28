@@ -1639,8 +1639,10 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
       // iOS device, which records as the `ios: { app, args }` entry beside a
       // `native` id so the flow still replays elsewhere; other extra args (e.g.
       // an Android `activity`) keep the raw tool step. An empty `launchArgs` is
-      // no args. `launch-app` is NOT rewritten — it foregrounds without
-      // terminating.
+      // no args. On a Mac app the step records the arguments the new process
+      // got, as a `macos: { app, args }` entry: without `launchArgs` the restart
+      // reuses those of the app's last start. `launch-app` is NOT rewritten — it
+      // foregrounds without terminating.
       const strippedArgs = stripDeviceKeys(args);
       const { bundleId: _bundleId, launchArgs, ...extraLaunchArgs } = strippedArgs;
       const noLaunchArgs =
@@ -1652,12 +1654,14 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
         platformOf(args.udid) === "ios"
           ? (launchArgs as string[])
           : undefined;
+      const isMacos = platformOf(args.udid) === "macos";
+      const macosArgs = isMacos ? (toolResult as { args?: string[] } | null)?.args : undefined;
       const isLaunch =
         command === "restart-app" &&
         params.delayMs === undefined &&
         typeof strippedArgs.bundleId === "string" &&
         Object.keys(extraLaunchArgs).length === 0 &&
-        (noLaunchArgs || iosArgs !== undefined);
+        (noLaunchArgs || iosArgs !== undefined || isMacos);
 
       // A recorded `fold` becomes the `fold:` directive, the same posture change
       // the tool made; args the directive does not take keep the raw tool step.
@@ -1698,7 +1702,11 @@ Returns { message, stepCount, recorded, savedTo }; \`recorded\`, not the status,
         const bundleId = strippedArgs.bundleId as string;
         step = {
           kind: "launch",
-          app: iosArgs ? { native: bundleId, ios: { app: bundleId, args: iosArgs } } : bundleId,
+          app: iosArgs
+            ? { native: bundleId, ios: { app: bundleId, args: iosArgs } }
+            : macosArgs?.length
+              ? { macos: { app: bundleId, args: macosArgs } }
+              : bundleId,
         };
       } else if (foldStep) {
         step = foldStep;

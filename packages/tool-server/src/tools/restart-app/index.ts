@@ -48,7 +48,7 @@ const zodSchema = z.object({
     .array(z.string())
     .optional()
     .describe(
-      'Apple simulators and physical iPhones: arguments passed to the app process at launch, e.g. `["-FeatureFlag", "YES"]` to override UserDefaults. Ignored on other targets.'
+      'Apple simulators<flag:macos-apps>, Mac apps</flag:macos-apps> and physical iPhones: arguments passed to the app process at launch, e.g. `["-FeatureFlag", "YES"]` to override UserDefaults. Ignored on other targets.<flag:macos-apps> Omitted on a Mac app, the app gets the arguments of its last start.</flag:macos-apps>'
     ),
 });
 

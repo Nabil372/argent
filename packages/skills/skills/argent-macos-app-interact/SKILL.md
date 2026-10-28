@@ -53,7 +53,7 @@ A click that opens an open or save panel shows a file list that `describe` canno
 
 ## E2E tests
 
-- Record the launch as a `restart-app` step; it becomes `launch: <bundle id>`. Write it as `launch: { macos: <bundle id> }` so the runner picks the Mac app and starts it even when it does not run or other devices run. Otherwise run with `platform: "macos"` (`argent e2e run <name> --platform macos`), or pass the device id.
+- Record the launch as a `restart-app` step; it becomes `launch: <bundle id>`, or `launch: { macos: { app, args } }` when the app ran with arguments. Write it as `launch: { macos: <bundle id> }` so the runner picks the Mac app and starts it even when it does not run or other devices run. Otherwise run with `platform: "macos"` (`argent e2e run <name> --platform macos`), or pass the device id: without them the runner never picks a Mac app.
 - A `swipe` is a mouse drag, a `long-press` a press and hold. `pinch` and `rotate` fail.
 - A right-click is `tap: { on: <selector>, button: right }`; a recorded `gesture-tap` with `button: "right"` is written that way.
 - A file panel is a `tool: file-panel` step, a menu command a `tool: menu-bar` step (`args: { action: choose, path: [Edit, Select All] }`). Gate a branch with `when: { platform: macos }`.

@@ -22,14 +22,14 @@ vi.mock("@argent/native-devtools-ios", async (importOriginal) => ({
 
 // Records what the blueprint hands the helper: its arguments and environment.
 const spawned = vi.hoisted(
-  () => [] as { command: string; args: string[]; env: NodeJS.ProcessEnv }[]
+  () => [] as { command: string; args: string[]; env: NodeJS.ProcessEnv; cwd?: unknown }[]
 );
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
     spawn: (command: string, args: string[], options: SpawnOptions) => {
-      spawned.push({ command, args, env: { ...(options?.env ?? {}) } });
+      spawned.push({ command, args, env: { ...(options?.env ?? {}) }, cwd: options?.cwd });
       return actual.spawn(command, args, options);
     },
   };
@@ -95,14 +95,17 @@ import { openUrlTool } from "../src/tools/open-url";
 import { nativeNetworkLogsTool } from "../src/tools/native-devtools/native-network-logs";
 import { resolveDevice } from "../src/utils/device-info";
 import {
+  chromiumRefusal,
   findRunningCopies,
   getTrackedMacosApp,
   hardenedRuntimeRefusal,
   inspectMacosApp,
+  macosVersionRefusal,
   otherWorktreeOfBuild,
   parseCodesignDisplay,
   processRunsExecutable,
   recordTrackedMacosApp,
+  removeUnusedLibraries,
   runningTrackedApp,
   stageLibraryFor,
   stageMacosLibraries,
@@ -372,7 +375,7 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
     expect(fakeAppPids()).toEqual([booted.pid]);
   });
 
-  it("hands the helper the staged bootstrap as --insert-library and no inherited DYLD_*, NATIVE_DEVTOOLS_* or ARGENT_*", async () => {
+  it("hands the helper the staged bootstrap as --insert-library, from /, with a Finder launch's environment only", async () => {
     // A DYLD_* or NATIVE_DEVTOOLS_* would redirect the injection or the channel;
     // argent's own token and port would let the app drive the tool-server.
     for (const [name, value] of Object.entries({
@@ -383,6 +386,7 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
       ARGENT_PORT: "4517",
       ARGENT_SECRET_APP_PASSWORD: "hunter2",
       argent_secret_lower: "hunter3",
+      DB_PASSWORD: "hunter4",
     })) {
       vi.stubEnv(name, value);
     }
@@ -391,7 +395,9 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
       (s) => s.command === path.join(native.dir, "argent-macos-helper")
     );
     expect(helper).toHaveLength(1);
-    const { args, env } = helper[0]!;
+    const { args, env, cwd } = helper[0]!;
+    expect(cwd).toBe("/");
+    expect(env.DB_PASSWORD).toBeUndefined();
     const flag = args.indexOf("--insert-library");
     expect(flag).toBeGreaterThan(0);
     expect(flag).toBeLessThan(args.indexOf("--"));
@@ -507,12 +513,49 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
     }
     expect(pidAlive(pid)).toBe(true);
     await expect(fresh.call("Echo")).resolves.toMatchObject({ pid });
+    other.registerTool(openUrlTool);
+    const url = { udid: DEVICE_ID, url: "https://example.com" };
+    const busyUrl = await other.invokeTool("open-url", url).catch((e: unknown) => e);
+    expect(codeOf(busyUrl)).toBe(FAILURE_CODES.MACOS_APP_IN_USE);
 
     // Once the first tool-server is gone, a new one knows the app from
     // ~/.argent/macos-apps.json alone.
     await registry.disposeService(macosAppRef(resolveDevice(DEVICE_ID)).urn);
     await expect(second.call("Echo")).resolves.toMatchObject({ pid });
     await other.dispose();
+  });
+
+  it("says when an app has no listening socket, and a restart from a tool-server that cannot reach it is refused", async () => {
+    // No socket path under so long a HOME fits sun_path.
+    vi.stubEnv("HOME", path.join(root, "h".repeat(90)));
+    fs.mkdirSync(process.env.HOME!);
+    setFlag("macos-apps", true, "global");
+    const booted = await run("boot-device", { macosAppPath: appPath });
+    expect(booted.note).toContain("too long for a listening socket");
+    expect((await macosEntries())[0].note).toContain("too long for a listening socket");
+
+    // This tool-server after a restart, or another one: either may not quit the app.
+    await registry.disposeService(macosAppRef(resolveDevice(DEVICE_ID)).urn);
+    const refused = await run("restart-app", { udid: DEVICE_ID, bundleId: BUNDLE_ID }).catch(
+      (e: unknown) => e
+    );
+    expect(codeOf(refused)).toBe(FAILURE_CODES.MACOS_APP_NOT_CONNECTED);
+    expect((refused as Error).message).toContain("call boot-device with force: true");
+    expect(pidAlive(booted.pid)).toBe(true);
+    const forced = await run("boot-device", { macosAppPath: appPath, force: true });
+    expect(pidAlive(booted.pid)).toBe(false);
+    expect(fakeAppPids()).toEqual([forced.pid]);
+  });
+
+  it("refuses an Electron app, which argent drives as a Chromium device", async () => {
+    const electron = writeBundle(path.join(root, `electron-${Date.now()}`), BUNDLE_ID);
+    fs.mkdirSync(path.join(electron, "Contents", "Frameworks", "Electron Framework.framework"), {
+      recursive: true,
+    });
+    await expect(run("boot-device", { macosAppPath: electron })).rejects.toThrow(
+      /is an Electron app: argent drives Electron apps through boot-device with electronAppPath/
+    );
+    expect(helperRuns()).toBe(0);
   });
 
   it("restart-app starts a new process under the same device id", async () => {
@@ -656,13 +699,17 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
     expect(fakeAppPids()).toHaveLength(1);
   });
 
-  it("boot-device uses exactly macosAppArgs; launch-app and restart-app reuse the last ones", async () => {
+  it("boot-device uses exactly macosAppArgs; launch-app and restart-app reuse the last ones unless restart-app gets launchArgs", async () => {
     const argvOf = async () => (await (await macosApp()).call<{ argv: string[] }>("Echo")).argv;
     const ARGS = ["--locale-de", "-ApplePersistenceIgnoreState", "YES"];
 
     const booted = await run("boot-device", { macosAppPath: appPath, macosAppArgs: ARGS });
     expect(booted.args).toEqual(ARGS);
     expect(await argvOf()).toEqual(ARGS);
+    // A boot with other arguments leaves the running app as it is, and says so.
+    const kept = await run("boot-device", { macosAppPath: appPath, macosAppArgs: ["-Other"] });
+    expect(kept).toMatchObject({ alreadyRunning: true, args: ARGS });
+    expect(kept.note).toMatch(/did not get \["-Other"\]\. .*boot-device with force: true/);
 
     // Running already: launch-app reports the arguments the app runs with.
     expect((await run("launch-app", { udid: DEVICE_ID, bundleId: BUNDLE_ID })).args).toEqual(ARGS);
@@ -676,6 +723,10 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
     await quit(getTrackedMacosApp(BUNDLE_ID)!.pid);
     expect((await run("launch-app", { udid: DEVICE_ID, bundleId: BUNDLE_ID })).args).toEqual(ARGS);
     expect(await argvOf()).toEqual(ARGS);
+    const relaunch = { udid: DEVICE_ID, bundleId: BUNDLE_ID, launchArgs: ["-New"] };
+    expect((await run("restart-app", relaunch)).args).toEqual(["-New"]);
+    expect(await argvOf()).toEqual(["-New"]);
+    expect((await run("restart-app", { ...relaunch, launchArgs: [] })).args).toEqual([]);
 
     // An explicit boot never reuses them, with force or after a stop, also from
     // a new tool-server that knows them only from ~/.argent/macos-apps.json.
@@ -1011,13 +1062,20 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
     );
   });
 
-  it("open-url needs the app running and a URL with a scheme", async () => {
+  it("open-url needs the app running, a URL with a scheme, and a scheme the app declares", async () => {
     await expect(run("open-url", { udid: DEVICE_ID, url: "fake://x" })).rejects.toThrow(
       /is not running/
     );
     await run("boot-device", { macosAppPath: appPath });
     await expect(run("open-url", { udid: DEVICE_ID, url: "-a Safari" })).rejects.toThrow(
       /needs a scheme/
+    );
+    const undeclared = await run("open-url", { udid: DEVICE_ID, url: "Fake://x" }).catch(
+      (e: unknown) => e
+    );
+    expect(codeOf(undeclared)).toBe(FAILURE_CODES.MACOS_APP_OPEN_URL_FAILED);
+    expect((undeclared as Error).message).toContain(
+      `${BUNDLE_ID} does not declare the URL scheme 'fake'`
     );
   });
 
@@ -1119,6 +1177,19 @@ describe("otherWorktreeOfBuild", () => {
     expect(await otherWorktreeOfBuild(app("main"), path.join(dir, "b"))).toBe(
       path.join(dir, "main")
     );
+  });
+
+  it("follows a build in Xcode's DerivedData to the project its info.plist names", async () => {
+    const derivedData = path.join(dir, "DerivedData", "Focus-abcdef");
+    const built = path.join(derivedData, "Build", "Products", "Debug", "Focus.app");
+    fs.mkdirSync(built, { recursive: true });
+    fs.writeFileSync(
+      path.join(derivedData, "info.plist"),
+      `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>WorkspacePath</key>` +
+        `<string>${path.join(dir, "b", "macos", "Focus.xcworkspace")}</string></dict></plist>`
+    );
+    expect(await otherWorktreeOfBuild(built, path.join(dir, "main"))).toBe(path.join(dir, "b"));
+    expect(await otherWorktreeOfBuild(built, path.join(dir, "b"))).toBeNull();
   });
 
   it("stays quiet for the same worktree, another repository and a build outside git", async () => {
@@ -1231,6 +1302,31 @@ describe("stageMacosLibraries", () => {
     expect(entries.filter((e) => !e.startsWith("."))).toEqual([hash]);
     expect(entries.some((e) => e.startsWith(`.damaged-${hash}-`))).toBe(true);
     expect(entries).toContain(`.tmp-${hash}-abc123`);
+  });
+
+  it("removes the directories of other builds that no process maps and that no tool-server chose for a day", async () => {
+    const dayAgo = Date.now() / 1000 - 25 * 60 * 60;
+    const make = (name: string, old = true) => {
+      fs.mkdirSync(path.join(libRoot(), name), { recursive: true });
+      fs.writeFileSync(path.join(libRoot(), name, "libNativeDevtoolsMacos.dylib"), name);
+      if (old) fs.utimesSync(path.join(libRoot(), name), dayAgo, dayAgo);
+    };
+    for (const name of ["aaaa", "aaaa-ABCDE12345", "bbbb", ".tmp-bbbb-x1", "dddd"]) make(name);
+    make("cccc", false);
+    const mapped = fs.openSync(path.join(libRoot(), "dddd", "libNativeDevtoolsMacos.dylib"), "r");
+    try {
+      await removeUnusedLibraries(libRoot(), "aaaa");
+    } finally {
+      fs.closeSync(mapped);
+    }
+    expect(fs.readdirSync(libRoot()).sort()).toEqual(["aaaa", "aaaa-ABCDE12345", "cccc", "dddd"]);
+  });
+
+  it("counts staging the same files again as choosing their directory", () => {
+    const dir = path.dirname(stageMacosLibraries(...shipped("1")));
+    fs.utimesSync(dir, 0, 0);
+    stageMacosLibraries(...shipped("1"));
+    expect(fs.statSync(dir).mtimeMs).toBeGreaterThan(Date.now() - 60_000);
   });
 
   describe("stageLibraryFor", () => {
@@ -1358,14 +1454,22 @@ describe("code signature rules", () => {
     }
   });
 
-  it("points a refused Electron app or Chromium browser to argent's Chromium support", () => {
-    const release = appInfo(true, []);
-    expect(hardenedRuntimeRefusal({ ...release, chromium: "electron" })).toContain(
+  it("points an Electron app or a Chromium browser to argent's Chromium support", () => {
+    const app = appInfo(false, []);
+    expect(chromiumRefusal({ ...app, chromium: "electron" })).toContain(
       "boot-device with electronAppPath"
     );
-    expect(hardenedRuntimeRefusal({ ...release, chromium: "browser" })).toContain(
-      "--remote-debugging-port"
-    );
-    expect(hardenedRuntimeRefusal(release)).not.toMatch(/Electron|Chromium/);
+    expect(chromiumRefusal({ ...app, chromium: "browser" })).toContain("--remote-debugging-port");
+    expect(chromiumRefusal(app)).toBeNull();
+  });
+
+  it.each([
+    ["22.6.0", false],
+    ["23.3.0", false],
+    ["23.4.0", true],
+    ["24.0.0", true],
+    ["27.0.0", true],
+  ])("drives Mac apps on Darwin %s (macOS 14.4 is 23.4): %s", (release, supported) => {
+    expect(macosVersionRefusal(release) === null).toBe(supported);
   });
 });

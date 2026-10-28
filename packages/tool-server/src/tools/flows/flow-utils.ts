@@ -622,16 +622,17 @@ export function __flowFileLockCountForTesting(): number {
 type ChromiumLaunch = string | { path: string; args?: string[] };
 
 /**
- * An ios `launch` target: a bundle id (bare string) or a bundle id plus the
- * arguments passed to the app process at launch, on a simulator or a physical
- * iPhone.
+ * An ios or macos `launch` target: a bundle id (bare string) or a bundle id
+ * plus the arguments passed to the app process at launch, on a simulator, a
+ * physical iPhone or a Mac.
  */
-type IosLaunch = string | { app: string; args?: string[] };
+type AppLaunch = string | { app: string; args?: string[] };
 
 /**
  * The app a `launch` step starts from scratch. A bare string applies to every
  * platform; the map targets a specific id per platform (chromium takes a path —
- * see {@link ChromiumLaunch}), and `ios` may carry launch args ({@link IosLaunch}).
+ * see {@link ChromiumLaunch}), and `ios` and `macos` may carry launch args
+ * ({@link AppLaunch}).
  * `native` is a shared id for the installed-app platforms (ios/android/vega/macos),
  * overridden by a specific `ios`/`android`/`vega`/`macos` key. A flow that BEGINS
  * with a `launch` step is standalone; one that doesn't is a fragment.
@@ -640,11 +641,11 @@ export type Launch =
   | string
   | {
       native?: string;
-      ios?: IosLaunch;
+      ios?: AppLaunch;
       android?: string;
       vega?: string;
       /** A Mac app's bundle id. */
-      macos?: string;
+      macos?: AppLaunch;
       chromium?: ChromiumLaunch;
     };
 
@@ -910,9 +911,9 @@ export function appIdForPlatform(launch: Launch | undefined, platform: string): 
     return typeof c === "string" ? c : c.path;
   }
   const key = authoringPlatform(platform);
-  if (key === "ios") {
-    const i = launch.ios;
-    if (i !== undefined) return typeof i === "string" ? i : i.app;
+  if (key === "ios" || key === "macos") {
+    const entry = launch[key];
+    if (entry !== undefined) return typeof entry === "string" ? entry : entry.app;
     return launch.native ?? null;
   }
   const v = (launch as Record<string, string | undefined>)[key];
@@ -920,13 +921,16 @@ export function appIdForPlatform(launch: Launch | undefined, platform: string): 
 }
 
 /**
- * The launch args an ios `{ app, args }` entry declares, or undefined when it
- * declares none (a bare-string launch, a bare ios id, or no ios key at all).
+ * The launch args an ios or macos `{ app, args }` entry declares, or undefined
+ * when it declares none (a bare-string launch, a bare id, or no such key).
  */
-export function iosLaunchArgs(launch: Launch | undefined): string[] | undefined {
+export function appLaunchArgs(
+  launch: Launch | undefined,
+  key: "ios" | "macos"
+): string[] | undefined {
   if (launch === undefined || typeof launch === "string") return undefined;
-  const i = launch.ios;
-  return i !== undefined && typeof i !== "string" ? i.args : undefined;
+  const entry = launch[key];
+  return entry !== undefined && typeof entry !== "string" ? entry.args : undefined;
 }
 
 /**
@@ -2399,18 +2403,18 @@ function parseChromiumLaunch(raw: unknown): ChromiumLaunch | null {
 }
 
 /**
- * Parse an ios launch value: a bundle id (bare string) or `{ app, args? }`.
+ * Parse an ios or macos launch value: a bundle id (bare string) or `{ app, args? }`.
  * Returns null when the shape is invalid (caller reports the launch error).
  */
-function parseIosLaunch(raw: unknown): IosLaunch | null {
+function parseAppLaunch(raw: unknown, key: "ios" | "macos"): AppLaunch | null {
   if (typeof raw === "string" && raw.length > 0) return raw;
   if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
     const b = raw as Record<string, unknown>;
-    rejectUnknownKeys({ launch: { ios: raw } }, b, ["app", "args"], "launch.ios");
+    rejectUnknownKeys({ launch: { [key]: raw } }, b, ["app", "args"], `launch.${key}`);
     if (typeof b.app !== "string" || b.app.length === 0) return null;
     if (b.args === undefined) return { app: b.app };
     if (Array.isArray(b.args))
-      rejectUnquotedLaunchArg({ launch: { ios: raw } }, b.args, "launch.ios");
+      rejectUnquotedLaunchArg({ launch: { [key]: raw } }, b.args, `launch.${key}`);
     if (!Array.isArray(b.args) || !b.args.every((a) => typeof a === "string")) return null;
     return { app: b.app, args: b.args as string[] };
   }
@@ -2429,10 +2433,10 @@ function parseLaunch(raw: unknown): Launch {
     if (keys.length > 0) {
       const out: {
         native?: string;
-        ios?: IosLaunch;
+        ios?: AppLaunch;
         android?: string;
         vega?: string;
-        macos?: string;
+        macos?: AppLaunch;
         chromium?: ChromiumLaunch;
       } = {};
       let valid = true;
@@ -2444,13 +2448,13 @@ function parseLaunch(raw: unknown): Launch {
             break;
           }
           out.chromium = c;
-        } else if (k === "ios") {
-          const i = parseIosLaunch(b[k]);
-          if (i === null) {
+        } else if (k === "ios" || k === "macos") {
+          const entry = parseAppLaunch(b[k], k);
+          if (entry === null) {
             valid = false;
             break;
           }
-          out.ios = i;
+          out[k] = entry;
         } else if (typeof b[k] === "string" && (b[k] as string).length > 0) {
           (out as Record<string, string>)[k] = b[k] as string;
         } else {

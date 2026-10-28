@@ -21,7 +21,7 @@ import {
   appIdForPlatform,
   authoringPlatform,
   chromiumLaunchSpec,
-  iosLaunchArgs,
+  appLaunchArgs,
   writeNewFlowFile,
   blockSteps,
   BLOCK_DIRECTIVE_KEYS,
@@ -1569,11 +1569,16 @@ describe("ios launch args", () => {
     expect(appIdForPlatform(app, "android")).toBe("com.acme.native");
   });
 
-  it("iosLaunchArgs reads only an ios { app, args } entry", async () => {
-    expect(iosLaunchArgs({ ios: { app: "com.acme.app", args: ["-Flag"] } })).toEqual(["-Flag"]);
-    expect(iosLaunchArgs({ ios: "com.acme.app" })).toBeUndefined();
-    expect(iosLaunchArgs("com.acme.app")).toBeUndefined();
-    expect(iosLaunchArgs(undefined)).toBeUndefined();
+  it("appLaunchArgs reads only the { app, args } entry of the platform asked", async () => {
+    const app = { ios: { app: "com.acme.app", args: ["-Flag"] }, macos: "com.acme.mac" };
+    expect(appLaunchArgs(app, "ios")).toEqual(["-Flag"]);
+    expect(appLaunchArgs(app, "macos")).toBeUndefined();
+    expect(appLaunchArgs({ macos: { app: "com.acme.mac", args: ["-M"] } }, "macos")).toEqual([
+      "-M",
+    ]);
+    expect(appLaunchArgs({ ios: "com.acme.app" }, "ios")).toBeUndefined();
+    expect(appLaunchArgs("com.acme.app", "ios")).toBeUndefined();
+    expect(appLaunchArgs(undefined, "ios")).toBeUndefined();
   });
 });
 

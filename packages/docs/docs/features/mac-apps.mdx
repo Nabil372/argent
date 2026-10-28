@@ -23,6 +23,8 @@ Argent drives sandboxed builds and builds without the App Sandbox.
 
 Argent starts the app with the Argent library inside the app process. Thus Argent drives only an app that Argent started. The pointer does not move, and the app stays in the background. A screenshot shows the app window, also when other windows cover it.
 
+Argent starts the app in the folder `/`, with the environment of an app that you open in the Finder. The app does not get the environment variables of the Argent tool-server.
+
 ## The first run
 
 1. Run `argent enable macos-apps`. The change takes effect immediately. Start a new agent session to give the agent the `file-panel` and `menu-bar` tools, because an editor reads the tool list when the session starts.
@@ -49,7 +51,7 @@ Do not set `PRODUCT_BUNDLE_IDENTIFIER` itself on the `xcodebuild` command line. 
 
 If you cannot change the project, tell the agent to duplicate the `.app` bundle with a new bundle id. The agent changes the bundle id in the `Info.plist` of the duplicate and signs the duplicate again. An app with entitlements that need its team, for example iCloud, keychain sharing or app groups, does not start as a duplicate.
 
-An e2e test names one bundle id in its `launch` step. To test the build of a worktree, the agent uses a duplicate of the e2e test with the bundle id of that build. When a `launch` step starts the build of another worktree, the step shows a warning. Argent gives this warning only for a build inside a worktree. Argent does not give this warning when the e2e test runs over a link (`argent link` or `ARGENT_TOOLS_URL`). By default, Xcode puts each build in `~/Library/Developer/Xcode/DerivedData`, outside the worktree. Thus use `-derivedDataPath` as in step 2.
+An e2e test names one bundle id in its `launch` step. To test the build of a worktree, the agent uses a duplicate of the e2e test with the bundle id of that build. When a `launch` step starts the build of another worktree, the step shows a warning. Argent gives this warning for a build inside a worktree and for a build of a worktree in the DerivedData folder of Xcode. Argent does not give this warning when the e2e test runs over a link (`argent link` or `ARGENT_TOOLS_URL`).
 
 ## What works
 
@@ -77,7 +79,7 @@ A Debug build of a react-native-macos app loads its JavaScript from Metro. Start
 
 ## E2E tests on a Mac
 
-An e2e test for a Mac app starts with a `launch` step that names the bundle id. The launch step quits the app and starts it again with the Argent library. The launch step starts the build that Argent started last for this bundle id. If Argent did not start the app before, the launch step starts the newest build that Spotlight finds. Thus on a new Mac, ask the agent to start your build once before the first e2e test. The `macos-apps` flag must be on for an e2e test run too. The [E2E YAML reference](/docs/reference/e2e-yaml) contains the launch, selector and snapshot rules for a Mac app.
+An e2e test for a Mac app starts with a `launch` step that names the bundle id. The launch step quits the app and starts it again with the Argent library. The launch step starts the build that Argent started last for this bundle id. The app gets the arguments of the launch step, and no arguments when the launch step has none. An e2e test run selects a running Mac app only for `--platform macos` or for the device id of the app. If Argent did not start the app before, the launch step starts the newest build that Spotlight finds. Thus on a new Mac, ask the agent to start your build once before the first e2e test. The `macos-apps` flag must be on for an e2e test run too. The [E2E YAML reference](/docs/reference/e2e-yaml) contains the launch, selector and snapshot rules for a Mac app.
 
 ## The hardened runtime
 
@@ -105,34 +107,36 @@ To sign the Argent library:
 3. Sign the two files yourself: `codesign --force --sign "<identity>" ~/.argent/macos/lib/<library id>-<TEAMID>/*.dylib`. macOS asks for access to the keychain. Do not let the agent do this step.
 4. Ask the agent to start the app again.
 
-Do the signing steps again after an Argent update that changes the Argent library, because the folder name then changes.
+Do the signing steps again after an Argent update that changes the Argent library, because the folder name then changes. Argent removes the folder of an older library when no app uses it and no start used it for a day.
 
-For an Electron app or a Chromium browser, Argent drives the web content through the [Chromium support](/docs/fundamentals/supported-platforms#desktop-and-web-targets).
+Argent does not start an Electron app or a Chromium browser as a Mac app. Argent drives their web content through the [Chromium support](/docs/fundamentals/supported-platforms#desktop-and-web-targets).
 
 ## Troubleshooting
 
-| Symptom                                                           | Action                                                                                                                                                                                         |
-| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A tool says that the `macos-apps` flag is off                     | Run `argent enable macos-apps`.                                                                                                                                                                |
-| The start result says that the app showed no window               | Open a window in the app. Taps and screenshots need a window. Read the app log if the app shows no window on its own.                                                                          |
-| The app is missing from the device list                           | The list shows only the apps that Argent started. Ask the agent to start the app.                                                                                                              |
-| The app runs already without the Argent library                   | Ask the agent to restart the app, or quit the app yourself. A restart loses the unsaved changes in that copy. Xcode Run and `react-native run-macos` start the app without the Argent library. |
-| The start fails because of the hardened runtime                   | For a Debug build, do one of the steps in [The hardened runtime](#the-hardened-runtime). A Release build cannot work.                                                                          |
-| The start fails because a different build runs                    | Quit that copy if it is yours. To run both builds, give this build a bundle id of its own. See [Several agents and git worktrees](#several-agents-and-git-worktrees).                          |
-| A call fails because another tool-server drives the app           | Stop the other Argent tool-server, or give this build a bundle id of its own.                                                                                                                  |
-| An e2e test launch warns that it started another worktree's build | Ask the agent to start the build of this worktree first. Then run the e2e test again.                                                                                                          |
-| The app starts, but the Argent library does not connect           | Read the app log in `~/.argent/macos/logs/`. Make sure that the executable of the bundle is the app and not a launcher script.                                                                 |
-| Argent cannot find the files of the Argent library                | Update Argent.                                                                                                                                                                                 |
-| The tree says that the Mac is locked                              | Unlock the Mac.                                                                                                                                                                                |
-| An element is not in the tree                                     | Give the element an accessibility identifier, or make a custom view an accessibility element.                                                                                                  |
-| A click or typed text has no effect                               | Make sure that the window is not minimized. A minimized window does not receive input.                                                                                                         |
-| A paste fails because the element does not accept text            | Ask the agent to click the text field first.                                                                                                                                                   |
+| Symptom                                                                          | Action                                                                                                                                                                                         |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A tool says that the `macos-apps` flag is off                                    | Run `argent enable macos-apps`.                                                                                                                                                                |
+| The start result says that the app showed no window                              | Open a window in the app. Taps and screenshots need a window. Read the app log if the app shows no window on its own.                                                                          |
+| The app is missing from the device list                                          | The list shows only the apps that Argent started. Ask the agent to start the app.                                                                                                              |
+| The app runs already without the Argent library                                  | Ask the agent to restart the app, or quit the app yourself. A restart loses the unsaved changes in that copy. Xcode Run and `react-native run-macos` start the app without the Argent library. |
+| The start fails because of the hardened runtime                                  | For a Debug build, do one of the steps in [The hardened runtime](#the-hardened-runtime). A Release build cannot work.                                                                          |
+| The start fails because a different build runs                                   | Quit that copy if it is yours. To run both builds, give this build a bundle id of its own. See [Several agents and git worktrees](#several-agents-and-git-worktrees).                          |
+| A call fails because another tool-server drives the app                          | Stop the other Argent tool-server, or give this build a bundle id of its own.                                                                                                                  |
+| An e2e test launch warns that it started another worktree's build                | Ask the agent to start the build of this worktree first. Then run the e2e test again.                                                                                                          |
+| A call says that Argent reaches the app only through the connection of its start | Quit the app, or ask the agent to start the app again with `force`. To prevent this, give the build a shorter bundle id. See [Limits](#limits).                                                |
+| The app starts, but the Argent library does not connect                          | Read the app log in `~/.argent/macos/logs/`. Make sure that the executable of the bundle is the app and not a launcher script.                                                                 |
+| Argent cannot find the files of the Argent library                               | Update Argent.                                                                                                                                                                                 |
+| The tree says that the Mac is locked                                             | Unlock the Mac.                                                                                                                                                                                |
+| An element is not in the tree                                                    | Give the element an accessibility identifier, or make a custom view an accessibility element.                                                                                                  |
+| A click or typed text has no effect                                              | Make sure that the window is not minimized. A minimized window does not receive input.                                                                                                         |
+| A paste fails because the element does not accept text                           | Ask the agent to click the text field first.                                                                                                                                                   |
 
 ## Limits
 
 Each tool that does not support a Mac app fails with a `not supported on macos app` message. The limits on a Mac app:
 
 - Argent does not drive Apple apps.
+- Argent cannot reconnect to a sandboxed app when its bundle id and the path of your home folder together have more than 59 characters. For example, with the home folder `/Users/anna`, the limit is 48 characters. Argent then reaches the app only through the connection of its start. After a restart of the Argent tool-server, quit the app, or start it again with `force`.
 - Only one menu can be open on a Mac at a time. A click somewhere else, by you or by another agent, can close a menu that the agent opened before the agent chooses an item.
 - Hover is not available. Mouse moves do not show tooltips or hover states.
 - Trackpad gestures are not available. The agent uses the zoom and rotate controls of the app instead of pinch and rotate.

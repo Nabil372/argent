@@ -80,7 +80,7 @@ function deviceEntryId(d: RawDevice): string | undefined {
   return d.serial; // android, vega
 }
 
-function isBooted(d: RawDevice): boolean {
+function isBooted(d: RawDevice, platform?: FlowPlatform): boolean {
   switch (d.platform) {
     case "ios":
       // Simulators only. A physical iPhone reports `connected` and is never
@@ -102,8 +102,10 @@ function isBooted(d: RawDevice): boolean {
       return true; // a discovered chromium device is, by definition, reachable
     case "macos":
       // list-devices lists only the Mac apps argent started and that still
-      // run, so a listed app is reachable, as a Chromium app is.
-      return true;
+      // run, so a listed app is reachable. It is picked only for `--platform
+      // macos`: apps that other agents keep running would make every other run
+      // ambiguous, and a cleanup flow would then run unscoped.
+      return platform === "macos";
     default:
       return false;
   }
@@ -125,6 +127,12 @@ function connectedIosDeviceHint(devices: RawDevice[], platform?: FlowPlatform): 
     ` A physical iPhone is connected (${ids.join(", ")}); hardware is never picked ` +
     `automatically, pass device <udid> (--device on the CLI) to run on it.`
   );
+}
+
+/** A listed Mac app is not picked without `--platform macos` ({@link isBooted}). */
+function macosAppHint(devices: RawDevice[], platform?: FlowPlatform): string {
+  if (platform || !devices.some((d) => d.platform === "macos")) return "";
+  return " A Mac app is picked only with --platform macos or --device.";
 }
 
 /**
@@ -156,7 +164,8 @@ export function deviceResolutionError(message: string, all?: RawDevice[]): Failu
  * Resolve the device a flow runs against. Order: explicit `device` id → the
  * single booted device of `platform` → the single booted device overall →
  * throw, enumerating what is available. A physical iPhone is reachable only
- * through the explicit id; see {@link isBooted}.
+ * through the explicit id, and a Mac app only through it or `platform`; see
+ * {@link isBooted}.
  *
  * An explicit Mac app id is refused while the macos-apps flag is off. The id
  * classifies by its shape alone and skips the device list, which is where the
@@ -179,7 +188,7 @@ export async function resolveFlowDevice(
   const { devices } = (await invokeSubTool(registry, ctx, "list-devices", {})) as {
     devices: RawDevice[];
   };
-  const booted = devices.filter(isBooted);
+  const booted = devices.filter((d) => isBooted(d, opts.platform));
   const scoped = opts.platform ? booted.filter((d) => d.platform === opts.platform) : booted;
 
   if (scoped.length === 1) {
@@ -191,7 +200,7 @@ export async function resolveFlowDevice(
       ? `No booted ${opts.platform} device found.`
       : "No booted device found.";
     throw deviceResolutionError(
-      `${what} Pass a device id or platform explicitly.${connectedIosDeviceHint(devices, opts.platform)}${macosFlagHint(opts.platform)}`,
+      `${what} Pass a device id or platform explicitly.${connectedIosDeviceHint(devices, opts.platform)}${macosAppHint(devices, opts.platform)}${macosFlagHint(opts.platform)}`,
       devices
     );
   }

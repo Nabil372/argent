@@ -5,8 +5,9 @@ import type { RestartAppParams, RestartAppResult } from "../types";
 
 /**
  * Quits the app and starts it again in the background, from the same `.app`
- * with the same arguments, also when a copy runs without the library (the
- * `note` says so). A refused restart leaves the app running.
+ * with `launchArgs`, else with the arguments of its last start, also when a
+ * copy runs without the library (the `note` says so). A refused restart leaves
+ * the app running.
  */
 export const macosImpl: PlatformImpl<
   { macosApp: MacosAppApi },
@@ -15,7 +16,10 @@ export const macosImpl: PlatformImpl<
 > = {
   handler: async (services, params, device) => {
     const bundleId = assertLaunchTargetsDevice(params.bundleId, device);
-    const { args, note } = await services.macosApp.launch({ takeOver: true });
+    const { args, note } = await services.macosApp.launch({
+      takeOver: true,
+      args: params.launchArgs,
+    });
     return { restarted: true, bundleId, args, ...(note ? { note } : {}) };
   },
 };

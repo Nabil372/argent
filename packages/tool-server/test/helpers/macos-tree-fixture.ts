@@ -274,6 +274,7 @@ export function fakeMacosLibrary(
     launch: async () => {
       throw new Error("fake library: launch");
     },
+    connect: async () => {},
     isConnected: () => true,
     handshake: () => ({ bundleId: MACOS_BUNDLE_ID, pid: 4242, platform: "macos", protocol: 1 }),
     activateNetworkInspection: async () => {},

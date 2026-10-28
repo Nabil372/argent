@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import {
   FAILURE_CODES,
@@ -16,10 +17,10 @@ import {
 import { macosArtifacts } from "@argent/native-devtools-ios";
 import { attachNdjsonReader, reportDroppedFrameToStderr } from "../utils/ndjson-socket";
 import { macosAppIdFromBundleId, parseMacosAppBundleId } from "../utils/device-info";
-import { electronGuiChildEnv } from "../utils/electron-env";
 import { pidIsAlive, pollPidsUntilGone, signalGroupThenPid } from "../utils/process-kill";
 import { settleWithin, sleep } from "../utils/timing";
 import {
+  chromiumRefusal,
   findMacosAppByBundleId,
   findRunningCopies,
   getTrackedMacosApp,
@@ -28,6 +29,8 @@ import {
   macosAppLogPath,
   macosFailure,
   macosListenSocket,
+  macosVersionRefusal,
+  noListenSocketNote,
   processRunsExecutable,
   recordTrackedMacosApp,
   runningTrackedApp,
@@ -96,6 +99,12 @@ interface MacosLaunchOptions {
    * refusing. They are quit only after every check that can refuse the start.
    */
   takeOver?: boolean;
+  /**
+   * With `takeOver`, also quit argent's copy when this tool-server cannot reach
+   * it and it has no listening socket: another tool-server may drive it. Only
+   * boot-device `force` sets it.
+   */
+  force?: boolean;
 }
 
 export interface MacosLaunchResult extends MacosLibraryHandshake {
@@ -107,7 +116,11 @@ export interface MacosLaunchResult extends MacosLibraryHandshake {
   logPath: string;
   /** The app was already running with the library; nothing was started. */
   alreadyRunning?: true;
-  /** argent quit a copy that ran without the library, or a new process showed no window in time. */
+  /**
+   * argent quit a copy that ran without the library, a new process showed no
+   * window in time, the app has no listening socket, or a running app kept the
+   * arguments of its start.
+   */
   note?: string;
 }
 
@@ -125,6 +138,8 @@ export interface MacosAppApi {
     opts?: { timeoutMs?: number }
   ): Promise<T>;
   launch(opts?: MacosLaunchOptions): Promise<MacosLaunchResult>;
+  /** Connects to the app as call() does, and fails as it does, with MACOS_APP_IN_USE among others. */
+  connect(): Promise<void>;
   isConnected(): boolean;
   handshake(): MacosLibraryHandshake | null;
   /**
@@ -464,18 +479,30 @@ class LibraryChannel {
   }
 }
 
+/** The variables of a Finder launch that the tool-server can pass on. */
+const FINDER_ENV_KEYS = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TMPDIR",
+  "PATH",
+  "LANG",
+  "SSH_AUTH_SOCK",
+  "__CF_USER_TEXT_ENCODING",
+];
+
 /**
- * The helper's environment: the tool-server's own, plus the library's
- * variables, which the app inherits. Nothing inherited may redirect the
- * injection or the channel (`DYLD_*`, `NATIVE_DEVTOOLS_*`), and nothing of
- * argent's own reaches the app: ARGENT_AUTH_TOKEN with ARGENT_PORT would let
- * the app, even a sandboxed one, drive the tool-server, and ARGENT_SECRET_*
- * are the user's flow secrets. The bootstrap travels as `--insert-library`.
+ * The helper's environment, which the app inherits: what a Finder launch gives
+ * an app, plus the library's variables. Not the tool-server's own, which holds
+ * the user's tokens and argent's: ARGENT_AUTH_TOKEN with ARGENT_PORT would let
+ * the app, even a sandboxed one, drive the tool-server. The bootstrap travels
+ * as `--insert-library`.
  */
 function macosLaunchEnv(bundleId: string, listenSocketEnv: string | undefined): NodeJS.ProcessEnv {
-  const env = electronGuiChildEnv();
-  for (const key of Object.keys(env)) {
-    if (/^(DYLD_|NATIVE_DEVTOOLS_|ARGENT_)/i.test(key)) delete env[key];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of FINDER_ENV_KEYS) {
+    if (process.env[key] !== undefined) env[key] = process.env[key];
   }
   env.ARGENT_INJECT_BUNDLE_ID = bundleId;
   env.NATIVE_DEVTOOLS_FD = "3";
@@ -585,7 +612,17 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
         "unknown",
         cause
       );
-    if (!app.listenSocket) throw notConnected("the app has no listening socket.");
+    if (!app.listenSocket) {
+      throw macosFailure(
+        `${bundleId} is running (pid ${app.pid}), but argent reaches it only through the ` +
+          `connection of its start, which this tool-server does not hold: its bundle id is too ` +
+          `long for a listening socket. Another tool-server may be driving it. Quit the app, or ` +
+          `call boot-device with force: true to quit it and start it again.`,
+        FAILURE_CODES.MACOS_APP_NOT_CONNECTED,
+        "macos_app_reconnect",
+        "unknown"
+      );
+    }
     const ch = new LibraryChannel(
       net.createConnection(app.listenSocket),
       bundleId,
@@ -694,9 +731,13 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
   };
 
   const doLaunch = async (opts: MacosLaunchOptions): Promise<MacosLaunchResult> => {
-    if (process.platform !== "darwin") {
+    const hostRefusal =
+      process.platform === "darwin"
+        ? macosVersionRefusal(os.release())
+        : "Native Mac apps can only be driven on macOS.";
+    if (hostRefusal) {
       throw macosFailure(
-        "Native Mac apps can only be driven on macOS.",
+        hostRefusal,
         FAILURE_CODES.MACOS_APP_UNSUPPORTED_HOST,
         "macos_app_launch",
         "unsupported"
@@ -722,7 +763,25 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
         const ch = await ensureChannel();
         if (!opts.takeOver) {
           const { appPath, sandboxed, logPath, args } = own;
-          return { ...ch.handshake!, args, appPath, sandboxed, logPath, alreadyRunning: true };
+          const asked = opts.args && JSON.stringify(opts.args);
+          const note = [
+            asked && asked !== JSON.stringify(args)
+              ? `${bundleId} already runs with the arguments ${JSON.stringify(args)}, so it ` +
+                `did not get ${asked}. To start it with them, call boot-device with force: true.`
+              : undefined,
+            own.listenSocket ? undefined : noListenSocketNote(bundleId),
+          ]
+            .filter(Boolean)
+            .join(" ");
+          return {
+            ...ch.handshake!,
+            args,
+            appPath,
+            sandboxed,
+            logPath,
+            alreadyRunning: true,
+            ...(note ? { note } : {}),
+          };
         }
       } catch (err) {
         if (errorCode(err) === FAILURE_CODES.MACOS_APP_IN_USE) throw err;
@@ -735,6 +794,8 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
             err
           );
         }
+        // Without a listening socket, argent cannot tell whether another tool-server drives the app.
+        if (!own.listenSocket && !opts.force) throw err;
         // No answer: the quit below falls back to signals.
       }
     }
@@ -760,10 +821,13 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
       );
     }
     // macOS ignores DYLD_* for Apple's own apps, and they are never the app under test.
-    if (!isInjectableBundleId(bundleId)) {
+    const unsupported = isInjectableBundleId(bundleId)
+      ? chromiumRefusal(info)
+      : `${bundleId} is an Apple app. argent drives only apps it can load its library into, ` +
+        `such as your own builds.`;
+    if (unsupported) {
       throw macosFailure(
-        `${bundleId} is an Apple app. argent drives only apps it can load its library into, ` +
-          `such as your own builds.`,
+        unsupported,
         FAILURE_CODES.MACOS_APP_BUNDLE_INVALID,
         "macos_app_launch",
         "unsupported"
@@ -867,7 +931,12 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
       ],
       // On macOS every "pipe" entry is a socket pair: the helper's descriptor 3,
       // which the app inherits, is the library's channel; argent keeps stdio[3].
-      { stdio: ["ignore", "pipe", "pipe", "pipe"], env: macosLaunchEnv(bundleId, listen?.env) }
+      // The app inherits the working directory, which a Finder launch sets to /.
+      {
+        stdio: ["ignore", "pipe", "pipe", "pipe"],
+        env: macosLaunchEnv(bundleId, listen?.env),
+        cwd: "/",
+      }
     );
     // Attached before the first await: the handshake may come before the helper's answer.
     const ch = new LibraryChannel(
@@ -953,7 +1022,9 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
       logPath,
       opts.windowTimeoutMs ?? WINDOW_TIMEOUT_MS
     );
-    const note = [tookOver, noWindow].filter(Boolean).join(" ");
+    const note = [tookOver, noWindow, listen ? undefined : noListenSocketNote(bundleId)]
+      .filter(Boolean)
+      .join(" ");
     return note ? { ...result, note } : result;
   };
 
@@ -975,6 +1046,10 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
       );
       lifecycle = run.catch(() => undefined);
       return run;
+    },
+    async connect() {
+      await lifecycle;
+      await ensureChannel();
     },
     isConnected: () => Boolean(channel?.isOpen && channel.handshake),
     handshake: () => (channel?.isOpen ? channel.handshake : null),

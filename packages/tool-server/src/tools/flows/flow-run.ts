@@ -31,6 +31,7 @@ import type {
 } from "@argent/registry";
 import {
   appIdForPlatform,
+  appLaunchArgs,
   authoringPlatform,
   assertSafeFlowName,
   assertValidProjectRoot,
@@ -38,7 +39,6 @@ import {
   chromiumLaunchSpec,
   E2E_FILE_TEMPLATES,
   flowNameCasingError,
-  iosLaunchArgs,
   isBlockStep,
   parseFlow,
   precedesLeadingLaunch,
@@ -163,7 +163,7 @@ const zodSchema = z
       .enum(SELECTABLE_PLATFORMS)
       .optional()
       .describe(
-        "Restrict auto-detection to this platform when several devices are booted. `ios` selects local simulators only; pass `ios-remote` to select a remote one. `chromium` does more than filter: with no `device` it SELECTS the self-boot branch for a standalone e2e test - the runner boots an Electron instance from the `launch` step's chromium value and tears it down after the run (a single-key `launch: { chromium: … }` map selects it on its own, without this parameter). When it selects that branch it never falls back to device auto-detection (a fragment, or a standalone e2e test's launch map with no `chromium` key, still does), and the launch value must be a real Electron app path on the tool-server host: a bare-string `launch:` - what the recorder writes - holds an installed-app bundle id, so passing `chromium` for one fails the whole run with `Electron boot: path does not exist`. Edit the launch to `{ chromium: <app path> }` first.<flag:macos-apps> `macos` with no `device` runs a standalone e2e test on the Mac app its `launch` names (`macos-app-<bundle id>`), which need not be running (a single-key `launch: { macos: … }` map selects it on its own).</flag:macos-apps>"
+        "Restrict auto-detection to this platform when several devices are booted. `ios` selects local simulators only; pass `ios-remote` to select a remote one. `chromium` does more than filter: with no `device` it SELECTS the self-boot branch for a standalone e2e test - the runner boots an Electron instance from the `launch` step's chromium value and tears it down after the run (a single-key `launch: { chromium: … }` map selects it on its own, without this parameter). When it selects that branch it never falls back to device auto-detection (a fragment, or a standalone e2e test's launch map with no `chromium` key, still does), and the launch value must be a real Electron app path on the tool-server host: a bare-string `launch:` - what the recorder writes - holds an installed-app bundle id, so passing `chromium` for one fails the whole run with `Electron boot: path does not exist`. Edit the launch to `{ chromium: <app path> }` first.<flag:macos-apps> `macos` with no `device` runs a standalone e2e test on the Mac app its `launch` names (`macos-app-<bundle id>`), which need not be running (a single-key `launch: { macos: … }` map selects it on its own). Without `macos`, auto-detection never picks a Mac app.</flag:macos-apps>"
       )
       .meta({ [FLAG_ENUM_META_KEY]: { macos: MACOS_APPS_FLAG } }),
     updateBaselines: z
@@ -717,8 +717,15 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
   // The previous app is terminating and the new one has not started, so a
   // failed or aborted launch must not leave the old target behind.
   state.treeTarget = undefined;
-  // An ios `{ app, args }` entry's args reach only an iOS device.
-  const launchArgs = authoringPlatform(device.platform) === "ios" ? iosLaunchArgs(app) : undefined;
+  // An `{ app, args }` entry's args reach only its own platform. A Mac app
+  // declared without args gets none, not the arguments of its last start.
+  const key = authoringPlatform(device.platform);
+  const launchArgs =
+    key === "ios"
+      ? appLaunchArgs(app, "ios")
+      : key === "macos"
+        ? (appLaunchArgs(app, "macos") ?? [])
+        : undefined;
   let restart: unknown;
   try {
     restart = await invokeOnDevice(env, "restart-app", {
@@ -761,8 +768,8 @@ async function runLaunch(state: ExecState, app: Launch): Promise<DirectiveOutcom
       warnings.push(
         `launch started ${bundleId} from ${appPath}, a build of another worktree (${other}), ` +
           `so this e2e test may run that worktree's code. Boot this worktree's build first ` +
-          `(boot-device with macosAppPath), and give each worktree's build a bundle id of its ` +
-          `own when several run at once.`
+          `(boot-device with macosAppPath and force: true), or give each worktree's build a ` +
+          `bundle id of its own when several run at once.`
       );
     }
   }
