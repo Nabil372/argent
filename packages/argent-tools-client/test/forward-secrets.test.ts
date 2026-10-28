@@ -380,4 +380,36 @@ describe("forward-secrets", () => {
     });
     expect(lastSecrets()).toEqual({ API_KEY: "s3cr3t" });
   });
+
+  it("reads a test whose YAML aliases loop back on themselves", async () => {
+    writeFileSync(join(project, ".argent", "secrets.env"), "API_KEY=s3cr3t\n");
+    const yaml =
+      'steps: &s\n  - type: { into: { id: pw }, text: "{{secret:API_KEY}}" }\n' +
+      "  - when: { visible: { text: Retry } }\n    steps: *s\n";
+    await client().callTool("keyboard", {
+      flow: wire({ path: "/p/retry.yaml", content: base64(yaml) }),
+    });
+    expect(lastSecrets()).toEqual({ API_KEY: "s3cr3t" });
+  }, 10_000);
+
+  it("parses each file as the runner does: trimmed, quietly, skipping one that does not parse", async () => {
+    writeFileSync(join(project, ".argent", "secrets.env"), "A=1\nB=2\nC=3\n");
+    const warn = vi.spyOn(process, "emitWarning");
+    await client().callTool("keyboard", {
+      flow: wire({
+        path: "/p/main.yaml",
+        content: base64('steps:\n  - echo: !custom hi\n  - type: { text: "{{secret:A}}" }\n'),
+        members: [
+          {
+            role: "flow",
+            key: "k1",
+            content: base64('\tsteps:\n  - type: { text: "{{secret:B}}" }\n'),
+          },
+          { role: "flow", key: "k2", content: base64('steps: [ { text: "{{secret:C}}" }\n') },
+        ],
+      }),
+    });
+    expect(lastSecrets()).toEqual({ A: "1", B: "2" });
+    expect(warn).not.toHaveBeenCalled();
+  });
 });

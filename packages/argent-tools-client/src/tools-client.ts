@@ -347,9 +347,12 @@ async function forwardedSecrets(args: unknown): Promise<Map<string, string> | un
   const scan = (text: string): void => {
     for (const name of placeholderNames(text)) names.add(name);
   };
+  // A YAML alias can refer back to its own anchor, which parses to a cycle.
+  const seen = new WeakSet<object>();
   const visit = async (value: unknown): Promise<void> => {
     if (typeof value === "string") return scan(value);
-    if (typeof value !== "object" || value === null) return;
+    if (typeof value !== "object" || value === null || seen.has(value)) return;
+    seen.add(value);
     const wire = value as Partial<FileInputWire>;
     if (wire[FILE_INPUT_MARKER] !== true) {
       for (const nested of Object.values(value)) await visit(nested);
@@ -368,12 +371,13 @@ async function forwardedSecrets(args: unknown): Promise<Map<string, string> | un
         // since then, it leaves its names to the tool-server.
         text = await readFile(file.canonical, "utf8").catch(() => undefined);
       }
-      // The parsed values, as the runner reads them: a long string can fold
+      // The parsed values, as the runner parses them: a long string can fold
       // inside a placeholder, and a comment is never typed. A file that does
-      // not parse fails on the tool-server too.
+      // not parse fails on the tool-server too, and its warnings belong to the
+      // run, not to this terminal.
       let parsed: unknown;
       try {
-        parsed = text === undefined ? undefined : parseYaml(text);
+        parsed = text === undefined ? undefined : parseYaml(text.trim(), { logLevel: "error" });
       } catch {
         continue;
       }

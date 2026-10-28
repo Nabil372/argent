@@ -110,8 +110,8 @@ async function cmdList(argv: string[]): Promise<void> {
     if (!isFeatureEnabled("forward-secrets")) {
       note =
         `Placeholders resolve there, against that machine's environment and secrets files — ` +
-        `not the ones listed above. Run \`argent enable forward-secrets\` to send the ones ` +
-        `listed above with each call.`;
+        `not the ones listed above. Run \`argent enable forward-secrets\` to have each call send ` +
+        `the value listed above for each placeholder it names.`;
     } else if (forwardsSecretsTo(routed.url)) {
       note =
         `A call sends it the value listed above for each placeholder the call names; that ` +

@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import supertest from "supertest";
 import { createHttpApp, type HttpAppHandle } from "../src/http";
-import { CLIENT_SECRETS_HEADER, type Registry } from "@argent/registry";
+import { z } from "zod";
+import { CLIENT_SECRETS_HEADER, Registry, type ToolDefinition } from "@argent/registry";
+import { createRunSequenceTool } from "../src/tools/run-sequence";
+import { resolveSecretPlaceholders } from "../src/utils/secrets";
 
 vi.mock("../src/utils/update-checker", () => ({
   getUpdateState: vi.fn(() => ({
@@ -79,5 +82,32 @@ describe(`HTTP ${CLIENT_SECRETS_HEADER} header`, () => {
     expect(res.status).toBe(400);
     expect(res.body.error).toBe(`The ${CLIENT_SECRETS_HEADER} header ${reason}.`);
     expect(registry.invokeTool).not.toHaveBeenCalled();
+  });
+
+  it("reaches a keyboard step of run-sequence", async () => {
+    const registry = new Registry();
+    const typed: string[] = [];
+    registry.registerTool(createRunSequenceTool(registry));
+    registry.registerTool({
+      id: "keyboard",
+      description: "stub",
+      zodSchema: z.object({ udid: z.string(), text: z.string().optional() }),
+      services: () => ({}),
+      execute: async (_services, params, ctx) => {
+        const options = { clientSecrets: ctx?.clientSecrets, env: {} };
+        typed.push(resolveSecretPlaceholders(params.text ?? "", options).text);
+        return {};
+      },
+    } as ToolDefinition<{ udid: string; text?: string }>);
+    handle = createHttpApp(registry);
+    const res = await supertest(handle.app)
+      .post("/tools/run-sequence")
+      .set(CLIENT_SECRETS_HEADER, encode({ ONLY_ON_CLIENT: "from-client" }))
+      .send({
+        udid: "chromium-cdp-9222",
+        steps: [{ tool: "keyboard", args: { text: "{{secret:ONLY_ON_CLIENT}}" } }],
+      });
+    expect(res.status).toBe(200);
+    expect(typed).toEqual(["from-client"]);
   });
 });

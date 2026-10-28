@@ -309,6 +309,7 @@ export function secretPlacementAdvice(name: string, options: SecretSourceOptions
     `to the project's .env / .env.local, or export ${SECRET_ENV_PREFIX}${name} in the tool-server's ` +
     `environment — never ask the user for the secret value itself. If this tool-server is reached ` +
     `through \`argent link\` or ARGENT_TOOLS_URL, the user can instead define it on the client's machine ` +
-    `and run \`argent enable forward-secrets\` there.`
+    `and run \`argent enable forward-secrets\` there; \`argent secrets\` there lists the sources the ` +
+    `client reads, which this list leaves out.`
   );
 }

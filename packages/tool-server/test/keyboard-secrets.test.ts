@@ -131,6 +131,9 @@ describe("resolveSecretPlaceholders", () => {
     }
     expect(caught).toBeInstanceOf(InvalidToolInputError);
     expect(caught!.message).toContain('Unknown secret "NOPE"');
+    expect(caught!.message).toContain(
+      "no source on the machine running the tool-server defines NOPE"
+    );
     expect(caught!.message).toContain("ARGENT_SECRET_NOPE");
     expect(caught!.message).toContain("APP_PASSWORD");
     expect(caught!.message).toContain("TOTP_SEED");
