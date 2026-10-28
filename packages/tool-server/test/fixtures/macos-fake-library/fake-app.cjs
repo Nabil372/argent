@@ -86,12 +86,12 @@ if (process.argv.includes("--launch-request")) {
 }
 
 function handle(socket, msg) {
-  const { id, method, params } = msg.payload;
+  const { id, method, params, deadline } = msg.payload;
   const reply = (body) =>
     socket.write(JSON.stringify({ type: "ViewInspector", payload: { id, ...body } }) + "\n");
   switch (method) {
     case "Echo":
-      return reply({ result: { params, pid: process.pid, argv: process.argv.slice(2) } });
+      return reply({ result: { params, pid: process.pid, argv: process.argv.slice(2), deadline } });
     case "Net.request":
       for (let i = 0; i < (params.count ?? 1); i++) sendRequest(params.url, params.method);
       // A CDP reply: its id must neither answer the call nor enter the log.

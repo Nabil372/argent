@@ -83,7 +83,13 @@ type MacosMouseEvent = {
 };
 
 export async function macosMouse(app: MacosAppApi, event: MacosMouseEvent): Promise<void> {
-  await app.call("Input.mouse", insideMaxEdges(event));
+  // An up runs even after its call timed out: a late release is better than a
+  // press the app holds until the next click.
+  await app.call(
+    "Input.mouse",
+    insideMaxEdges(event),
+    event.type === "up" ? { runLate: true } : undefined
+  );
 }
 
 /**

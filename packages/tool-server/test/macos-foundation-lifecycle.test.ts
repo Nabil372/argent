@@ -457,20 +457,30 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
     expect(codeOf(hung)).toBe(FAILURE_CODES.MACOS_APP_RPC_TIMEOUT);
     // The channel survives a timed-out request.
     await expect(app.call("Echo")).resolves.toMatchObject({ params: {} });
+
+    // The library never runs a request after argent stopped waiting, unless told to.
+    const sent = Date.now();
+    const { deadline } = await app.call<{ deadline?: number }>("Echo", {}, { timeoutMs: 5_000 });
+    expect(deadline).toBeGreaterThanOrEqual(sent + 5_000);
+    expect(deadline).toBeLessThanOrEqual(Date.now() + 5_000);
+    await expect(app.call("Echo", {}, { runLate: true })).resolves.not.toHaveProperty("deadline");
   });
 
   it("tells a call cut off by argent's own close apart from an app that quit", async () => {
     const { pid } = await run("boot-device", { macosAppPath: appPath });
     const urn = macosAppRef(resolveDevice(DEVICE_ID)).urn;
 
-    // Another agent's stop-simulator-server while this call waits.
-    const pending = (await macosApp()).call("Hang", {}, { timeoutMs: 10_000 }).catch((e) => e);
+    // Another agent's stop-simulator-server while this call waits, and before the next
+    // request of the same tool call (a drag, typing).
+    const stopped = await macosApp();
+    const pending = stopped.call("Hang", {}, { timeoutMs: 10_000 }).catch((e) => e);
     await new Promise((r) => setTimeout(r, 100));
     await registry.disposeService(urn);
-    const closed = await pending;
-    expect(codeOf(closed)).toBe(FAILURE_CODES.MACOS_APP_CONNECTION_CLOSED);
-    expect((closed as Error).message).toMatch(/argent closed its connection.*Retry the call/);
-    expect((closed as Error).message).not.toMatch(/quit or crashed/);
+    for (const closed of [await pending, await stopped.call("Echo").catch((e) => e)]) {
+      expect(codeOf(closed)).toBe(FAILURE_CODES.MACOS_APP_CONNECTION_CLOSED);
+      expect((closed as Error).message).toMatch(/argent closed its connection.*Retry the call/);
+      expect((closed as Error).message).not.toMatch(/quit or crashed/);
+    }
     await expect((await macosApp()).call("Echo")).resolves.toMatchObject({ pid });
 
     // The app itself going away is still reported as such.

@@ -66,7 +66,13 @@ describe("macosClick", () => {
       },
     });
     await expect(macosClick(app, 0.5, 0.5)).rejects.toThrow("request timed out");
-    expect(calls.map((c) => c.params.type)).toEqual(["move", "down", "up", "up"]);
+    // Only an up runs after its call timed out: a late press or move would surprise the caller.
+    expect(calls.map((c) => [c.params.type, c.opts])).toEqual([
+      ["move", undefined],
+      ["down", undefined],
+      ["up", { runLate: true }],
+      ["up", { runLate: true }],
+    ]);
   });
 
   it("moves an x of exactly 1 and a y of exactly 0 just inside the window", async () => {

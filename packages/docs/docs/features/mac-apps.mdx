@@ -25,6 +25,8 @@ Argent starts the app with the Argent library inside the app process. Thus Argen
 
 Argent starts the app in the folder `/`, with the environment of an app that you open in the Finder. The app does not get the environment variables of the Argent tool-server.
 
+When the tool-server disconnects from the app, for example when the tool-server stops, the app works as without Argent. The app can come to the front again. Argent releases a mouse button that the agent held, and Argent removes a prepared answer for the next file panel.
+
 ## The first run
 
 1. Run `argent enable macos-apps`. The change takes effect immediately. Start a new agent session to give the agent the `file-panel` and `menu-bar` tools, because an editor reads the tool list when the session starts.
@@ -128,6 +130,7 @@ Argent does not start an Electron app or a Chromium browser as a Mac app. Argent
 | Argent cannot find the files of the Argent library                               | Update Argent.                                                                                                                                                                                 |
 | The tree says that the Mac is locked                                             | Unlock the Mac.                                                                                                                                                                                |
 | An element is not in the tree                                                    | Give the element an accessibility identifier, or make a custom view an accessibility element.                                                                                                  |
+| A call times out while the app is paused in the debugger                         | Continue the app, then ask the agent to do the step again. The input of the call that timed out does not reach the app later.                                                                  |
 | A click or typed text has no effect                                              | Make sure that the window is not minimized. A minimized window does not receive input.                                                                                                         |
 | A paste fails because the element does not accept text                           | Ask the agent to click the text field first.                                                                                                                                                   |
 

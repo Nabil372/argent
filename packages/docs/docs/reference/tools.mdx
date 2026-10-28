@@ -285,6 +285,8 @@ A system service draws the file list of a file panel. Thus `describe` cannot rea
 | `cancel` | `{ cancelled, panel }`                                                                                          |
 | `stub`   | `{ armed, mode, panelKind }`. The next panel that the app opens gets the prepared answer and does not appear    |
 
+A prepared answer stays until the next panel opens, until a `stub` with `stubMode` `off`, or until the tool-server disconnects from the app.
+
 For `stub` without `panelKind`, Argent finds the kind of the next panel from the paths:
 
 - All paths exist: an open panel.

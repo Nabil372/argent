@@ -55,8 +55,10 @@ import {
  * Wire format: newline-delimited JSON. The first message on each connection is
  * the handshake `{"type":"Control","payload":{"bundleId","pid","platform":"macos","protocol","libraryVersion"}}`,
  * or `{"type":"Control","payload":{"busy":true}}` while another tool-server
- * holds the app. A request is `{"type":"ViewInspector","payload":{"id","method","params"}}`;
- * its reply carries the same id with `result` or `error: {message}`.
+ * holds the app. A request is `{"type":"ViewInspector","payload":{"id","method","params","deadline"}}`;
+ * its reply carries the same id with `result` or `error: {message}`. `deadline`
+ * (ms since 1970) is when argent stops waiting: a request that has not run by
+ * then never runs, so a retry after a timeout does not type or click twice.
  * `{"type":"Control","payload":{"command":"activateNetworkInspection"}}` turns
  * on the network capture, which reports each request as
  * `{"type":"CDP","payload":{"method","params"}}`.
@@ -131,11 +133,12 @@ export interface MacosAppApi {
    * `result`. Rejects with the library's error message, or with an error that
    * names `boot-device` / `launch-app` when the app is not running. Reconnects
    * through the library's listening socket when the first channel is gone.
+   * A request that times out never runs in the app later, unless `runLate`.
    */
   call<T = unknown>(
     method: string,
     params?: Record<string, unknown>,
-    opts?: { timeoutMs?: number }
+    opts?: { timeoutMs?: number; runLate?: boolean }
   ): Promise<T>;
   launch(opts?: MacosLaunchOptions): Promise<MacosLaunchResult>;
   /** Connects to the app as call() does, and fails as it does, with MACOS_APP_IN_USE among others. */
@@ -280,6 +283,21 @@ function parseHandshake(
   };
 }
 
+/**
+ * Another agent's stop-simulator-server, say, during this agent's call: nothing
+ * is wrong with the app, and the next call reconnects.
+ */
+function closedByArgentError(bundleId: string): FailureError {
+  return macosFailure(
+    `argent closed its connection to ${bundleId} before the call was answered ` +
+      `(the device's services were stopped or the connection was replaced). ` +
+      `Retry the call: argent connects again.`,
+    FAILURE_CODES.MACOS_APP_CONNECTION_CLOSED,
+    "macos_app_connection",
+    "unknown"
+  );
+}
+
 interface PendingCall {
   method: string;
   resolve: (value: unknown) => void;
@@ -348,9 +366,15 @@ class LibraryChannel {
     );
   }
 
-  request(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<unknown> {
+  request(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+    runLate = false
+  ): Promise<unknown> {
     if (this.closeError) return Promise.reject(this.closeError);
     const id = this.nextId++;
+    const deadline = runLate ? undefined : Date.now() + timeoutMs;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.delete(id)) return;
@@ -365,7 +389,7 @@ class LibraryChannel {
       }, timeoutMs);
       this.pending.set(id, { method, resolve, reject, timer });
       this.socket.write(
-        JSON.stringify({ type: "ViewInspector", payload: { id, method, params } }) + "\n"
+        JSON.stringify({ type: "ViewInspector", payload: { id, method, params, deadline } }) + "\n"
       );
     });
   }
@@ -446,16 +470,7 @@ class LibraryChannel {
     const detail = this.socketError ? ` (${this.socketError.message})` : "";
     this.fail(
       this.closedByArgent
-        ? // Another agent's stop-simulator-server, say, during this agent's call:
-          // nothing is wrong with the app, and the next call reconnects.
-          macosFailure(
-            `argent closed its connection to ${this.bundleId} before the call was answered ` +
-              `(the device's services were stopped or the connection was replaced). ` +
-              `Retry the call: argent connects again.`,
-            FAILURE_CODES.MACOS_APP_CONNECTION_CLOSED,
-            "macos_app_connection",
-            "unknown"
-          )
+        ? closedByArgentError(this.bundleId)
         : macosFailure(
             this.hello
               ? `The connection to ${this.bundleId} closed${detail}: the app quit or crashed.`
@@ -639,7 +654,7 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
     }
     if (disposed) {
       ch.close();
-      throw notConnected("the service was stopped.");
+      throw closedByArgentError(bundleId);
     }
     adopt(ch);
     return ch;
@@ -1033,11 +1048,12 @@ function createMacosAppApi(bundleId: string): { api: MacosAppApi; dispose: () =>
     async call<T = unknown>(
       method: string,
       params: Record<string, unknown> = {},
-      opts: { timeoutMs?: number } = {}
+      opts: { timeoutMs?: number; runLate?: boolean } = {}
     ): Promise<T> {
       await lifecycle;
       const ch = await ensureChannel();
-      return (await ch.request(method, params, opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS)) as T;
+      const timeoutMs = opts.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+      return (await ch.request(method, params, timeoutMs, opts.runLate)) as T;
     },
     launch: (opts = {}) => {
       const run = lifecycle.then(

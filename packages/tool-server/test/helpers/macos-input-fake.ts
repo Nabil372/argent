@@ -11,7 +11,7 @@ export const MAC_URN = macosAppRef(resolveDevice(MAC_ID)).urn;
 export interface LibraryCall {
   method: string;
   params: Record<string, unknown>;
-  opts?: { timeoutMs?: number };
+  opts?: { timeoutMs?: number; runLate?: boolean };
 }
 
 type Handlers = Record<string, (params: Record<string, unknown>) => unknown>;
@@ -29,7 +29,7 @@ export function fakeMacosApp(handlers: Handlers = {}) {
   const call = async (
     method: string,
     params: Record<string, unknown> = {},
-    opts?: { timeoutMs?: number }
+    opts?: { timeoutMs?: number; runLate?: boolean }
   ) => {
     if (pending > 0) overlapped = true;
     pending++;
