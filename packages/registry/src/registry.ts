@@ -113,7 +113,7 @@ export class Registry {
     params?: unknown,
     options?: InvokeToolOptions
   ): Promise<TResult> {
-    if (this.shuttingDown) throw new Error("The registry is shutting down.");
+    if (this.shuttingDown) throw registryShutdownError();
     const record = this.tools.get(this.toolAliases.get(id) ?? id);
     if (!record) throw new ToolNotFoundError(id);
 
@@ -186,7 +186,7 @@ export class Registry {
           for (const { alias, urn, options: resolveOptions } of refs) {
             resolvedServices[alias] = await this.resolveService(urn, resolveOptions);
           }
-          if (this.shuttingDown) throw new Error("The registry is shutting down.");
+          if (this.shuttingDown) throw registryShutdownError();
           return definition.execute(resolvedServices, effectiveParams, ctx) as Promise<TResult>;
         });
       };
@@ -325,7 +325,7 @@ export class Registry {
     resolutionPath: string[],
     options?: Record<string, unknown>
   ): Promise<T> {
-    if (this.shuttingDown) return Promise.reject(new Error("The registry is shutting down."));
+    if (this.shuttingDown) return Promise.reject(registryShutdownError());
     let node = this.services.get(urn);
     if (!node) {
       let parsed: { namespace: string; payload: string };
@@ -396,7 +396,7 @@ export class Registry {
         depNode.dependents.add(urn);
       }
 
-      if (this.shuttingDown) throw new Error("The registry is shutting down.");
+      if (this.shuttingDown) throw registryShutdownError();
       const instance = await blueprint.factory(resolvedDeps, payload, options);
 
       // Terminated while the factory was awaited: discard the fresh instance.
@@ -477,6 +477,15 @@ export class Registry {
     node.dependents.clear();
     this._transition(node, cause ? ServiceState.ERROR : ServiceState.IDLE, cause);
   }
+}
+
+function registryShutdownError(): FailureError {
+  return new FailureError("The registry is shutting down.", {
+    error_code: FAILURE_CODES.REGISTRY_SHUTTING_DOWN,
+    failure_stage: "registry_shutdown",
+    failure_area: "registry",
+    error_kind: "unknown",
+  });
 }
 
 /**

@@ -1,3 +1,5 @@
+import { z } from "zod";
+import { FAILURE_CODES, getFailureSignal } from "../src";
 import { expect, it, vi } from "vitest";
 import { Registry } from "../src/registry";
 import { TypedEventEmitter } from "../src/event-emitter";
@@ -58,7 +60,8 @@ it("does not execute a tool whose service resolution overlaps shutdown", async (
   const invocation = registry.invokeTool("tool");
   registry.beginShutdown();
   finish();
-  await expect(invocation).rejects.toThrow("shutting down");
+  const error = await invocation.catch((err: Error) => err);
+  expect(getFailureSignal(error)?.error_code).toBe(FAILURE_CODES.REGISTRY_SHUTTING_DOWN);
   expect(execute).not.toHaveBeenCalled();
   await registry.dispose();
 });
@@ -91,7 +94,56 @@ it("does not start a dependent factory after shutdown begins", async () => {
   const resolving = registry.resolveService("Dependent:only");
   registry.beginShutdown();
   finish();
-  await expect(resolving).rejects.toThrow("shutting down");
+  const error = await resolving.catch((err: Error) => err);
+  expect(getFailureSignal(error)?.error_code).toBe(FAILURE_CODES.REGISTRY_SHUTTING_DOWN);
   expect(factory).not.toHaveBeenCalled();
   await registry.dispose();
+});
+
+it("rejects dispatch before lookup, validation or invocation events during shutdown", async () => {
+  const registry = new Registry();
+  const invoked = vi.fn();
+  const failed = vi.fn();
+  registry.events.on("toolInvoked", invoked);
+  registry.events.on("toolFailed", failed);
+  registry.registerTool({
+    id: "validated",
+    zodSchema: z.object({ value: z.string() }),
+    services: () => ({}),
+    execute: async () => {},
+  });
+  registry.beginShutdown();
+  for (const id of ["missing", "validated"]) {
+    const error = await registry.invokeTool(id, {}).catch((err: Error) => err);
+    expect(getFailureSignal(error)?.error_code).toBe(FAILURE_CODES.REGISTRY_SHUTTING_DOWN);
+  }
+  expect(invoked).not.toHaveBeenCalled();
+  expect(failed).not.toHaveBeenCalled();
+});
+
+it("classifies a lazy service resolution interrupted by shutdown", async () => {
+  const registry = new Registry();
+  let resume!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    resume = resolve;
+  });
+  let enter!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  registry.registerTool({
+    id: "lazy",
+    services: () => ({}),
+    execute: async () => {
+      enter();
+      await pending;
+      return registry.resolveService("Service:only");
+    },
+  });
+  const invocation = registry.invokeTool("lazy");
+  await entered;
+  registry.beginShutdown();
+  resume();
+  const error = await invocation.catch((err: Error) => err);
+  expect(getFailureSignal(error)?.error_code).toBe(FAILURE_CODES.REGISTRY_SHUTTING_DOWN);
 });
