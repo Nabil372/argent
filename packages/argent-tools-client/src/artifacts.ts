@@ -19,7 +19,7 @@
  * - device   — udid / serial when the artifact is device-scoped.
  */
 
-import { copyFile, mkdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from "node:path";
@@ -195,43 +195,48 @@ function configuredRecordingsDir(): string | null {
 /**
  * Hard ceiling on a durable download, independent of the `size` a possibly
  * hostile tool-server announces: a durable file survives temp-cache GC, so an
- * over-declared body must not be able to fill the disk or client memory. Well
- * above any real recording (600 s cap at device-native h264).
+ * over-declared body must not be able to fill the disk or client memory.
+ * High-detail debug recordings can reach this limit before their time cap.
  */
 const MAX_DURABLE_BYTES = 2 * 1024 * 1024 * 1024;
 
-/**
- * Read a response body into a Buffer, or null once `cap` bytes are exceeded —
- * checked against `Content-Length` up front and again per chunk, so a server
- * that under-declares its `size` then streams on can't exhaust memory. Falls
- * back to a still-capped `arrayBuffer()` when the response exposes no readable
- * stream (e.g. an injected test fetch).
- */
-async function readCapped(res: Response, cap: number): Promise<Buffer | null> {
-  const headers = (res as { headers?: { get?: (k: string) => string | null } }).headers;
-  const declared = Number(headers?.get?.("content-length"));
-  if (Number.isFinite(declared) && declared > cap) return null;
-
-  const body = (res as { body?: ReadableStream<Uint8Array> | null }).body;
-  if (!body?.getReader) {
-    const buf = Buffer.from(await res.arrayBuffer());
-    return buf.length > cap ? null : buf;
+/** Stream a verified-size artifact to an exclusive file, removing partial downloads on failure. */
+async function writeCappedResponse(res: Response, file: string, size: number): Promise<void> {
+  const declared = Number(res.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > size) {
+    await res.body?.cancel().catch(() => {});
+    throw new Error("The download Content-Length exceeds its declared artifact size.");
   }
-
-  const reader = body.getReader();
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > cap) {
-      await reader.cancel().catch(() => {});
-      return null;
+  if (!res.body?.getReader) {
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length !== size) throw new Error("The download size did not match the artifact.");
+    await writeFile(file, data, { flag: "wx" });
+    return;
+  }
+  const reader = res.body.getReader();
+  let output: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    output = await open(file, "wx");
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > size) throw new Error("The download exceeded its declared artifact size.");
+      await output.writeFile(value);
     }
-    chunks.push(Buffer.from(value));
+    if (total !== size) throw new Error("The download size did not match the artifact.");
+    await output.close();
+  } catch (err) {
+    if (output) {
+      await output.close().catch(() => {});
+      await rm(file, { force: true }).catch(() => {});
+      await reader.cancel().catch(() => {});
+    }
+    throw err;
+  } finally {
+    reader.releaseLock();
   }
-  return Buffer.concat(chunks);
 }
 
 /**
@@ -422,7 +427,8 @@ async function downloadAndExtractArchive(
  * the rewritten result plus any image artifacts. A handle whose `hostPath` is
  * readable here is used in place with no copy; otherwise the bytes are
  * downloaded over `/artifacts/:id` into the temp cache. Neither ⇒ `null`, so the
- * caller sees a missing-file signal rather than a dangling reference. Results
+ * caller sees a missing-file signal rather than a dangling reference. A failed
+ * durable screen recording throws with its server location for recovery. Results
  * with no handles pass through untouched (no fetch, no temp dir created).
  */
 export async function materializeArtifacts(
@@ -459,7 +465,9 @@ export async function materializeArtifacts(
           await mkdir(saveTarget.dir, { recursive: true });
           // Refuse to write through a symlinked durable directory.
           if (!(await confineToRealBase(saveTarget.dir, saveTarget.base, saveTarget.rel))) {
-            return null;
+            throw new Error(
+              "The durable recording directory resolves outside its allowed location."
+            );
           }
           if (localPath) {
             // Already on this host — copy without buffering the whole file
@@ -467,7 +475,7 @@ export async function materializeArtifacts(
             const finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
               copyFile(localPath, p, fsConstants.COPYFILE_EXCL)
             );
-            if (!finalPath) return null;
+            if (!finalPath) throw new Error("No unused recording filename was available.");
             if (value.mimeType.startsWith("image/")) {
               images.push({
                 localPath: finalPath,
@@ -477,29 +485,39 @@ export async function materializeArtifacts(
             }
             return finalPath;
           }
-          // A durable file survives cache GC, so it must have a known, verified
-          // size. `size` is unvalidated wire JSON, and an absent/NaN one would
-          // make the `readCapped` cap `NaN` and never trip, letting an unbounded
-          // body buffer into memory — the exact DoS the cap exists to prevent.
+          // The server supplies untrusted JSON. A missing or non-numeric size
+          // must not disable the download bound.
           if (!Number.isInteger(value.size) || value.size <= 0 || value.size > MAX_DURABLE_BYTES) {
-            return null;
+            throw new Error(
+              `Recording size ${value.size} is invalid or exceeds the 2 GiB download limit.`
+            );
           }
           const res = await fetchFn(`${ctx.toolsUrl}/artifacts/${value.id}`, {
             headers: authHeaders,
             signal: ctx.signal,
           });
-          if (!res.ok) return null;
-          const data = await readCapped(res, value.size);
-          if (!data || data.length !== value.size) return null;
+          if (!res.ok) throw new Error(`Artifact download failed with HTTP ${res.status}.`);
           const finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
-            writeFile(p, data, { flag: "wx" })
+            writeCappedResponse(res, p, value.size)
           );
-          if (!finalPath) return null;
+          if (!finalPath) throw new Error("No unused recording filename was available.");
           if (value.mimeType.startsWith("image/")) {
-            images.push({ localPath: finalPath, data, mimeType: value.mimeType });
+            images.push({
+              localPath: finalPath,
+              data: await readFile(finalPath),
+              mimeType: value.mimeType,
+            });
           }
           return finalPath;
-        } catch {
+        } catch (err) {
+          if (value.kind === "screen-recording") {
+            const reason = err instanceof Error ? err.message : String(err);
+            throw new Error(
+              `Could not retrieve recording ${value.filename}: ${reason} ` +
+                `The capture already stopped; do not repeat stop. The file remains on the tool-server at ${value.hostPath ?? `artifact ${value.id}`}.`,
+              { cause: err }
+            );
+          }
           return null;
         }
       }

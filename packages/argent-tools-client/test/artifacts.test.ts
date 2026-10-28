@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, rm, readFile, writeFile, stat, symlink, readdir } from "node:fs/promises";
@@ -961,6 +961,54 @@ describe("materializeArtifacts durable destination", () => {
     );
     expect((result as { video: string | null }).video).toBeNull();
     expect(state.pulls).toBeLessThanOrEqual(1); // header check fired; the body is not drained
+  });
+
+  it("reports an oversized recording with its server path without starting a download", async () => {
+    const fetchImpl = vi.fn();
+    const handle: ArtifactHandle = {
+      [ARTIFACT_MARKER]: true,
+      id: "large",
+      kind: "screen-recording",
+      filename: "large.mp4",
+      mimeType: "video/mp4",
+      size: 3 * 1024 * 1024 * 1024,
+      hostPath: "/remote/recording.mp4",
+      saveDir: ".argent/recordings",
+    };
+    await expect(
+      materializeArtifacts({ video: handle }, { toolsUrl: "http://remote:3001", fetchImpl })
+    ).rejects.toThrow(/2 GiB.*already stopped.*\/remote\/recording.mp4/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("writes recording chunks to disk before the download finishes", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(body));
+    const handle: ArtifactHandle = {
+      [ARTIFACT_MARKER]: true,
+      id: "stream",
+      kind: "screen-recording",
+      filename: "streamed.mp4",
+      mimeType: "video/mp4",
+      size: 8,
+      saveDir: ".argent/recordings",
+    };
+    const downloading = materializeArtifacts(
+      { video: handle },
+      { toolsUrl: "http://remote:3001", fetchImpl }
+    );
+    controller.enqueue(Buffer.from("part"));
+    const file = join(projectRoot, ".argent/recordings", "streamed.mp4");
+    await vi.waitFor(async () => expect((await stat(file)).size).toBe(4));
+    controller.enqueue(Buffer.from("rest"));
+    controller.close();
+    expect((await downloading).result).toEqual({ video: file });
+    expect((await readFile(file)).toString()).toBe("partrest");
   });
 
   it("co-located copy never clobbers an existing recording — lands as `name (2).ext`", async () => {

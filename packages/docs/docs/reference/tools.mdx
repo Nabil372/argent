@@ -116,6 +116,8 @@ Debug saves JPEGs in the server’s temporary directory before encoding. This ca
 
 Debug uses host arrival timestamps, not device presentation timestamps. It cannot recover frames omitted by the stream. It encodes at stop, so retrieval can take longer.
 
+Linked recording downloads have a 2 GiB limit. Larger recordings remain on the tool-server and return a retrieval error with their location.
+
 Extract debug frames with `ffmpeg -i recording.mp4 -fps_mode passthrough frame-%06d.png` to avoid resampling. Use each frame’s PTS for timing, not the guessed `r_frame_rate`.
 
 Call `screen-recording-stop` to retrieve the video, including after the time limit ends capture. Debug returns `encodingComplete` to indicate whether encoding succeeded. Partial videos include a warning and an unknown duration. If no video exists, stop fails with encoder diagnostics.
