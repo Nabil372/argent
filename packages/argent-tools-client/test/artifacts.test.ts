@@ -1069,6 +1069,34 @@ describe("materializeArtifacts durable destination", () => {
     }
   );
 
+  it("returns the published recording even when staging cleanup fails", async () => {
+    const cleanup = vi
+      .spyOn(fs, "rm")
+      .mockRejectedValueOnce(Object.assign(new Error("cleanup denied"), { code: "EACCES" }));
+    try {
+      const { result } = await materializeArtifacts(
+        {
+          video: {
+            ...handle("saved", "saved.mp4", "video/mp4"),
+            kind: "screen-recording",
+            size: MP4.length,
+            saveDir: ".argent/recordings",
+          },
+        },
+        {
+          toolsUrl: "http://remote:3001",
+          fetchImpl: vi.fn(async () => new Response(Buffer.from(MP4))),
+        }
+      );
+      const file = join(projectRoot, ".argent/recordings", "saved.mp4");
+      expect(result).toEqual({ video: file });
+      expect(await readFile(file)).toEqual(Buffer.from(MP4));
+      expect(cleanup).toHaveBeenCalledOnce();
+    } finally {
+      cleanup.mockRestore();
+    }
+  });
+
   it("writes recording chunks to disk before the download finishes", async () => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({

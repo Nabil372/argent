@@ -535,7 +535,7 @@ export async function materializeArtifacts(
             return finalPath;
           } finally {
             if (!finalPath || dirname(finalPath) !== downloadDir) {
-              await rm(downloadDir, { recursive: true, force: true });
+              await rm(downloadDir, { recursive: true, force: true }).catch(() => {});
             }
           }
         } catch (err) {
