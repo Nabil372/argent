@@ -102,26 +102,41 @@ describe("POST /upload", () => {
     try {
       await new Promise<void>((resolve) => server.once("listening", resolve));
       const { port } = server.address() as { port: number };
-      const response = new Promise<number>((resolve, reject) => {
-        request = http.request(
-          {
-            hostname: "127.0.0.1",
-            port,
-            method: "POST",
-            path: "/upload",
-            headers: { "Content-Type": "application/gzip", "Content-Length": 1024 },
-          },
-          (res) => {
-            res.resume();
-            res.on("end", () => resolve(res.statusCode!));
-          }
-        );
-        request.on("error", reject);
-        request.write(Buffer.alloc(16));
-      });
+      const response = new Promise<{ status: number; body: Record<string, unknown> }>(
+        (resolve, reject) => {
+          request = http.request(
+            {
+              hostname: "127.0.0.1",
+              port,
+              method: "POST",
+              path: "/upload",
+              headers: { "Content-Type": "application/gzip", "Content-Length": 1024 },
+            },
+            (res) => {
+              const chunks: Buffer[] = [];
+              res.on("data", (chunk: Buffer) => chunks.push(chunk));
+              res.on("end", () =>
+                resolve({
+                  status: res.statusCode!,
+                  body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+                })
+              );
+            }
+          );
+          request.on("error", reject);
+          request.write(Buffer.alloc(16));
+        }
+      );
       await vi.waitFor(async () => expect(await fs.readdir(scratch)).toHaveLength(1));
       handle.dispose();
-      expect(await response).toBe(503);
+      expect(await response).toEqual({
+        status: 503,
+        body: {
+          error: expect.stringContaining("This call was not started"),
+          error_code: "HTTP_SERVER_SHUTTING_DOWN",
+          error_kind: "unknown",
+        },
+      });
       await vi.waitFor(async () => expect(await fs.readdir(scratch)).toEqual([]));
     } finally {
       request?.destroy();

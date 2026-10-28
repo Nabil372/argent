@@ -679,17 +679,25 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       inFlightUploadBytes -= received;
     };
 
-    const abort = (status: number, message: string): void => {
+    const abort = (status: number, error: string | FailureError): void => {
       activeUploads.delete(cancelUpload);
       releaseInFlight();
       ws.destroy();
       ws.once("close", () => {
         void rm(tarPath, { force: true }).catch(() => {});
       });
-      if (!res.headersSent) res.status(status).json({ error: message });
+      if (!res.headersSent) {
+        res
+          .status(status)
+          .json(
+            typeof error === "string"
+              ? { error }
+              : { error: error.message, ...errorSignalFields(error) }
+          );
+      }
     };
 
-    const cancelUpload = () => abort(503, serverShutdownError().message);
+    const cancelUpload = () => abort(503, serverShutdownError());
     activeUploads.add(cancelUpload);
 
     const digest = createHash("sha256");
