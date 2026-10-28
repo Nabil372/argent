@@ -15,9 +15,11 @@ export async function cleanupAbandonedFrames(): Promise<void> {
     if (!owner || owner[2] !== namespace) continue;
     try {
       process.kill(Number(owner[1]), 0);
-      continue;
+      if (os.platform() !== "linux") continue;
+      const stat = await fs.readFile(`/proc/${owner[1]}/stat`, "utf8");
+      if (!stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z ")) continue;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ESRCH") continue;
+      if (!["ESRCH", "ENOENT"].includes((err as NodeJS.ErrnoException).code ?? "")) continue;
     }
     await fs.rm(directory, { recursive: true, force: true }).catch((err: unknown) => {
       process.stderr.write(

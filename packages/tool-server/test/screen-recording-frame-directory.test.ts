@@ -18,6 +18,7 @@ vi.mock("@argent/registry", async (importOriginal) => ({
 let root = "";
 let restore = () => {};
 beforeEach(async () => {
+  vi.spyOn(os, "platform").mockReturnValue("darwin");
   vi.mocked(processNamespaceId).mockResolvedValue("aaaaaaaaaaaa");
   root = await fs.mkdtemp(path.join(os.tmpdir(), "argent-spool-test-"));
   restore = redirectTmpdir(root);
@@ -99,6 +100,27 @@ it("keeps an orphan encoder's spool until its own process exits", async () => {
   await cleanupAbandonedFrames();
   await expect(fs.access(directory)).rejects.toThrow();
 });
+
+it.each(["Z", "S", "EPERM", "ENOENT"])(
+  "checks Linux owner state before sweeping (%s)",
+  async (state) => {
+    const directory = await createFrameDirectory();
+    const owned = setFrameDirectoryOwner(directory, 12345);
+    vi.spyOn(os, "platform").mockReturnValue("linux");
+    vi.spyOn(process, "kill").mockReturnValue(true);
+    const read = fs.readFile.bind(fs);
+    vi.spyOn(fs, "readFile").mockImplementation(async (file, options) => {
+      if (file !== "/proc/12345/stat") return read(file, options);
+      if (["EPERM", "ENOENT"].includes(state)) {
+        throw Object.assign(new Error(state), { code: state });
+      }
+      return `12345 (ffmpeg (encoder)) ${state} 1 0 0`;
+    });
+    await cleanupAbandonedFrames();
+    if (["Z", "ENOENT"].includes(state)) await expect(fs.access(owned)).rejects.toThrow();
+    else await expect(fs.access(owned)).resolves.toBeUndefined();
+  }
+);
 
 it.each(["bbbbbbbbbbbb", null])(
   "does not sweep another or unknown namespace (%s)",
