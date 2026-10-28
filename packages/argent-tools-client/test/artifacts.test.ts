@@ -828,6 +828,7 @@ describe("materializeArtifacts durable destination", () => {
     const h: ArtifactHandle = {
       [ARTIFACT_MARKER]: true,
       id: "evilsym",
+      kind: "screen-recording",
       filename: "pwned.mp4",
       mimeType: "video/mp4",
       size: MP4.length,
@@ -840,7 +841,10 @@ describe("materializeArtifacts durable destination", () => {
 
     // Nothing escaped into the real .git dir, and the durable write was refused.
     expect(await readdir(join(projectRoot, ".git"))).not.toContain("pwned.mp4");
-    expect((result as { video: null }).video).toBeNull();
+    expect(result).toMatchObject({
+      video: null,
+      warning: expect.stringContaining("resolves outside its allowed location"),
+    });
   });
 
   it("never overwrites an existing durable recording — lands the new file alongside", async () => {
@@ -996,6 +1000,42 @@ describe("materializeArtifacts durable destination", () => {
     );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    "warns when every durable filename is occupied (local: %s)",
+    async (local) => {
+      const file = join(hostDir, "source.mp4");
+      await writeFile(file, Buffer.from(MP4));
+      const collision = Object.assign(new Error("occupied"), { code: "EEXIST" });
+      const writing = local
+        ? vi.spyOn(fs, "copyFile").mockRejectedValue(collision)
+        : vi.spyOn(fs, "link").mockRejectedValue(collision);
+      try {
+        const { result } = await materializeArtifacts(
+          {
+            video: {
+              ...handle("occupied", "occupied.mp4", "video/mp4"),
+              kind: "screen-recording",
+              size: MP4.length,
+              ...(local ? { hostPath: file } : {}),
+              saveDir: ".argent/recordings",
+            },
+          },
+          {
+            toolsUrl: "http://remote:3001",
+            fetchImpl: vi.fn(async () => new Response(Buffer.from(MP4))),
+          }
+        );
+        expect(result).toMatchObject({
+          video: null,
+          warning: expect.stringContaining("No unused recording filename"),
+        });
+        expect(writing).toHaveBeenCalledTimes(1000);
+      } finally {
+        writing.mockRestore();
+      }
+    }
+  );
 
   it("writes recording chunks to disk before the download finishes", async () => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
