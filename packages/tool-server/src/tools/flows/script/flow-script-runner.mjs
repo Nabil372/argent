@@ -1127,6 +1127,7 @@ const MAX_PROBLEM_PATH_CHARS = 80;
 function walk(root, rootPath) {
   const ancestors = new Set();
   const frames = [];
+  /** @type {unknown} Assigned inside `enter`, which control flow cannot follow. */
   let result;
 
   const release = (held) => {
