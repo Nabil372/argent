@@ -151,19 +151,20 @@ export async function macosScreenshotPng(
 }
 
 /**
- * The long side of a screenshot taken with neither `scale` nor
- * ARGENT_SCREENSHOT_SCALE, as a TV capture gets 576 px. Desktop text is small:
- * up to about 1280 points wide a window keeps 0.6 pixels per point, where its
- * smallest text still reads.
+ * The long side of a screenshot taken without `scale`, as a TV capture gets
+ * 576 px. A wider window keeps {@link MACOS_MIN_PIXELS_PER_POINT} instead.
  */
 const MACOS_DEFAULT_LONG_SIDE = 768;
+/** At 0.6 pixels per point the smallest common text (10 pt) still reads; at 0.5 it blurs. */
+const MACOS_MIN_PIXELS_PER_POINT = 0.6;
 
-/** `png` downscaled to {@link MACOS_DEFAULT_LONG_SIDE} when it is larger, never upscaled. */
+/** A capture at one pixel per point downscaled to the default size, never upscaled. */
 export function fitMacosDefaultSize(png: Buffer): Buffer {
   // The width and height in the IHDR chunk: decode only a capture that needs the resample.
   const longSide = Math.max(png.readUInt32BE(16), png.readUInt32BE(20));
   if (longSide <= MACOS_DEFAULT_LONG_SIDE) return png;
-  return PNG.sync.write(scaleDecodedPng(PNG.sync.read(png), MACOS_DEFAULT_LONG_SIDE / longSide));
+  const scale = Math.max(MACOS_MIN_PIXELS_PER_POINT, MACOS_DEFAULT_LONG_SIDE / longSide);
+  return PNG.sync.write(scaleDecodedPng(PNG.sync.read(png), scale));
 }
 
 // ── Keyboard ────────────────────────────────────────────────────────────────

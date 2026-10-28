@@ -290,8 +290,9 @@ export async function startMcpServer(options: StartMcpServerOptions): Promise<vo
       }
 
       const udid = getUdidFromArgs(params.arguments);
-      const wantScreenshot = autoScreenshotOn && shouldAutoScreenshot(params.name);
-      const wantTree = autoDescribeOn && shouldAutoDescribe(params.name);
+      const wantScreenshot =
+        autoScreenshotOn && shouldAutoScreenshot(params.name, params.arguments);
+      const wantTree = autoDescribeOn && shouldAutoDescribe(params.name, params.arguments);
       if (udid && (wantScreenshot || wantTree) && containsSecretPlaceholder(params.arguments)) {
         // The tool-server typed the *resolved* secret; a screenshot of a
         // non-secure-entry field would hand the plaintext back to the model as

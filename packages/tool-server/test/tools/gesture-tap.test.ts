@@ -130,17 +130,6 @@ describe("gesture-tap", () => {
 });
 
 describe("gesture-tap button", () => {
-  function chromiumRig() {
-    const mouse: Array<{ type: string; button?: string; clickCount?: number }> = [];
-    const chromium = {
-      getViewport: () => ({ width: 1000, height: 800 }),
-      dispatchMouseEvent: vi.fn(async (e: (typeof mouse)[number]) => {
-        mouse.push(e);
-      }),
-    };
-    return { mouse, services: { chromium } as never };
-  }
-
   it("takes left and right, and rejects any other button at the schema", () => {
     const schema = gestureTapTool.zodSchema!;
     for (const button of ["left", "right", undefined]) {
@@ -151,35 +140,12 @@ describe("gesture-tap button", () => {
     }
   });
 
-  it("right-clicks on chromium: every press and release carries the right button", async () => {
-    const { mouse, services } = chromiumRig();
-    await gestureTapTool.execute(services, {
-      udid: "chromium-cdp-9222",
-      x: 0.5,
-      y: 0.5,
-      clickCount: 2,
-      button: "right",
-    });
-    expect(mouse.map((e) => `${e.type}:${e.button ?? ""}:${e.clickCount ?? ""}`)).toEqual([
-      "mouseMoved::",
-      "mousePressed:right:1",
-      "mouseReleased:right:1",
-      "mousePressed:right:2",
-      "mouseReleased:right:2",
-    ]);
-  });
-
-  it("leaves the button unset on chromium for a default tap", async () => {
-    const { mouse, services } = chromiumRig();
-    await gestureTapTool.execute(services, { udid: "chromium-cdp-9222", x: 0.5, y: 0.5 });
-    expect(mouse.every((e) => !("button" in e) || e.button === undefined)).toBe(true);
-  });
-
   it.each([
-    ["an iOS simulator", "00000000-0000-0000-0000-0000000000AB", "ios simulator"],
-    ["an Android emulator", "emulator-5554", "android emulator"],
-    ["a physical iPhone", DEVICE_UDID, "ios device"],
-  ])("refuses a right-click on %s and starts no backend", async (_name, udid, named) => {
+    ["an iOS simulator", "00000000-0000-0000-0000-0000000000AB", "ios simulator", true],
+    ["an Android emulator", "emulator-5554", "android emulator", true],
+    ["a physical iPhone", DEVICE_UDID, "ios device", true],
+    ["a Chromium app", "chromium-cdp-9222", "chromium app", false],
+  ])("refuses a right-click on %s and starts no backend", async (_name, udid, named, hold) => {
     expect(gestureTapTool.services!({ udid, x: 0.5, y: 0.5, button: "right" })).toEqual({});
     const { run } = runnerRig();
     const err = await gestureTapTool
@@ -193,8 +159,8 @@ describe("gesture-tap button", () => {
         () => undefined,
         (e: unknown) => e as Error
       );
-    expect(err?.message).toContain(`${named} has no secondary button`);
-    expect(err?.message).toContain("gesture-custom");
+    expect(err?.message).toContain(`${named} takes no right-click`);
+    expect(err?.message.includes("gesture-custom")).toBe(hold);
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.TOOL_INPUT_INVALID);
     // Nothing reached a device: no touch, no runner command.
     expect(sent).toEqual([]);

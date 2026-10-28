@@ -55,7 +55,6 @@ Common schemes: `messages://`, `settings://`, `maps://?q=<query>`, `tel://<numbe
 | Restart an app    | `restart-app`       | Terminate and relaunch by bundle ID                               |
 | Open URL/scheme   | `open-url`          | Web pages, deep links, URL schemes                                |
 | Single tap        | `gesture-tap`       | Buttons, links, checkboxes                                        |
-| Right-click       | `gesture-tap`       | Context menu: `button: "right"`. Chromium and Mac apps only       |
 | Scroll/swipe      | `gesture-swipe`     | Straight-line scroll or swipe                                     |
 | Scroll (Chromium) | `gesture-scroll`    | Wheel-based; deltas are window fractions, positive deltaY = down  |
 | Drag (Chromium)   | `gesture-drag`      | Sliders, drag-and-drop, text selection                            |

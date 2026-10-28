@@ -168,7 +168,7 @@ describe("when: parse/serialize", () => {
   it("validates the platform guard value", () => {
     expect(() =>
       parseFlow("steps:\n  - when: { platform: windows }\n    steps: [{ tap: A }]\n")
-    ).toThrow(/when\.platform must be one of ios, android, chromium, vega, macos\)/i);
+    ).toThrow(/when\.platform must be one of ios, android, chromium, vega/i);
     expect(() =>
       parseFlow("steps:\n  - when: { platform: ios, foo: 1 }\n    steps: [{ tap: A }]\n")
     ).toThrow(/no other keys/i);

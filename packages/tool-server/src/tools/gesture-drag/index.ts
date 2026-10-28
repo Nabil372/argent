@@ -27,6 +27,9 @@ const MOMENTUM_FREE_MIN_STEPS = 8;
 // ceiling. The same 10s gesture-swipe carries, an order of magnitude above the
 // 300ms default.
 const MAX_DURATION_MS = 10_000;
+// A long press on a Mac app holds as long as the e2e long-press directive: SwiftUI and
+// React Native fire theirs after 500 ms.
+const MACOS_LONG_PRESS_MS = 800;
 
 const zodSchema = z.object({
   udid: z
@@ -61,7 +64,7 @@ const zodSchema = z.object({
     })
     .optional()
     .describe(
-      `Total drag duration in milliseconds (default 300, at most ${MAX_DURATION_MS} - the button stays down for exactly this long), interpolated at ~60fps.`
+      `Total drag duration in milliseconds (default 300<flag:macos-apps>, or 800 for a long press on a Mac app</flag:macos-apps>, at most ${MAX_DURATION_MS} - the button stays down for exactly this long), interpolated at ~60fps.`
     ),
   momentum: z
     .boolean()
@@ -98,7 +101,7 @@ type Point = { x: number; y: number };
 
 /**
  * A left-button drag from `from` to `to` in the caller's coordinates: down,
- * moves at ~60fps over `durationMs`, up. The same point is a press-and-hold.
+ * moves at ~60fps over `durationMs`, up.
  */
 async function runPointerDrag(
   from: Point,
@@ -190,7 +193,7 @@ export const gestureDragTool: ToolDefinition<Params, Result> = {
     failedMsg: ({ failureSignal }) => `Failed to drag: ${failureSignal.error_code}`,
   },
   description: `Press the left mouse button at a start point, move to an end point, and release: a desktop mouse drag in a Chromium app<flag:macos-apps> or a Mac app</flag:macos-apps>. All positions are normalized 0.0–1.0 (fractions of the window, not pixels), same coordinate space as gesture-tap and describe, except that <flag:macos-apps>on Chromium </flag:macos-apps>a coordinate of exactly 1.0 lands one pixel inside the window edge (gesture-tap maps it to the edge itself). Interpolates mouse-move events at ~60fps over durationMs for a natural drag (a momentum-free drag samples more finely when durationMs is short, so its ease-out has a curve).
-Use for slider thumbs, drag-and-drop, text selection, or draggable UI elements; the same start and end point is a press-and-hold. Dragging never scrolls content on desktop; use gesture-scroll for lists/pages. Chromium<flag:macos-apps> and Mac apps</flag:macos-apps> only: on iOS/Android<flag:harmonyos> and HarmonyOS</flag:harmonyos> use gesture-swipe.<flag:macos-apps> On a Mac app the drag goes into the app in the background (the pointer does not move), and only an x of exactly 1.0 or a y of exactly 0.0 (the right and top edges) moves just inside the window, as on gesture-tap.</flag:macos-apps>
+Use for slider thumbs, drag-and-drop, text selection, or draggable UI elements. Dragging never scrolls content on desktop; use gesture-scroll for lists/pages. Chromium<flag:macos-apps> and Mac apps</flag:macos-apps> only: on iOS/Android<flag:harmonyos> and HarmonyOS</flag:harmonyos> use gesture-swipe.<flag:macos-apps> On a Mac app the drag goes into the app in the background (the pointer does not move), and only an x of exactly 1.0 or a y of exactly 0.0 (the right and top edges) moves just inside the window, as on gesture-tap. The same start and end point is a long press.</flag:macos-apps>
 Pass momentum:false for a momentum-free drag that decelerates into the release, so apps that compute a fling from the pointer stream read ~0 velocity and the drag ends where it was aimed instead of flinging past it (a durationMs under ~100ms is too short for the deceleration to suppress the fling entirely). Returns { dragged: true, timestampMs }. Fails if the Chromium CDP session<flag:macos-apps> or the Mac app library</flag:macos-apps> is not reachable for the given device.`,
   searchHint:
     "drag drop slider mouse press move release chromium<flag:macos-apps> mac</flag:macos-apps> select",
@@ -207,10 +210,11 @@ Pass momentum:false for a momentum-free drag that decelerates into the release, 
     const opts = { durationMs: params.durationMs, momentum: params.momentum, signal: ctx?.signal };
     if (device.platform === "macos") {
       const app = requireMacosApp(services, "gesture-drag", device);
+      const longPress = params.fromX === params.toX && params.fromY === params.toY;
       await runPointerDrag(
         { x: params.fromX, y: params.fromY },
         { x: params.toX, y: params.toY },
-        opts,
+        { ...opts, durationMs: params.durationMs ?? (longPress ? MACOS_LONG_PRESS_MS : undefined) },
         {
           down: (p) => macosMouse(app, { type: "down", ...p, clickCount: 1 }),
           move: (p) => macosMouse(app, { type: "move", ...p }),

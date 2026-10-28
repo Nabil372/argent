@@ -1,4 +1,5 @@
 import type { DeviceInfo, Registry, ToolContext } from "@argent/registry";
+import { isFlagEnabled } from "@argent/configuration-core";
 import {
   getDescribeTapPoint,
   type DescribeFrame,
@@ -26,6 +27,7 @@ import {
 import { settleWithin, sleepOrAbort } from "../../utils/timing";
 import { invokeSubTool } from "../../utils/sub-invoke";
 import { isIosPhysicalDevice, isIosSimulator } from "../../utils/device-info";
+import { renderFlagGated } from "../../utils/flag-gated-text";
 import { bindDeviceArgs } from "./flow-device";
 import { fetchFlowTree, supportsFlowTree } from "./flow-tree";
 import {
@@ -262,8 +264,7 @@ const FOCUS_REPORTING_SOURCES: ReadonlySet<DescribeSource> = new Set([
  * A device driven with a mouse and wheel rather than touch: a Chromium app or a
  * native Mac app. Neither takes `gesture-swipe` or `gesture-custom`, so the
  * directives below send these devices `gesture-scroll` (scroll-to) and
- * `gesture-drag` (swipe, long-press), and refuse the two-finger gestures. Only
- * these devices take a right-click (`tap` with `button: right`).
+ * `gesture-drag` (swipe, long-press), and refuse the two-finger gestures.
  */
 function isPointerDesktop(device: DeviceInfo): boolean {
   return device.platform === "chromium" || device.platform === "macos";
@@ -948,13 +949,16 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
           : "rotate is unsupported on HarmonyOS — `uinput -T -m` is the platform's only multi-contact injection and it moves each finger along ONE straight line per call, with no way to chain segments into an arc; drive the app's own rotate control with `tap`, or `pinch`, which is a straight-line gesture and does run here",
     };
   }
-  // A right-click needs a mouse; the touch platforms refuse it before the auto-wait too,
+  // Only a Mac app takes a right-click; the others refuse it before the auto-wait too,
   // rather than after it with gesture-tap's own error.
-  if (step.kind === "tap" && step.button === "right" && !isPointerDesktop(env.device)) {
+  if (step.kind === "tap" && step.button === "right" && env.device.platform !== "macos") {
     return {
       ok: false,
-      reason:
-        "tap with button: right is a mouse right-click, which only a Mac app or a Chromium app takes; on a touch screen, open a context menu with long-press",
+      reason: renderFlagGated(
+        `tap with button: right is a mouse right-click<flag:macos-apps>, which only a Mac app takes</flag:macos-apps>; ` +
+          `${env.device.platform} takes none. On a touch screen, open a context menu with long-press`,
+        isFlagEnabled
+      ),
     };
   }
   // Physical iOS: XCTest has no two-finger coordinate API. Fail here before the auto-wait.

@@ -103,22 +103,26 @@ fi
 # the iOS one) and argent-macos-helper ship as one tarball, extracted into
 # dylibs/macos/; the helper then moves to bin/darwin/ with the other host
 # binaries. Tags from before Mac app support carry no such asset, so a missing
-# one is skipped with a warning.
+# one is skipped with a warning; any other gh failure stops the script.
 MACOS_DYLIBS_DIR="${DYLIBS_DIR}/macos"
 mkdir -p "${MACOS_DYLIBS_DIR}"
 
 echo "  Downloading macOS artifacts..."
 TMP_MACOS_TARBALL="$(mktemp -t native-devtools-macos.XXXXXX.tar.gz)"
-if gh release download "${TAG}" \
+if MACOS_GH_ERR="$(gh release download "${TAG}" \
   --repo "${REPO}" \
   --pattern "native-devtools-macos.tar.gz" \
   --output "${TMP_MACOS_TARBALL}" \
-  --clobber; then
+  --clobber 2>&1)"; then
   tar -xzf "${TMP_MACOS_TARBALL}" -C "${MACOS_DYLIBS_DIR}"
   mv -f "${MACOS_DYLIBS_DIR}/argent-macos-helper" "${IOS_BIN_DIR}/argent-macos-helper"
   chmod +x "${IOS_BIN_DIR}/argent-macos-helper"
-else
+elif [[ "${MACOS_GH_ERR}" == *"no assets match"* ]]; then
   echo "  Skipping macOS artifacts: not present on '${TAG}' (pre-Mac-app-support release)." >&2
+else
+  echo "Error: could not download the macOS artifacts from '${TAG}': ${MACOS_GH_ERR}" >&2
+  rm -f "${TMP_MACOS_TARBALL}"
+  exit 1
 fi
 rm -f "${TMP_MACOS_TARBALL}"
 

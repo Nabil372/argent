@@ -177,6 +177,17 @@ describe("gesture-drag on a Mac app", () => {
     expect(urns).toEqual([MAC_URN]);
   });
 
+  it("holds a same-point drag 800 ms by default, a long press", async () => {
+    vi.useFakeTimers();
+    const { invoke, calls } = harness();
+    const run = invoke("gesture-drag", { fromX: 0.5, fromY: 0.5, toX: 0.5, toY: 0.5 });
+    await vi.advanceTimersByTimeAsync(790);
+    expect(calls.map((c) => c.params.type)).not.toContain("up");
+    await vi.advanceTimersByTimeAsync(10 + MACOS_CLICK_SETTLE_MS);
+    await run;
+    expect(calls.at(-1)!.params).toMatchObject({ type: "up", x: 0.5, y: 0.5 });
+  });
+
   it("eases out for momentum: false, with at least eight samples", async () => {
     vi.useFakeTimers();
     const { invoke, calls } = harness();
@@ -358,13 +369,35 @@ describe("screenshot and screenshot-diff on a Mac app", () => {
   });
 
   it.each([
-    ["no scale: a larger window is downscaled to a 768 px long side", {}, undefined, [768, 192], 1],
-    ["ARGENT_SCREENSHOT_SCALE: the library scales", {}, "0.5", [1600, 400], 0.5],
-    ["an explicit scale: the library scales", { scale: 0.8 }, undefined, [1600, 400], 0.8],
-  ] as const)("screenshot with %s", async (_label, args, envScale, size, libraryScale) => {
+    [
+      "no scale: a larger window is downscaled to a 768 px long side",
+      {},
+      undefined,
+      [1000, 250],
+      [768, 192],
+      1,
+    ],
+    [
+      "no scale: a window over 1280 points keeps 0.6 px per point",
+      {},
+      undefined,
+      [1600, 400],
+      [960, 240],
+      1,
+    ],
+    ["ARGENT_SCREENSHOT_SCALE: ignored", {}, "0.25", [1600, 400], [960, 240], 1],
+    [
+      "an explicit scale: the library scales",
+      { scale: 0.8 },
+      undefined,
+      [1600, 400],
+      [1600, 400],
+      0.8,
+    ],
+  ] as const)("screenshot with %s", async (_label, args, envScale, capture, size, libraryScale) => {
     if (envScale) vi.stubEnv("ARGENT_SCREENSHOT_SCALE", envScale);
     const { invoke, calls } = harness({
-      "Screenshot.capture": () => ({ base64: pngBytes(1600, 400).toString("base64") }),
+      "Screenshot.capture": () => ({ base64: pngBytes(capture[0], capture[1]).toString("base64") }),
     });
     const result = (await invoke("screenshot", args)) as { image: { filename: string } };
     const written = path.join(os.tmpdir(), result.image.filename);

@@ -19,8 +19,6 @@ interface FakeCdp {
   close: () => Promise<void>;
   /** All CDP method names the fake server has received. */
   recordedMethods: string[];
-  /** The params of each `Input.dispatchMouseEvent` the fake server has received. */
-  mouseEvents: Record<string, unknown>[];
   /** Inject custom replies for specific methods (otherwise default replies are used). */
   setReply: (
     method: string,
@@ -30,7 +28,6 @@ interface FakeCdp {
 
 async function startFakeCdp(): Promise<FakeCdp> {
   const recordedMethods: string[] = [];
-  const mouseEvents: Record<string, unknown>[] = [];
   const customReplies = new Map<
     string,
     Record<string, unknown> | ((id: number) => Record<string, unknown>)
@@ -78,9 +75,6 @@ async function startFakeCdp(): Promise<FakeCdp> {
           params?: unknown;
         };
         recordedMethods.push(msg.method);
-        if (msg.method === "Input.dispatchMouseEvent") {
-          mouseEvents.push(msg.params as Record<string, unknown>);
-        }
         let result: unknown;
         const custom = customReplies.get(msg.method);
         if (custom !== undefined) {
@@ -132,7 +126,6 @@ async function startFakeCdp(): Promise<FakeCdp> {
     http: httpSrv,
     ws: wss,
     recordedMethods,
-    mouseEvents,
     setReply: (method, payload) => customReplies.set(method, payload),
     close: () =>
       new Promise<void>((resolve) => {
@@ -204,32 +197,6 @@ describe("chromiumCdpBlueprint (smoke)", () => {
       expect(shot.path).toMatch(/argent-chromium-media/);
       expect(shot.path).toMatch(/argent-screenshot-/);
       expect(shot.url).toMatch(/^file:\/\//);
-    } finally {
-      await instance.dispose();
-    }
-  });
-
-  it("sends the DOM buttons bitmask of the pressed button: right is 2, not the left button's 1", async () => {
-    const s = await startFakeCdp();
-    servers.push(s);
-    const device = resolveDevice(`chromium-cdp-${s.port}`);
-    const instance = await chromiumCdpBlueprint.factory({}, device, { device });
-    try {
-      await instance.api.dispatchMouseEvent({ type: "mouseMoved", x: 1, y: 1 });
-      await instance.api.dispatchMouseEvent({ type: "mousePressed", x: 1, y: 1 });
-      await instance.api.dispatchMouseEvent({ type: "mousePressed", x: 1, y: 1, button: "right" });
-      await instance.api.dispatchMouseEvent({
-        type: "mouseReleased",
-        x: 1,
-        y: 1,
-        button: "middle",
-      });
-      expect(s.mouseEvents.map((e) => [e.button, e.buttons])).toEqual([
-        ["none", 0],
-        ["left", 1],
-        ["right", 2],
-        ["middle", 4],
-      ]);
     } finally {
       await instance.dispose();
     }

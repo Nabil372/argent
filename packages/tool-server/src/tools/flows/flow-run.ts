@@ -119,7 +119,8 @@ import {
   parseChromiumCdpPort,
   resolveDevice,
 } from "../../utils/device-info";
-import { assertSupported } from "../../utils/capability";
+import { assertSupported, MACOS_APPS_FLAG } from "../../utils/capability";
+import { FLAG_ENUM_META_KEY } from "../../utils/flag-gated-text";
 import { getTrackedMacosApp, otherWorktreeOfBuild } from "../../utils/macos-apps";
 import { runSnapshot, DEFAULT_MAX_MISMATCH, type SnapshotArtifacts } from "./flow-visual";
 import type { ArtifactHandle } from "../../artifacts";
@@ -163,7 +164,8 @@ const zodSchema = z
       .optional()
       .describe(
         "Restrict auto-detection to this platform when several devices are booted. `ios` selects local simulators only; pass `ios-remote` to select a remote one. `chromium` does more than filter: with no `device` it SELECTS the self-boot branch for a standalone e2e test - the runner boots an Electron instance from the `launch` step's chromium value and tears it down after the run (a single-key `launch: { chromium: … }` map selects it on its own, without this parameter). When it selects that branch it never falls back to device auto-detection (a fragment, or a standalone e2e test's launch map with no `chromium` key, still does), and the launch value must be a real Electron app path on the tool-server host: a bare-string `launch:` - what the recorder writes - holds an installed-app bundle id, so passing `chromium` for one fails the whole run with `Electron boot: path does not exist`. Edit the launch to `{ chromium: <app path> }` first.<flag:macos-apps> `macos` with no `device` runs a standalone e2e test on the Mac app its `launch` names (`macos-app-<bundle id>`), which need not be running (a single-key `launch: { macos: … }` map selects it on its own).</flag:macos-apps>"
-      ),
+      )
+      .meta({ [FLAG_ENUM_META_KEY]: { macos: MACOS_APPS_FLAG } }),
     updateBaselines: z
       .boolean()
       .optional()

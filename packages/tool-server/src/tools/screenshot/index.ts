@@ -68,7 +68,7 @@ const zodSchema = z.object({
       "Scale factor (0.01-1.0). Defaults to ARGENT_SCREENSHOT_SCALE env var, or 0.25 if unset for iOS/Android<flag:harmonyos>/HarmonyOS</flag:harmonyos>. " +
         "On a local Apple TV simulator, an Android TV or Vega, with neither set, the capture is downscaled to a 576 px long side (0.15 of a 4K capture); an Android TV whose form factor or display size cannot be read in time keeps 0.25. " +
         "On Chromium the default is 1.0 (no downscale); pass <1 to opt in. Downscaling on Chromium requires the optional `sharp` dependency.<flag:macos-apps> " +
-        "On a Mac app, with neither set, the capture is one pixel per point of the window, downscaled to a 768 px long side when the window is larger; the lowest scale is 0.1.</flag:macos-apps>"
+        "On a Mac app the default ignores ARGENT_SCREENSHOT_SCALE: one pixel per point of the window, downscaled to a 768 px long side when the window is larger, but never below 0.6 pixels per point; the lowest scale is 0.1.</flag:macos-apps>"
     ),
   includeImageInContext: z
     .boolean()
@@ -331,9 +331,9 @@ Fails if the simulator-server / emulator backend / Chromium CDP <flag:harmonyos>
           os.tmpdir(),
           `argent-macos-screenshot-${process.hrtime.bigint()}.png`
         );
-        const scale = params.scale ?? getScreenshotScaleOverride();
-        const png = await macosScreenshotPng(app, { scale });
-        await fs.writeFile(file, scale === undefined ? fitMacosDefaultSize(png) : png);
+        // ARGENT_SCREENSHOT_SCALE is set for phone screens; as pixels per point it blurs a window.
+        const png = await macosScreenshotPng(app, { scale: params.scale });
+        await fs.writeFile(file, params.scale === undefined ? fitMacosDefaultSize(png) : png);
         return registerHostCapture(ctx, params, file, "Mac app");
       }
 

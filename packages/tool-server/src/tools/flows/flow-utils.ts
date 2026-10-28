@@ -1,7 +1,7 @@
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { MIN_SCRIPT_TIMEOUT_MS } from "@argent/configuration-core";
+import { MIN_SCRIPT_TIMEOUT_MS, isFlagEnabled } from "@argent/configuration-core";
 import {
   E2E_DIRS,
   FAILURE_CODES,
@@ -35,6 +35,7 @@ import {
 // match engine defines it.
 export { SELECTOR_RELATIONS };
 import { SECRET_PLACEHOLDER_MARKER } from "../../utils/secrets";
+import { MACOS_APPS_FLAG } from "../../utils/capability";
 import { withKeyedLock } from "../../utils/keyed-lock";
 import { MAX_ROTATE_BY_DEG } from "./flow-rotate-geometry";
 
@@ -2330,6 +2331,11 @@ function isIdleCondition(raw: unknown, kind: "await" | "assert"): boolean {
  */
 const LAUNCH_PLATFORMS = ["ios", "android", "chromium", "vega", "macos"] as const;
 
+/** {@link LAUNCH_PLATFORMS} as an error names them: `macos` only with its flag on. */
+function namedLaunchPlatforms(): string[] {
+  return LAUNCH_PLATFORMS.filter((p) => p !== "macos" || isFlagEnabled(MACOS_APPS_FLAG));
+}
+
 /**
  * The platforms a RUN can be pointed at — flow-device's `FlowPlatform` and
  * flow-run's `platform` param. `ios-remote` is selectable but deliberately not
@@ -2458,7 +2464,9 @@ function parseLaunch(raw: unknown): Launch {
   return badEntry(
     { launch: raw },
     `launch needs an app id (bare string) or a per-platform map ` +
-      `({ native | ${LAUNCH_PLATFORMS.filter((p) => p !== "chromium").join(" | ")}: <app id>, ` +
+      `({ native | ${namedLaunchPlatforms()
+        .filter((p) => p !== "chromium")
+        .join(" | ")}: <app id>, ` +
       `ios: { app, args }, chromium: <app path> | { path, args } })`
   );
 }
@@ -2566,7 +2574,7 @@ function parseTapTimes(raw: unknown, entry: unknown): number | undefined {
 
 /**
  * Parse `button` on a tap body: `right` is a right-click, which the runner sends
- * only to a Mac app or a Chromium app. `left` is the default and normalizes to
+ * only to a Mac app. `left` is the default and normalizes to
  * absent, keeping parse/serialize exact inverses.
  */
 function parseTapButton(raw: unknown, entry: unknown): "right" | undefined {
@@ -2888,7 +2896,7 @@ function parseWhenCondition(raw: unknown): WhenCondition {
     }
     const p = b.platform;
     if (typeof p !== "string" || !(LAUNCH_PLATFORMS as readonly string[]).includes(p)) {
-      badEntry({ when: raw }, `when.platform must be one of ${LAUNCH_PLATFORMS.join(", ")}`);
+      badEntry({ when: raw }, `when.platform must be one of ${namedLaunchPlatforms().join(", ")}`);
     }
     return { kind: "platform", platform: p as WhenPlatform };
   }

@@ -118,7 +118,7 @@ a prior tap), use individual tool calls instead.
 
 Allowed tools and their args (udid is auto-injected, do NOT include it in args):
 
-  gesture-tap:    { x: number, y: number, clickCount?: number, button?: "left"|"right" }  (right: chromium<flag:macos-apps>/macos</flag:macos-apps> only)  [ios/android/chromium<flag:harmonyos>/harmony</flag:harmonyos><flag:macos-apps>/macos</flag:macos-apps>]
+  gesture-tap:    { x: number, y: number, clickCount?: number<flag:macos-apps>, button?: "left"|"right"</flag:macos-apps> }<flag:macos-apps>  (button: macos only)</flag:macos-apps>                                                        [ios/android/chromium<flag:harmonyos>/harmony</flag:harmonyos><flag:macos-apps>/macos</flag:macos-apps>]
   gesture-swipe:  { fromX: number, fromY: number, toX: number, toY: number, durationMs?: number, momentum?: boolean }   [ios/android<flag:harmonyos>/harmony</flag:harmonyos>]
   gesture-scroll: { x: number, y: number, deltaX?: number, deltaY?: number, durationMs?: number }                       [chromium<flag:macos-apps>/macos</flag:macos-apps> only]
   gesture-drag:   { fromX: number, fromY: number, toX: number, toY: number, durationMs?: number, momentum?: boolean }   [chromium<flag:macos-apps>/macos</flag:macos-apps> only]

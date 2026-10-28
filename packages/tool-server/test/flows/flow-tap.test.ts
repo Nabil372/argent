@@ -305,44 +305,27 @@ describe("tap times: execution", () => {
     expect(result.calls[0]!.args).not.toHaveProperty("clickCount");
   });
 
-  it("fails a right tap on a touch device before it reads the tree or taps", async () => {
+  it.each([
+    ["a touch device", undefined],
+    ["a Chromium app", "chromium-cdp-9222"],
+  ])("fails a right tap on %s before it reads the tree or taps", async (_name, device) => {
     let reads = 0;
     currentTree = () => {
       reads++;
       return screen([n({ label: "Photo", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } })]);
     };
-    await writeFlow("right-on-touch", {
+    await writeFlow("right-click", {
       executionPrerequisite: "",
       steps: [{ kind: "tap", selector: { text: "Photo", loose: true }, button: "right" }],
     });
 
-    const result = await run("right-on-touch");
+    const result = await run("right-click", device);
 
     expect(result.ok).toBe(false);
-    expect(result.steps[0]!.reason).toMatch(/only a Mac app or a Chromium app takes/);
-    expect(result.steps[0]!.reason).toMatch(/long-press/);
+    expect(result.steps[0]!.reason).toMatch(/is a mouse right-click.*takes none/);
     // Only the screenshot every failed step attaches; no tap went out.
     expect(result.calls.map((c) => c.tool)).toEqual(["screenshot"]);
     expect(reads).toBe(0);
-  });
-
-  it("sends a right tap to a Chromium app as gesture-tap with the right button", async () => {
-    currentTree = () =>
-      screen([n({ label: "Photo", frame: { x: 0.4, y: 0.4, width: 0.2, height: 0.2 } })]);
-    await writeFlow("right-on-chromium", {
-      executionPrerequisite: "",
-      steps: [{ kind: "tap", selector: { text: "Photo", loose: true }, button: "right" }],
-    });
-
-    const result = await run("right-on-chromium", "chromium-cdp-9222");
-
-    expect(result.ok).toBe(true);
-    expect(result.calls).toEqual([
-      {
-        tool: "gesture-tap",
-        args: { udid: "chromium-cdp-9222", x: 0.5, y: 0.5, button: "right" },
-      },
-    ]);
   });
 
   it("dispatches clickCount on a coordinate multi-tap", async () => {
