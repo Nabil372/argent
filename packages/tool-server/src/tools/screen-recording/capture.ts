@@ -731,9 +731,15 @@ function waitForEncoderReady(
 
 export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopRecordingFile> {
   assertStoppableSession(api, "screen_recording_stop");
-  // Set synchronously so a concurrent stop or start is rejected while this one
-  // finalizes (see assertStoppableSession / assertNoActiveRecording).
-  api.stopPending = true;
+  api.stopping = stopCaptureLocked(api);
+  try {
+    return await api.stopping;
+  } finally {
+    api.stopping = null;
+  }
+}
+
+async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRecordingFile> {
   clearActiveScreenRecording(api.deviceId);
 
   if (api.recordingTimeout) {
@@ -929,6 +935,5 @@ export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopR
     api.lastExitInfo = null;
     api.lastFrameStreamError = null;
     clearActiveScreenRecording(api.deviceId);
-    api.stopPending = false;
   }
 }

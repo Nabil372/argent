@@ -12,6 +12,7 @@ import { promises as fs } from "fs";
 import { finalizeEncoder } from "../tools/screen-recording/encoder";
 import { clearActiveScreenRecording } from "../utils/screen-recording-reminder";
 import { recordReapedSession } from "../utils/reaped-sessions";
+import type { StopRecordingFile } from "../tools/screen-recording/session-guards";
 import type { DebugCapture } from "../tools/screen-recording/debug-capture";
 
 // Session for the `screen-recording-*` tools, one shape for both platforms:
@@ -36,12 +37,12 @@ export interface ScreenRecordingSessionApi {
   recordingActive: boolean;
   /**
    * True from a start's admission check until its session stamp (spawn and
-   * readiness are async). With `stopPending`, keeps a second start or a stop
+   * readiness are async). With `stopping`, keeps a second start or a stop
    * admitted inside that window from racing the shared session state.
    */
   startPending: boolean;
-  /** True while a stop is running; a concurrent start/stop must not interleave. */
-  stopPending: boolean;
+  /** The in-flight stop, awaited by disposal before it clears shared capture state. */
+  stopping: Promise<StopRecordingFile> | null;
   /**
    * Set the moment dispose() begins — process shutdown, or a
    * `stop-all-simulator-servers` reaping this device (scoped or machine-wide).
@@ -136,7 +137,7 @@ const DISPOSE_FINALIZE_GRACE_MS = 1_500;
 function clearLiveState(state: ScreenRecordingSessionApi): void {
   state.recordingActive = false;
   state.startPending = false;
-  state.stopPending = false;
+  state.stopping = null;
   state.pendingRetrieval = false;
   state.captureProcess = null;
   state.pendingChild = null;
@@ -198,7 +199,7 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
       platform: device.platform,
       recordingActive: false,
       startPending: false,
-      stopPending: false,
+      stopping: null,
       disposed: false,
       pendingRetrieval: false,
       captureProcess: null,
@@ -241,8 +242,10 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
         // capture still encoding, a start mid-flight and one waiting to be
         // handed over all owe the caller a video.
         const hadUnretrievedCapture =
-          state.recordingActive || state.startPending || state.pendingRetrieval;
+          !state.stopping &&
+          (state.recordingActive || state.startPending || state.pendingRetrieval);
         const abandonedOutput = state.outputFile;
+        await state.stopping?.catch(() => {});
         if (state.recordingTimeout) {
           clearTimeout(state.recordingTimeout);
           state.recordingTimeout = null;

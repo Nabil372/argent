@@ -1220,7 +1220,7 @@ describe("touch visualizer", () => {
     // fresh start clear it, and neither the cap nor the crash path runs stop's
     // reset. Set that residue directly instead of driving a real cap-then-start.
     // On this branch such a start is still admitted (assertNoActiveRecording gates
-    // only on recordingActive/startPending/stopPending), but #517's guard — already
+    // only on recordingActive/startPending/stopping), but #517's guard — already
     // on origin/feat/screen-recording, not yet in this base — additionally rejects a
     // start while a finalized recording awaits retrieval (`pendingRetrieval`), so a
     // cap-then-start would throw once the stack rebases. Driving the flag in
@@ -1584,7 +1584,7 @@ describe("screen recording stop", () => {
     }
     // The session must still be startable after a failed stop.
     expect(api.recordingActive).toBe(false);
-    expect(api.stopPending).toBe(false);
+    expect(api.stopping).toBeNull();
   });
 
   it("removes the empty container rather than orphaning it when a stop fails", async () => {
@@ -1607,7 +1607,7 @@ describe("screen recording stop", () => {
     // The dead 0-byte temp must not be left behind in os.tmpdir.
     await expect(fs.access(outputFile)).rejects.toThrow();
     expect(api.recordingActive).toBe(false);
-    expect(api.stopPending).toBe(false);
+    expect(api.stopping).toBeNull();
   });
 });
 
@@ -1806,7 +1806,7 @@ describe("debug finalization safeguards", () => {
             ? "ENOSPC"
             : "Unknown encoder libx264";
       await expect(stopCapture(api)).rejects.toThrow(message);
-      expect(api.stopPending).toBe(false);
+      expect(api.stopping).toBeNull();
     }
   );
 
@@ -1826,10 +1826,35 @@ describe("debug finalization safeguards", () => {
     }
     expect(child.kill).not.toHaveBeenCalled();
     expect(getActiveScreenRecordings()).toHaveLength(0);
-    expect(api.stopPending).toBe(true);
+    expect(api.stopping).not.toBeNull();
     child.exit(0);
     expect((await stopping).encodingComplete).toBe(true);
   });
+
+  it.each([false, true])(
+    "does not leave a teardown breadcrumb for a concurrent stop (capped: %s)",
+    async (capped) => {
+      const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
+        device: iosDevice,
+      } as never);
+      fakeStream();
+      const child = fakeChild();
+      await startAndSettle(instance.api, { mode: "debug", timeLimitSeconds: 5 });
+      if (capped) await vi.advanceTimersByTimeAsync(5_000);
+      await fs.writeFile(instance.api.outputFile!, Buffer.alloc(64, 1));
+      const stopping = stopCapture(instance.api);
+      await instance.api.debugCapture!.finish();
+      const disposing = instance.dispose();
+      expect(instance.api.stopping).not.toBeNull();
+      child.exit(0);
+      expect((await stopping).encodingComplete).toBe(true);
+      await disposing;
+      const err = await stopCapture(await makeSession(iosDevice)).catch((error: unknown) => error);
+      expect(getFailureSignal(err)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_NO_ACTIVE_SESSION
+      );
+    }
+  );
 
   it.each([0, 1])("removes disposed debug JPEGs after encoder exit %s", async (exitCode) => {
     const instance = await screenRecordingSessionBlueprint.factory({}, iosDevice, {
@@ -1897,12 +1922,12 @@ describe("debug finalization safeguards", () => {
       await vi.advanceTimersByTimeAsync(5_000);
     }
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
-    expect(api.stopPending).toBe(true);
+    expect(api.stopping).not.toBeNull();
     child.exit(null, "SIGKILL");
     const result = await stopping;
     expect(result.encodingComplete).toBe(false);
     expect(result.warning).toContain("stopped making progress");
-    expect(api.stopPending).toBe(false);
+    expect(api.stopping).toBeNull();
   });
 
   it.each(["stop", "dispose"])(
@@ -2000,7 +2025,7 @@ describe("debug finalization safeguards", () => {
     });
     const stopping = stopCapture(api);
     await vi.waitFor(() => expect(debug.cleanup).toHaveBeenCalled());
-    expect(api.stopPending).toBe(true);
+    expect(api.stopping).not.toBeNull();
     await expect(
       startCapture(api, {
         streamUrl: STREAM_URL,
@@ -2011,7 +2036,7 @@ describe("debug finalization safeguards", () => {
     ).rejects.toThrow("still finalizing");
     release();
     await stopping;
-    expect(api.stopPending).toBe(false);
+    expect(api.stopping).toBeNull();
     expect(api.debugCapture).toBeNull();
     fakeStream();
     const next = fakeChild();

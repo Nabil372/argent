@@ -56,12 +56,12 @@ export function clip(s: string, max = 300): string {
  */
 export function assertNoActiveRecording(api: ScreenRecordingSessionApi, stage: string): void {
   const awaitingRetrieval = api.pendingRetrieval && api.outputFile !== null;
-  if (api.recordingActive || api.startPending || api.stopPending || awaitingRetrieval) {
+  if (api.recordingActive || api.startPending || api.stopping || awaitingRetrieval) {
     const detail = api.recordingActive
       ? `A screen recording is already running on device ${api.deviceId} ` +
         `(started ${api.wallClockStartMs ? Math.round((Date.now() - api.wallClockStartMs) / 1000) : "?"}s ago). ` +
         `Call \`screen-recording-stop\` first.`
-      : api.stopPending
+      : api.stopping
         ? `A screen-recording-stop is still finalizing on device ${api.deviceId}. ` +
           `Wait for it to return before starting a new recording.`
         : api.startPending
@@ -100,7 +100,7 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
       }
     );
   }
-  if (api.stopPending) {
+  if (api.stopping) {
     throw new FailureError(
       `A screen-recording-stop is already in progress on device ${api.deviceId}; wait for it to return.`,
       {
