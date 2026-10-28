@@ -430,7 +430,7 @@ async function downloadAndExtractArchive(
  * readable here is used in place with no copy; otherwise the bytes are
  * downloaded over `/artifacts/:id` into the temp cache. Neither ⇒ `null`, so the
  * caller sees a missing-file signal rather than a dangling reference. A failed
- * durable screen recording throws with its server location for recovery. Results
+ * durable screen recording adds a warning to its containing result for recovery. Results
  * with no handles pass through untouched (no fetch, no temp dir created).
  */
 export async function materializeArtifacts(
@@ -452,7 +452,7 @@ export async function materializeArtifacts(
     }
   }
 
-  async function walk(value: unknown): Promise<unknown> {
+  async function walk(value: unknown, warn?: (message: string) => void): Promise<unknown> {
     if (isArtifactHandle(value)) {
       // Gate: prefer the file already on this host; only download on a miss.
       const localPath = await resolveLocalFile(value);
@@ -512,12 +512,11 @@ export async function materializeArtifacts(
           }
           return finalPath;
         } catch (err) {
-          if (value.kind === "screen-recording") {
+          if (value.kind === "screen-recording" && !ctx.signal?.aborted) {
             const reason = err instanceof Error ? err.message : String(err);
-            throw new Error(
+            warn?.(
               `Could not retrieve recording ${value.filename}: ${reason} ` +
-                `The capture already stopped; do not repeat stop. The file remains on the tool-server at ${value.hostPath ?? `artifact ${value.id}`}.`,
-              { cause: err }
+                `The capture already stopped; do not repeat stop. Check the tool-server at ${value.hostPath ?? `artifact ${value.id}`} for the output.`
             );
           }
           return null;
@@ -556,13 +555,15 @@ export async function materializeArtifacts(
       }
     }
     if (Array.isArray(value)) {
-      return Promise.all(value.map(walk));
+      return Promise.all(value.map((item) => walk(item, warn)));
     }
     if (value && typeof value === "object") {
       const out: Record<string, unknown> = {};
+      const warnings: string[] = [];
       for (const [k, v] of Object.entries(value)) {
-        out[k] = await walk(v);
+        out[k] = await walk(v, (message) => warnings.push(message));
       }
+      if (warnings.length) out.warning = [out.warning, ...warnings].filter(Boolean).join(" ");
       return out;
     }
     return value;

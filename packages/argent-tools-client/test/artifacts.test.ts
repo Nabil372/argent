@@ -980,9 +980,14 @@ describe("materializeArtifacts durable destination", () => {
       hostPath: "/remote/recording.mp4",
       saveDir: ".argent/recordings",
     };
-    await expect(
-      materializeArtifacts({ video: handle }, { toolsUrl: "http://remote:3001", fetchImpl })
-    ).rejects.toThrow(/2 GiB.*already stopped.*\/remote\/recording.mp4/);
+    const { result } = await materializeArtifacts(
+      { video: handle, encodingComplete: false, durationMs: null, warning: "Incomplete capture." },
+      { toolsUrl: "http://remote:3001", fetchImpl }
+    );
+    expect(result).toMatchObject({ video: null, encodingComplete: false, durationMs: null });
+    expect((result as { warning: string }).warning).toMatch(
+      /Incomplete capture.*2 GiB.*already stopped.*\/remote\/recording.mp4/
+    );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -1016,25 +1021,107 @@ describe("materializeArtifacts durable destination", () => {
     expect((await readFile(file)).toString()).toBe("partrest");
   });
 
+  it.each(["HTTP", "body"])(
+    "preserves a flow report when recording retrieval fails at %s",
+    async (failure) => {
+      const fetchImpl = vi.fn(async () =>
+        failure === "HTTP"
+          ? new Response(null, { status: 404 })
+          : new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.error(new Error("connection lost"));
+                },
+              })
+            )
+      );
+      const report = {
+        verdict: "FAIL",
+        steps: [
+          { status: "fail", reason: "element not found: Pay" },
+          {
+            status: "pass",
+            result: {
+              video: {
+                ...handle("missing", "missing.mp4", "video/mp4"),
+                kind: "screen-recording",
+                size: 8,
+                saveDir: ".argent/recordings",
+              },
+              encodingComplete: false,
+              durationMs: null,
+              warning: "Incomplete encoding.",
+            },
+          },
+        ],
+      };
+      const { result } = await materializeArtifacts(report, {
+        toolsUrl: "http://remote:3001",
+        fetchImpl,
+      });
+      expect(result).toMatchObject({
+        verdict: "FAIL",
+        steps: [
+          { status: "fail", reason: "element not found: Pay" },
+          {
+            status: "pass",
+            result: {
+              video: null,
+              encodingComplete: false,
+              durationMs: null,
+              warning: expect.stringMatching(
+                /Incomplete encoding.*Could not retrieve.*already stopped/
+              ),
+            },
+          },
+        ],
+      });
+    }
+  );
+
+  it("treats an aborted recording download as missing without masking the signal reason", async () => {
+    const controller = new AbortController();
+    const reason = new DOMException("cancelled", "AbortError");
+    const fetchImpl = vi.fn(async () => {
+      controller.abort(reason);
+      throw reason;
+    });
+    const { result } = await materializeArtifacts(
+      {
+        video: {
+          ...handle("aborted", "aborted.mp4", "video/mp4"),
+          kind: "screen-recording",
+          size: 8,
+          saveDir: ".argent/recordings",
+        },
+      },
+      { toolsUrl: "http://remote:3001", fetchImpl, signal: controller.signal }
+    );
+    expect(result).toEqual({ video: null });
+    expect(() => controller.signal.throwIfAborted()).toThrow(reason);
+  });
+
   it("cancels a recording download when the destination cannot be opened", async () => {
     const cancel = vi.fn();
     const body = new ReadableStream<Uint8Array>({ cancel });
     const denied = Object.assign(new Error("permission denied"), { code: "EACCES" });
     const opening = vi.spyOn(fs, "open").mockRejectedValueOnce(denied);
     try {
-      await expect(
-        materializeArtifacts(
-          {
-            video: {
-              ...handle("denied", "denied.mp4", "video/mp4"),
-              kind: "screen-recording",
-              size: 8,
-              saveDir: ".argent/recordings",
-            },
+      const { result } = await materializeArtifacts(
+        {
+          video: {
+            ...handle("denied", "denied.mp4", "video/mp4"),
+            kind: "screen-recording",
+            size: 8,
+            saveDir: ".argent/recordings",
           },
-          { toolsUrl: "http://remote:3001", fetchImpl: vi.fn(async () => new Response(body)) }
-        )
-      ).rejects.toThrow(/permission denied.*already stopped/);
+        },
+        { toolsUrl: "http://remote:3001", fetchImpl: vi.fn(async () => new Response(body)) }
+      );
+      expect(result).toMatchObject({
+        video: null,
+        warning: expect.stringMatching(/permission denied.*already stopped/),
+      });
       expect(cancel).toHaveBeenCalledOnce();
       expect(body.locked).toBe(false);
       expect(await absent(join(projectRoot, ".argent/recordings", "denied.mp4"))).toBe(true);
@@ -1077,11 +1164,14 @@ describe("materializeArtifacts durable destination", () => {
         },
         { toolsUrl: "http://remote:3001", fetchImpl: vi.fn(async () => new Response(body)) }
       );
-      const rejected = expect(downloading).rejects.toThrow(/disk full.*already stopped/);
+      const completed = downloading;
       controller.enqueue(Buffer.from("part"));
       await vi.waitFor(async () => expect((await stat(file)).size).toBe(4));
       controller.enqueue(Buffer.from("rest"));
-      await rejected;
+      expect((await completed).result).toMatchObject({
+        video: null,
+        warning: expect.stringMatching(/disk full.*already stopped/),
+      });
       expect(cancel).toHaveBeenCalledOnce();
       expect(body.locked).toBe(false);
       expect(await absent(file)).toBe(true);
