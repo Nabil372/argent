@@ -277,6 +277,7 @@ describe("tool-server bind-failure telemetry", () => {
         expect(exitSpy).toHaveBeenCalledWith(0);
       } finally {
         finishRecording();
+        await vi.advanceTimersByTimeAsync(10_000);
         close?.();
         await shutdown;
         closeSpy.mockRestore();

@@ -1,3 +1,7 @@
+import {
+  registerActiveScreenRecording,
+  clearActiveScreenRecording,
+} from "../src/utils/screen-recording-reminder";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import supertest from "supertest";
 import { ensureDeps } from "../src/utils/check-deps";
@@ -126,11 +130,13 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       const pending = new Promise<void>((resolve) => {
         finish = resolve;
       });
+      registerActiveScreenRecording("device", Date.now(), 60, "/server/recording.mp4");
       let completed = false;
       let signal: AbortSignal | undefined;
       const registry = stubRegistry(async (options) => {
         signal = options?.signal;
         enter();
+        clearActiveScreenRecording("device");
         await pending;
         completed = true;
         return { video: "saved.mp4" };
@@ -144,13 +150,14 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       handle = createHttpApp(registry);
       let request = supertest(handle.app)
         .post("/tools/screen-recording-stop")
-        .send({ udid: "device", outputFile: "/server/recording.mp4" });
+        .send({ udid: "device" });
       if (stream)
         request = request.set("Accept", "application/x-ndjson").buffer(true).parse(collectText);
       const response = request.then((res) => res);
       await entered;
       handle.dispose();
       const result = await response;
+      expect(result.status).toBe(stream ? 200 : 503);
       const body = stream ? parseLines(result.body as string)[0] : result.body;
       expect(body.error_code).toBe(FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN);
       expect(body.error).toContain("/server/recording.mp4");

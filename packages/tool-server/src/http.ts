@@ -105,12 +105,24 @@ function isToolExposed(
   return true;
 }
 
-function serverShutdownError(toolId?: string, args?: unknown): FailureError {
+function serverShutdownError(
+  toolId?: string,
+  args?: unknown,
+  capturedOutput?: string
+): FailureError {
   const recording = toolId === "screen-recording-stop";
-  const outputFile =
+  const suppliedOutput =
     args && typeof args === "object" && "outputFile" in args && typeof args.outputFile === "string"
       ? args.outputFile
-      : "the outputFile returned by screen-recording-start";
+      : undefined;
+  const deviceId = extractDeviceArg(args);
+  const outputFile =
+    suppliedOutput ??
+    capturedOutput ??
+    (recording
+      ? getActiveScreenRecordings().find((entry) => entry.deviceId === deviceId)?.outputFile
+      : undefined) ??
+    "the outputFile returned by screen-recording-start";
   return new FailureError(
     recording
       ? `The tool-server is shutting down. Recording finalization may continue, but this response does not confirm a saved video. Check ${outputFile} on the tool-server after encoding finishes. A restart loses result retrieval state.`
@@ -1075,12 +1087,16 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         res.flushHeaders();
       }
 
+      const recordingOutput =
+        name === "screen-recording-stop"
+          ? getActiveScreenRecordings().find((entry) => entry.deviceId === deviceArg)?.outputFile
+          : undefined;
       let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
       let interrupt!: () => void;
       const interrupted = new Promise<never>((_resolve, reject) => {
         interrupt = () => {
           shutdownTimer = setTimeout(() => {
-            reject(serverShutdownError(name, parsedData));
+            reject(serverShutdownError(name, parsedData, recordingOutput));
             if (name !== "screen-recording-stop") controller.abort();
           }, 1_500);
         };
@@ -1182,6 +1198,16 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
             ...errorSignalFields(err),
           });
           res.end();
+          return;
+        }
+        const failureCode = getFailureSignal(err)?.error_code;
+        if (
+          failureCode === FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN ||
+          failureCode === FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+        ) {
+          res
+            .status(503)
+            .json({ error: attribute(formatErrorForAgent(err)), ...errorSignalFields(err) });
           return;
         }
         if (err instanceof ToolNotFoundError) {

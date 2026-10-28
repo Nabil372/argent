@@ -595,7 +595,12 @@ async function startCaptureLocked(
   api.wallClockStartMs = Date.now();
   api.wallClockEndMs = null;
   api.timeLimitSeconds = params.timeLimitSeconds;
-  registerActiveScreenRecording(api.deviceId, api.wallClockStartMs, params.timeLimitSeconds);
+  registerActiveScreenRecording(
+    api.deviceId,
+    api.wallClockStartMs,
+    params.timeLimitSeconds,
+    outputFile
+  );
   // This recording's own stop will succeed, so an earlier teardown breadcrumb
   // would never be consumed — and would later blame a genuine "no active
   // recording" on an unrelated teardown.
