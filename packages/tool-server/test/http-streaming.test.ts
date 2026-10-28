@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import supertest from "supertest";
+import { ensureDeps } from "../src/utils/check-deps";
 import { InvalidToolInputError } from "../src/utils/capability";
 import type { AddressInfo } from "node:net";
 import type { Response } from "supertest";
@@ -11,6 +12,11 @@ import {
   type Registry,
   type InvokeToolOptions,
 } from "@argent/registry";
+
+vi.mock("../src/utils/check-deps", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/utils/check-deps")>()),
+  ensureDeps: vi.fn(async () => {}),
+}));
 
 // Streaming rides the same response path as the update note — pin the checker
 // to "no update" so result lines stay minimal and deterministic.
@@ -176,6 +182,76 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     expect(seenOptions?.emitProgress).toBeUndefined();
     expect(res.headers["content-type"]).toContain("application/json");
     expect(res.body).toEqual({ data: { ok: true } });
+  });
+
+  it("keeps a long buffered response as JSON without keepalive bytes", async () => {
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    handle = createHttpApp(
+      stubRegistry(async () => {
+        enter();
+        await pending;
+        return { ok: true };
+      })
+    );
+    const server = handle.app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const { port } = server.address() as AddressInfo;
+      const response = fetch(`http://127.0.0.1:${port}/tools/test-tool`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+        signal: AbortSignal.timeout(5_000),
+      });
+      void response.catch(() => {});
+      await entered;
+      await vi.advanceTimersByTimeAsync(16_000);
+      finish();
+      const result = await response;
+      expect(result.headers.get("Content-Type")).toContain("application/json");
+      expect(await result.json()).toEqual({ data: { ok: true } });
+    } finally {
+      finish();
+      vi.useRealTimers();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("rejects a call whose preflight overlaps shutdown", async () => {
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    vi.mocked(ensureDeps).mockImplementationOnce(async () => {
+      enter();
+      await pending;
+    });
+    const registry = stubRegistry(async () => ({ ok: true }));
+    const def = registry.getTool("test-tool")!;
+    vi.mocked(registry.getTool).mockReturnValue({ ...def, requires: ["adb"] });
+    handle = createHttpApp(registry);
+    const response = supertest(handle.app)
+      .post("/tools/test-tool")
+      .send({})
+      .then((res) => res);
+    await entered;
+    handle.dispose();
+    finish();
+    expect((await response).status).toBe(503);
+    expect(registry.invokeTool).not.toHaveBeenCalled();
   });
 
   it("keeps a wrapped input rejection identical on buffered and streamed paths", async () => {
