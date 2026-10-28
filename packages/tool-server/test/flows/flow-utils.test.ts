@@ -1191,392 +1191,232 @@ describe("output references", () => {
         : [];
 
   // A reference resolves when its step runs, so the parse keeps it as written.
-  const REFERENCE_FIELDS: [label: string, yaml: string, reference: string][] = [
-    ["an echo message", 'steps:\n  - echo: "created {{output:user.id}}"\n', "{{output:user.id}}"],
-    [
-      "typed text",
-      'steps:\n  - type: { into: { id: name }, text: "{{output:user.name}}" }\n',
-      "{{output:user.name}}",
-    ],
-    [
-      "a typed-into selector",
-      'steps:\n  - type: { into: { id: "{{output:field}}" }, text: hi }\n',
-      "{{output:field}}",
-    ],
-    [
-      "selector text",
-      'steps:\n  - tap: { text: "{{output:user.name}}" }\n',
-      "{{output:user.name}}",
-    ],
-    ["a selector identifier", 'steps:\n  - tap: { id: "{{output:row}}" }\n', "{{output:row}}"],
-    [
-      "a selector role",
-      'steps:\n  - tap: { id: row, role: "{{output:kind}}" }\n',
-      "{{output:kind}}",
-    ],
-    [
-      "a within relation",
-      'steps:\n  - tap: { id: row, within: { id: "{{output:card}}" } }\n',
-      "{{output:card}}",
-    ],
-    [
-      "an after relation",
-      'steps:\n  - tap: { id: row, after: { id: "{{output:card}}" } }\n',
-      "{{output:card}}",
-    ],
-    [
-      "a next relation",
-      'steps:\n  - tap: { id: row, next: { id: "{{output:card}}" } }\n',
-      "{{output:card}}",
-    ],
-    [
-      "an await selector",
-      'steps:\n  - await: { visible: { id: "{{output:row}}" } }\n',
-      "{{output:row}}",
-    ],
+  const REFERENCE_FIELDS: [label: string, yaml: string][] = [
+    ["an echo message", 'steps:\n  - echo: "created {{output:user.id}}"\n'],
+    ["typed text", 'steps:\n  - type: { into: { id: name }, text: "{{output:user.name}}" }\n'],
+    ["a typed-into selector", 'steps:\n  - type: { into: { id: "{{output:field}}" }, text: hi }\n'],
+    ["selector text", 'steps:\n  - tap: { text: "{{output:user.name}}" }\n'],
+    ["a selector identifier", 'steps:\n  - tap: { id: "{{output:row}}" }\n'],
+    ["a selector role", 'steps:\n  - tap: { id: row, role: "{{output:kind}}" }\n'],
+    ["a within relation", 'steps:\n  - tap: { id: row, within: { id: "{{output:card}}" } }\n'],
+    ["an after relation", 'steps:\n  - tap: { id: row, after: { id: "{{output:card}}" } }\n'],
+    ["a next relation", 'steps:\n  - tap: { id: row, next: { id: "{{output:card}}" } }\n'],
+    ["an await selector", 'steps:\n  - await: { visible: { id: "{{output:row}}" } }\n'],
     [
       "an await expectation",
       'steps:\n  - await: { text: { in: total, equals: "{{output:sum}}" } }\n',
-      "{{output:sum}}",
     ],
     [
       "the selector an await text condition locates",
       'steps:\n  - await: { text: { in: { id: "{{output:row}}" }, contains: Done } }\n',
-      "{{output:row}}",
     ],
     [
       "an assert expectation",
       'steps:\n  - assert: { text: { in: total, contains: "{{output:sum}}" } }\n',
-      "{{output:sum}}",
     ],
     [
       "a when guard selector",
       'steps:\n  - when: { visible: { id: "{{output:row}}" } }\n    steps:\n      - echo: hi\n',
-      "{{output:row}}",
     ],
     [
       "a when guard expectation",
       'steps:\n  - when: { text: { in: total, equals: "{{output:sum}}" } }\n    steps:\n      - echo: hi\n',
-      "{{output:sum}}",
     ],
     [
       "a scroll-to target",
       'steps:\n  - scroll-to: { target: { id: "{{output:row}}" }, direction: down }\n',
-      "{{output:row}}",
     ],
     [
       "a scroll-to container",
       'steps:\n  - scroll-to: { target: row, direction: down, within: { id: "{{output:list}}" } }\n',
-      "{{output:list}}",
     ],
-    [
-      "a long-press selector",
-      'steps:\n  - long-press: { on: { id: "{{output:row}}" } }\n',
-      "{{output:row}}",
-    ],
-    [
-      "a pinch selector",
-      'steps:\n  - pinch: { on: { id: "{{output:map}}" }, scale: 2 }\n',
-      "{{output:map}}",
-    ],
-    [
-      "a rotate selector",
-      'steps:\n  - rotate: { on: { id: "{{output:map}}" }, by: 45 }\n',
-      "{{output:map}}",
-    ],
+    ["a long-press selector", 'steps:\n  - long-press: { on: { id: "{{output:row}}" } }\n'],
+    ["a pinch selector", 'steps:\n  - pinch: { on: { id: "{{output:map}}" }, scale: 2 }\n'],
+    ["a rotate selector", 'steps:\n  - rotate: { on: { id: "{{output:map}}" }, by: 45 }\n'],
     [
       "a snapshot crop selector",
       'steps:\n  - snapshot: { name: home, cropOn: { id: "{{output:row}}" } }\n',
-      "{{output:row}}",
     ],
-    [
-      "a swipe start",
-      'steps:\n  - swipe: { from: { id: "{{output:row}}" }, direction: up }\n',
-      "{{output:row}}",
-    ],
-    [
-      "a swipe end",
-      'steps:\n  - swipe: { from: { id: row }, to: { id: "{{output:row}}" } }\n',
-      "{{output:row}}",
-    ],
-    [
-      "a tool arg",
-      'steps:\n  - tool: keyboard\n    args: { text: "{{output:code}}" }\n',
-      "{{output:code}}",
-    ],
+    ["a swipe start", 'steps:\n  - swipe: { from: { id: "{{output:row}}" }, direction: up }\n'],
+    ["a swipe end", 'steps:\n  - swipe: { from: { id: row }, to: { id: "{{output:row}}" } }\n'],
+    ["a tool arg", 'steps:\n  - tool: keyboard\n    args: { text: "{{output:code}}" }\n'],
     [
       "a tool arg nested in an array",
       'steps:\n  - tool: run-sequence\n    args: { steps: [{ args: { text: "{{output:code}}" } }] }\n',
-      "{{output:code}}",
     ],
     [
       "a step inside a when block",
       'steps:\n  - when: { visible: { id: row } }\n    steps:\n      - echo: "{{output:user.id}}"\n',
-      "{{output:user.id}}",
     ],
     [
       "a step inside a platform-guarded when block",
       'steps:\n  - when: { platform: ios }\n    steps:\n      - echo: "{{output:user.id}}"\n',
-      "{{output:user.id}}",
     ],
-    [
-      "an exists condition's selector",
-      'steps:\n  - await: { exists: { id: "{{output:row}}" } }\n',
-      "{{output:row}}",
-    ],
-    [
-      "a hidden condition's selector",
-      'steps:\n  - await: { hidden: { id: "{{output:row}}" } }\n',
-      "{{output:row}}",
-    ],
+    ["an exists condition's selector", 'steps:\n  - await: { exists: { id: "{{output:row}}" } }\n'],
+    ["a hidden condition's selector", 'steps:\n  - await: { hidden: { id: "{{output:row}}" } }\n'],
     [
       "a script step's env value",
       'steps:\n  - script: { path: scripts/seed.mjs, env: { TOKEN: "{{output:auth.token}}" } }\n',
-      "{{output:auth.token}}",
     ],
     // A nested run's `env` is one of this step's tool args, resolved in the
     // parent before the call, so it is not the child's run-wide `env` channel.
     [
       "a nested flow-execute's env value",
       'steps:\n  - tool: flow-execute\n    args: { name: checkout, env: { ORDER: "{{output:order.id}}" } }\n',
-      "{{output:order.id}}",
     ],
   ];
 
-  it.each(REFERENCE_FIELDS)(
-    "accepts one in %s and keeps it as written",
-    (_label, yaml, reference) => {
-      const step = parseFlow(yaml).steps[0]!;
-      expect(stringsIn(step)).toEqual(expect.arrayContaining([expect.stringContaining(reference)]));
-      expect(holdsOutputReference(step)).toBe(true);
-    }
-  );
-
-  const WELL_FORMED: [label: string, message: string][] = [
-    ["a chain of three operands", "{{output:user.region ?? defaults.region ?? 'unknown'}}"],
-    ["a single-quoted string fallback", "{{output:user.region ?? 'unknown'}}"],
-    ["a double-quoted string fallback", '{{output:user.region ?? "unknown"}}'],
-    ["a backslash-escaped quote inside a string", "{{output:user.name ?? 'it\\'s me'}}"],
-    ["a number fallback", "{{output:order.total ?? 0}}"],
-    ["a negative fractional exponent fallback", "{{output:order.total ?? -1.5e3}}"],
-    ["a true fallback", "{{output:flags.beta ?? true}}"],
-    ["a false fallback", "{{output:flags.beta ?? false}}"],
-    ["a null fallback", "{{output:user.promo ?? null}}"],
-    ["a key named null, read with brackets", '{{output:flags["null"]}}'],
-    ["a key that is not a name", "{{output:order['order-id']}}"],
-    ["an index", "{{output:codes[0]}}"],
-    ["whitespace between tokens", "{{output:  user.id  ??\t'x'  }}"],
-  ];
+  it.each(REFERENCE_FIELDS)("accepts one in %s and keeps it as written", (_label, yaml) => {
+    const reference = /\{\{output:[^}]*\}\}/.exec(yaml)![0];
+    const step = parseFlow(yaml).steps[0]!;
+    expect(stringsIn(step)).toEqual(expect.arrayContaining([expect.stringContaining(reference)]));
+    expect(holdsOutputReference(step)).toBe(true);
+  });
 
   // The grammar does not depend on the field, so an echo carries each spelling.
   // JSON.stringify writes a YAML double-quoted scalar that reads back exactly.
-  it.each(WELL_FORMED)("accepts %s", (_label, message) => {
+  it.each([
+    "{{output:user.region ?? defaults.region ?? 'unknown'}}",
+    '{{output:user.region ?? "unknown"}}',
+    "{{output:user.name ?? 'it\\'s me'}}",
+    '{{output:flags["null"]}}',
+    "{{output:  user.id  ??\t'x'  }}",
+    // A near spelling is literal text.
+    "{{ output:x }}",
+    "{{Output:x}}",
+  ])("accepts %j in an echo", (message) => {
     expect(parseFlow(`steps:\n  - echo: ${JSON.stringify(message)}\n`).steps[0]).toEqual({
       kind: "echo",
       message,
     });
   });
 
-  it("reads a near spelling as literal text", () => {
-    expect(parseFlow('steps:\n  - echo: "{{ output:x }}"\n').steps[0]).toEqual({
-      kind: "echo",
-      message: "{{ output:x }}",
-    });
-    expect(parseFlow('steps:\n  - echo: "{{Output:x}}"\n').steps[0]).toEqual({
-      kind: "echo",
-      message: "{{Output:x}}",
-    });
-  });
-
-  // The character is counted from 1 into the whole FIELD, so any text in front of
-  // the reference counts too. Each row's comment adds up to the character.
-  const MALFORMED: [
-    label: string,
-    yaml: string,
-    heading: string,
-    field: string,
-    character: number,
-  ][] = [
+  // The character is counted from 1 into the whole FIELD, so any text in front
+  // of the reference counts too.
+  const MALFORMED: [yaml: string, heading: string, field: string, character: number][] = [
     // "created " 8 + "{{output:" 9 + "user.id " 8: the first `|` is the 26th.
+    ["steps:\n  - echo: \"created {{output:user.id || 'x'}}\"\n", "Step 1 (`echo`)", "`echo`", 26],
     [
-      "JavaScript syntax",
-      "steps:\n  - echo: \"created {{output:user.id || 'x'}}\"\n",
-      "Step 1 (`echo`)",
-      "`echo`",
-      26,
-    ],
-    // "{{output:" 9 + "a " 2: `+` is the 12th.
-    [
-      "another operator",
       'steps:\n  - type: { into: { id: name }, text: "{{output:a + b}}" }\n',
       "Step 1 (`type`)",
       "`type.text`",
       12,
     ],
-    // "{{output:" 9 + "user.toString" 13: `(` is the 23rd.
     [
-      "a function call",
       'steps:\n  - tap: { id: "{{output:user.toString()}}" }\n',
       "Step 1 (`tap`)",
       "`tap.id` (spelled `tap.on.id` if the target sits under `on:`)",
       23,
     ],
-    // "{{output:" 9: the opening `'` is the 10th.
     [
-      "a literal as the first operand",
-      "steps:\n  - when: { visible: { id: \"{{output:'x' ?? user}}\" } }\n    steps:\n      - echo: hi\n",
-      "Step 1 (`when`)",
-      "`when.visible.id`",
-      10,
-    ],
-    // "{{output:" 9 + "x ?? " 5: `{` is the 15th.
-    [
-      "an object literal",
-      'steps:\n  - tool: run-sequence\n    args: { steps: [{ args: { text: "{{output:x ?? {}}}" } }] }\n',
-      "Step 1 (`tool`)",
-      "`args.steps[0].args.text`",
-      15,
-    ],
-    // "{{output:" 9 + "x ?? " 5: `[` is the 15th.
-    [
-      "an array literal",
       'steps:\n  - script: { path: scripts/seed.mjs, env: { TOKEN: "{{output:x ?? []}}" } }\n',
       "Step 1 (`script`)",
       "`script.env.TOKEN`",
       15,
     ],
-    // "{{output:" 9 + "user.id " 8: the dangling `??` starts at the 18th.
-    [
-      "`??` with nothing after it",
-      'steps:\n  - echo: "{{output:user.id ??}}"\n',
-      "Step 1 (`echo`)",
-      "`echo`",
-      18,
-    ],
-    // "{{output:" 9 + "name ?? " 8: the unclosed `'` is the 18th.
-    [
-      "an unterminated string",
-      'steps:\n  - type: { into: { id: name }, text: "{{output:name ?? \'none}}" }\n',
-      "Step 1 (`type`)",
-      "`type.text`",
-      18,
-    ],
-    // "{{output:" 9 + "user " 5: the `.` after the space is the 15th.
-    [
-      "whitespace in a path",
-      'steps:\n  - await: { visible: { id: "{{output:user .id}}" } }\n',
-      "Step 1 (`await`)",
-      "`await.visible.id`",
-      15,
-    ],
-    // "{{output:" 9 + "codes[" 6: the leading `0` is the 16th.
-    [
-      "an index with a leading zero",
-      'steps:\n  - tool: keyboard\n    args: { text: "{{output:codes[01]}}" }\n',
-      "Step 1 (`tool`)",
-      "`args.text`",
-      16,
-    ],
-    // "id " 3 + "{{output:" 9: the `}` where a path belongs is the 13th.
-    ["an empty reference", 'steps:\n  - echo: "id {{output:}}"\n', "Step 1 (`echo`)", "`echo`", 13],
     // "Total " 6: the unclosed reference opens at the 7th.
     [
-      "a missing `}}`",
       'steps:\n  - when: { text: { in: total, equals: "Total {{output:sum" } }\n    steps:\n      - echo: hi\n',
       "Step 1 (`when`)",
       "`when.text.equals`",
       7,
     ],
     // "{{output:a}} " 13 + "{{output:" 9 + "b." 2: the second `.` is the 25th.
-    [
-      "a second reference after a well-formed one",
-      'steps:\n  - echo: "{{output:a}} {{output:b..c}}"\n',
-      "Step 1 (`echo`)",
-      "`echo`",
-      25,
-    ],
+    ['steps:\n  - echo: "{{output:a}} {{output:b..c}}"\n', "Step 1 (`echo`)", "`echo`", 25],
   ];
 
   it.each(MALFORMED)(
-    "refuses %s, naming the field and the character",
-    (_label, yaml, heading, field, character) => {
+    "refuses a malformed reference in %j, naming the field and the character",
+    (yaml, heading, field, character) => {
       const { message } = refusalOf(yaml);
       expect(message).toContain(`${heading}: ${field} holds a malformed output reference: `);
       expect(message).toContain(`(character ${character}, in "`);
     }
   );
 
-  it("addresses a condition's selector and its expectation apart", () => {
-    expect(
-      locatorOf('steps:\n  - await: { text: { in: { id: "{{output:}}" }, contains: Done } }\n')
-    ).toBe("`await.text.in.id`");
-    expect(locatorOf('steps:\n  - await: { text: { in: total, contains: "{{output:}}" } }\n')).toBe(
-      "`await.text.contains`"
-    );
-    expect(locatorOf('steps:\n  - assert: { visible: { id: "{{output:}}" } }\n')).toBe(
-      "`assert.visible.id`"
-    );
-    expect(
-      locatorOf(
-        'steps:\n  - when: { text: { in: total, equals: "{{output:}}" } }\n    steps:\n      - echo: hi\n'
-      )
-    ).toBe("`when.text.equals`");
-    expect(
-      locatorOf('steps:\n  - scroll-to: { target: { id: "{{output:}}" }, direction: down }\n')
-    ).toBe("`scroll-to.target.id`");
-  });
+  // [yaml, how a refusal names the field]: `{{output:}}` is malformed anywhere.
+  const LOCATORS: [yaml: string, locator: string][] = [
+    // A condition's selector and its expectation are addressed apart.
+    [
+      'steps:\n  - await: { text: { in: { id: "{{output:}}" }, contains: Done } }\n',
+      "`await.text.in.id`",
+    ],
+    [
+      'steps:\n  - await: { text: { in: total, contains: "{{output:}}" } }\n',
+      "`await.text.contains`",
+    ],
+    ['steps:\n  - assert: { visible: { id: "{{output:}}" } }\n', "`assert.visible.id`"],
+    [
+      'steps:\n  - when: { text: { in: total, equals: "{{output:}}" } }\n    steps:\n      - echo: hi\n',
+      "`when.text.equals`",
+    ],
+    [
+      'steps:\n  - scroll-to: { target: { id: "{{output:}}" }, direction: down }\n',
+      "`scroll-to.target.id`",
+    ],
+    // A relation scope apart from the target it narrows.
+    [
+      'steps:\n  - await: { visible: { text: Ok, within: { text: "{{output:}}" } } }\n',
+      "`await.visible.within.text`",
+    ],
+    [
+      'steps:\n  - tap: { id: a, within: { id: b, after: { id: "{{output:}}" } } }\n',
+      "`tap.within.after.id` (spelled `tap.on.within.after.id` if the target sits under `on:`)",
+    ],
+    // An option beside a gesture target proves the `on:` form; `pinch` and
+    // `rotate` have no other form.
+    ['steps:\n  - tap: { on: { id: "{{output:}}" }, times: 2 }\n', "`tap.on.id`"],
+    [
+      'steps:\n  - long-press: { on: { id: "{{output:}}" }, duration: 900 }\n',
+      "`long-press.on.id`",
+    ],
+    ['steps:\n  - pinch: { on: { id: "{{output:}}" }, scale: 2 }\n', "`pinch.on.id`"],
+    ['steps:\n  - rotate: { on: { id: "{{output:}}" }, by: 45 }\n', "`rotate.on.id`"],
+    // With no option beside it the two forms parse alike, so the refusal names
+    // both: `times: 1` and an omitted `duration` normalize away.
+    [
+      'steps:\n  - tap: { id: "{{output:}}" }\n',
+      "`tap.id` (spelled `tap.on.id` if the target sits under `on:`)",
+    ],
+    [
+      'steps:\n  - tap: { on: { id: "{{output:}}" }, times: 1 }\n',
+      "`tap.id` (spelled `tap.on.id` if the target sits under `on:`)",
+    ],
+    [
+      'steps:\n  - long-press: { on: { id: "{{output:}}" } }\n',
+      "`long-press.id` (spelled `long-press.on.id` if the target sits under `on:`)",
+    ],
+    // A bare-string target is named by the constraint it parses into.
+    [
+      'steps:\n  - tap: "{{output:}}"\n',
+      "`tap.text` (spelled `tap.on.text` if the target sits under `on:`)",
+    ],
+    [
+      'steps:\n  - scroll-to: { target: "{{output:}}", direction: down }\n',
+      "`scroll-to.target.text`",
+    ],
+    // A tool arg by its own path, through a cyclic anchor and through the two
+    // YAML 1.1 containers own properties do not show.
+    [
+      'steps:\n  - tool: run-sequence\n    args: { steps: [{ args: { text: "{{output:}}" } }] }\n',
+      "`args.steps[0].args.text`",
+    ],
+    [
+      'steps:\n  - tool: keyboard\n    args: &a\n      self: *a\n      text: "{{output:}}"\n',
+      "`args.text`",
+    ],
+    [
+      '%YAML 1.1\n---\nsteps:\n  - tool: t\n    args:\n      inner: !!set\n        ? "{{output:}}"\n',
+      "`args.inner`",
+    ],
+    [
+      '%YAML 1.1\n---\nsteps:\n  - tool: t\n    args: !!omap\n      - k: "{{output:}}"\n',
+      "`args.k`",
+    ],
+  ];
 
-  it("addresses a relation scope apart from the target it narrows", () => {
-    expect(
-      locatorOf('steps:\n  - await: { visible: { text: Ok, within: { text: "{{output:}}" } } }\n')
-    ).toBe("`await.visible.within.text`");
-    expect(
-      locatorOf('steps:\n  - tap: { id: a, within: { id: b, after: { id: "{{output:}}" } } }\n')
-    ).toBe(
-      "`tap.within.after.id` (spelled `tap.on.within.after.id` if the target sits under `on:`)"
-    );
-  });
-
-  it("addresses a gesture target under `on:` whenever the step is known to spell it there", () => {
-    // An option beside the target proves the options form; `pinch` and
-    // `rotate` have no other form. Each of these names one path.
-    expect(locatorOf('steps:\n  - tap: { on: { id: "{{output:}}" }, times: 2 }\n')).toBe(
-      "`tap.on.id`"
-    );
-    expect(
-      locatorOf('steps:\n  - long-press: { on: { id: "{{output:}}" }, duration: 900 }\n')
-    ).toBe("`long-press.on.id`");
-    expect(locatorOf('steps:\n  - pinch: { on: { id: "{{output:}}" }, scale: 2 }\n')).toBe(
-      "`pinch.on.id`"
-    );
-    expect(locatorOf('steps:\n  - rotate: { on: { id: "{{output:}}" }, by: 45 }\n')).toBe(
-      "`rotate.on.id`"
-    );
-  });
-
-  it("names both gesture spellings when the parse cannot tell them apart", () => {
-    // A `tap`/`long-press` step with no option beside its target parses the
-    // same from either form, so exactly one of these two paths is in the
-    // author's file and the parse cannot say which. `times: 1` and an omitted
-    // `duration` are the shapes that reach this: both normalize away.
-    expect(locatorOf('steps:\n  - tap: { id: "{{output:}}" }\n')).toBe(
-      "`tap.id` (spelled `tap.on.id` if the target sits under `on:`)"
-    );
-    expect(locatorOf('steps:\n  - tap: { on: { id: "{{output:}}" }, times: 1 }\n')).toBe(
-      "`tap.id` (spelled `tap.on.id` if the target sits under `on:`)"
-    );
-    expect(locatorOf('steps:\n  - long-press: { on: { id: "{{output:}}" } }\n')).toBe(
-      "`long-press.id` (spelled `long-press.on.id` if the target sits under `on:`)"
-    );
-  });
-
-  it("names the constraint a bare-string target parses into", () => {
-    expect(locatorOf('steps:\n  - tap: "{{output:}}"\n')).toBe(
-      "`tap.text` (spelled `tap.on.text` if the target sits under `on:`)"
-    );
-    expect(locatorOf('steps:\n  - scroll-to: { target: "{{output:}}", direction: down }\n')).toBe(
-      "`scroll-to.target.text`"
-    );
+  it.each(LOCATORS)("names the field of %j", (yaml, locator) => {
+    expect(locatorOf(yaml)).toBe(locator);
   });
 
   it("names the step, so a reference inside a block says which one", () => {
@@ -1584,13 +1424,6 @@ describe("output references", () => {
       'steps:\n  - echo: first\n  - when: { visible: { id: row } }\n    steps:\n      - echo: ok\n      - echo: "{{output:}}"\n'
     );
     expect(message).toContain("Step 2.2 (`echo`)");
-  });
-
-  it("addresses a tool arg by its own path through the args", () => {
-    const { message } = refusalOf(
-      'steps:\n  - tool: run-sequence\n    args: { steps: [{ args: { text: "{{output:}}" } }] }\n'
-    );
-    expect(message).toContain("`args.steps[0].args.text`");
   });
 
   it("carries the parser's own entry failure code", () => {
@@ -1613,111 +1446,87 @@ describe("output references", () => {
       'steps:\n  - tool: keyboard\n    args: &a\n      self: *a\n      text: "{{output:code}}"\n'
     ).steps[0]!;
     expect(holdsOutputReference(step)).toBe(true);
-    expect(
-      refusalOf(
-        'steps:\n  - tool: keyboard\n    args: &a\n      self: *a\n      text: "{{output:}}"\n'
-      ).message
-    ).toContain("`args.text` holds a malformed output reference");
-  });
-
-  it("reaches a leaf inside the two containers own properties do not show", () => {
-    expect(
-      refusalOf(
-        '%YAML 1.1\n---\nsteps:\n  - tool: t\n    args:\n      inner: !!set\n        ? "{{output:}}"\n'
-      ).message
-    ).toContain("`args.inner` holds a malformed output reference");
-    expect(
-      refusalOf('%YAML 1.1\n---\nsteps:\n  - tool: t\n    args: !!omap\n      - k: "{{output:}}"\n')
-        .message
-    ).toContain("`args.k` holds a malformed output reference");
   });
 
   // Argent reads these as written, so a reference would reach the device as its
   // literal text: `launch` would start an app named `com.acme.{{output:app}}`.
-  const STATIC_FIELDS: [label: string, yaml: string, heading: string, field: string][] = [
-    [
-      "a launch app id",
-      'steps:\n  - launch: "com.acme.{{output:app}}"\n',
-      "Step 1 (`launch`)",
-      "`launch`",
-    ],
+  const STATIC_FIELDS: [label: string, yaml: string, field: string][] = [
+    ["a launch app id", 'steps:\n  - launch: "com.acme.{{output:app}}"\n', "`launch`"],
     [
       "a launch map platform",
       'steps:\n  - launch: { ios: "com.acme.{{output:app}}" }\n',
-      "Step 1 (`launch`)",
       "`launch.ios`",
     ],
     [
       "a bare chromium launch path",
       'steps:\n  - launch: { chromium: "{{output:dir}}/app" }\n',
-      "Step 1 (`launch`)",
       "`launch.chromium`",
     ],
     [
       "a chromium launch path",
       'steps:\n  - launch: { chromium: { path: "{{output:dir}}/app" } }\n',
-      "Step 1 (`launch`)",
       "`launch.chromium.path`",
     ],
     [
       "a chromium launch arg",
       'steps:\n  - launch: { chromium: { path: ./app, args: ["--seed={{output:order.id}}"] } }\n',
-      "Step 1 (`launch`)",
       "`launch.chromium.args[0]`",
     ],
-    ["a run target", 'steps:\n  - run: "{{output:dir}}/login.yaml"\n', "Step 1 (`run`)", "`run`"],
+    ["a run target", 'steps:\n  - run: "{{output:dir}}/login.yaml"\n', "`run`"],
+    ["a script path", 'steps:\n  - script: { path: "{{output:dir}}/seed.mjs" }\n', "`script.path`"],
+    ["a tool name", 'steps:\n  - tool: "{{output:tool}}"\n', "`tool`"],
+    // A time limit, read as written.
     [
-      "a script path",
-      'steps:\n  - script: { path: "{{output:dir}}/seed.mjs" }\n',
-      "Step 1 (`script`)",
-      "`script.path`",
+      "a tool step's delayMs",
+      'steps:\n  - tool: keyboard\n    args: { text: a }\n    delayMs: "{{output:d}}"\n',
+      "`delayMs`",
     ],
-    ["a tool name", 'steps:\n  - tool: "{{output:tool}}"\n', "Step 1 (`tool`)", "`tool`"],
+    // A string in place of the args map has nowhere to resolve to.
+    [
+      "a tool step's whole args",
+      'steps:\n  - tool: keyboard\n    args: "{{output:obj}}"\n',
+      "`args`",
+    ],
     // These four pick which flow a nested run executes, and from where.
     [
       "a flow-execute flow_path",
       'steps:\n  - tool: flow-execute\n    args: { flow_path: "{{output:dir}}/checkout.yaml" }\n',
-      "Step 1 (`tool`)",
       "`args.flow_path`",
     ],
     [
       "a flow-execute project_root",
       'steps:\n  - tool: flow-execute\n    args: { name: checkout, project_root: "{{output:root}}" }\n',
-      "Step 1 (`tool`)",
       "`args.project_root`",
     ],
     [
       "a flow-execute name",
       'steps:\n  - tool: flow-execute\n    args: { name: "{{output:flow}}" }\n',
-      "Step 1 (`tool`)",
       "`args.name`",
     ],
     [
       "a value nested under a flow-execute flow_file",
       'steps:\n  - tool: flow-execute\n    args: { flow_file: { path: "{{output:dir}}/checkout.yaml" } }\n',
-      "Step 1 (`tool`)",
       "`args.flow_file.path`",
     ],
     // `flow-execute` is an alias of `e2e-execute`; the rule follows the tool, not the id.
     [
       "an e2e-execute name",
       'steps:\n  - tool: e2e-execute\n    args: { name: "{{output:flow}}" }\n',
-      "Step 1 (`tool`)",
       "`args.name`",
     ],
     [
       "a run-sequence step's tool name",
       'steps:\n  - tool: run-sequence\n    args: { steps: [{ tool: "{{output:tool}}", args: {} }] }\n',
-      "Step 1 (`tool`)",
       "`args.steps[0].tool`",
     ],
   ];
 
   it.each(STATIC_FIELDS)(
     "refuses one in %s, listing where one does resolve",
-    (_label, yaml, heading, field) => {
+    (_label, yaml, field) => {
+      const kind = /^ {2}- ([a-z-]+):/m.exec(yaml)![1];
       const { message } = refusalOf(yaml);
-      expect(message).toContain(`${heading}: ${field} cannot hold an output reference`);
+      expect(message).toContain(`Step 1 (\`${kind}\`): ${field} cannot hold an output reference`);
       expect(message).toContain("An output reference resolves only in");
       expect(message).not.toContain("A `matches` pattern");
     }
@@ -1736,21 +1545,6 @@ describe("output references", () => {
       "an assert text condition",
       'steps:\n  - assert: { text: { in: total, matches: "{{output:sum}}" } }\n',
       "`assert.text.matches`",
-    ],
-    [
-      "an await selector scope",
-      'steps:\n  - await: { visible: { text: Ok, within: { text: { matches: "{{output:x}}" } } } }\n',
-      "`await.visible.within.text.matches`",
-    ],
-    [
-      "a when guard selector",
-      'steps:\n  - when: { visible: { text: { matches: "{{output:x}}" } } }\n    steps:\n      - echo: hi\n',
-      "`when.visible.text.matches`",
-    ],
-    [
-      "a when guard text condition",
-      'steps:\n  - when: { text: { in: { text: Total }, matches: "{{output:sum}}" } }\n    steps:\n      - echo: hi\n',
-      "`when.text.matches`",
     ],
     [
       "a when guard relation scope",
@@ -1805,13 +1599,11 @@ describe("output references", () => {
     expect(quoted!.endsWith("…(+223 chars)")).toBe(true);
     expect(quoted!.startsWith("com.acme.{{output:app}}")).toBe(true);
     expect(message.length).toBeLessThan(1000);
-  });
-
-  it("says how much of a value it cut when the marker itself was past the cut", () => {
-    const { message } = refusalOf(`steps:\n  - launch: "${"x".repeat(400)}{{output:app}}"\n`);
-    expect(message).toContain("cannot hold an output reference");
-    expect(message).toContain("…(+214 chars)");
-    expect(message).not.toContain("{{output:app}}");
+    // The marker itself can fall past the cut.
+    const past = refusalOf(`steps:\n  - launch: "${"x".repeat(400)}{{output:app}}"\n`).message;
+    expect(past).toContain("cannot hold an output reference");
+    expect(past).toContain("…(+214 chars)");
+    expect(past).not.toContain("{{output:app}}");
   });
 
   // YAML reads an unquoted reference as a map whose key is a map, which the
@@ -1825,14 +1617,6 @@ describe("output references", () => {
       "steps:\n  - type:\n      into: x\n      text: {{output:name ?? x}}\n",
       4,
       13,
-    ],
-    ["a tool arg", "steps:\n  - tool: keyboard\n    args: { text: {{output:code}} }\n", 3, 19],
-    ["a bare tap target", "steps:\n  - tap: {{output:row}}\n", 2, 10],
-    [
-      "a when guard",
-      "steps:\n  - when: { visible: {{output:row}} }\n    steps:\n      - echo: hi\n",
-      2,
-      22,
     ],
     ["the flow-level env", "env: { X: {{output:x}} }\nsteps: []\n", 1, 11],
   ])(
@@ -1853,33 +1637,12 @@ describe("output references", () => {
     );
   });
 
-  it("refuses one in the flow-level env, but not in a script step's own env", () => {
-    // The flow's `env:` holds defaults for every script in the run and resolves
-    // before the first script has written any output.
+  // The flow's `env:` holds defaults for every script in the run and resolves
+  // before the first script has written any output.
+  it("refuses one in the flow-level env", () => {
     expect(refusalOf('env: { X: "{{output:user.id}}" }\nsteps:\n  - echo: hi\n').message).toContain(
       "The e2e test's `env.X` uses unsupported template syntax: this map holds defaults for every script in the run"
     );
-    expect(
-      parseFlow(
-        'steps:\n  - script: { path: scripts/seed.mjs, env: { TOKEN: "{{output:auth.token}}" } }\n'
-      ).steps[0]
-    ).toEqual({
-      kind: "script",
-      path: "scripts/seed.mjs",
-      env: { TOKEN: "{{output:auth.token}}" },
-    });
-  });
-
-  it("refuses a reference in a tool step's delayMs, a time limit read as written", () => {
-    const { message } = refusalOf(
-      'steps:\n  - tool: keyboard\n    args: { text: a }\n    delayMs: "{{output:d}}"\n'
-    );
-    expect(message).toContain("`delayMs` cannot hold an output reference");
-  });
-
-  it("refuses a reference written as a tool step's whole args, which has nowhere to resolve to", () => {
-    const { message } = refusalOf('steps:\n  - tool: keyboard\n    args: "{{output:obj}}"\n');
-    expect(message).toContain("`args` cannot hold an output reference");
   });
 
   it("does not confuse a secret placeholder for one", () => {
@@ -1889,44 +1652,31 @@ describe("output references", () => {
     ).toMatchObject({ kind: "type", text: "{{secret:APP_PASSWORD}}" });
   });
 
-  describe("holdsOutputReference", () => {
-    it("finds one in a reference field", () => {
-      expect(holdsOutputReference({ kind: "echo", message: "created {{output:user.id}}" })).toBe(
-        true
-      );
-    });
-
-    it("finds one in a static field", () => {
-      // A recorder picks the message for a refused append with this, and a
-      // miss here would blame the flow file rather than the new step.
-      expect(
-        holdsOutputReference({ kind: "script", path: "../../scripts/{{output:user.id}}.mjs" })
-      ).toBe(true);
-    });
-
-    it("finds one that only a when block's child holds", () => {
-      expect(
-        holdsOutputReference({
-          kind: "when",
-          condition: { kind: "platform", platform: "ios" },
-          steps: [
-            { kind: "echo", message: "hi" },
-            { kind: "echo", message: "{{output:user.id}}" },
-          ],
-        })
-      ).toBe(true);
-    });
-
-    it("finds none in a step with no marker, or with only a secret placeholder", () => {
-      expect(holdsOutputReference({ kind: "tap", selector: { text: "Buy" } })).toBe(false);
-      expect(
-        holdsOutputReference({
-          kind: "type",
-          into: { identifier: "pw" },
-          text: "{{secret:APP_PASSWORD}}",
-        })
-      ).toBe(false);
-    });
+  it.each<[label: string, step: FlowStep, holds: boolean]>([
+    ["a reference field", { kind: "echo", message: "created {{output:user.id}}" }, true],
+    // A recorder picks the message for a refused append with this, and a miss
+    // here would blame the flow file rather than the new step.
+    ["a static field", { kind: "script", path: "../../scripts/{{output:user.id}}.mjs" }, true],
+    [
+      "only a when block's child",
+      {
+        kind: "when",
+        condition: { kind: "platform", platform: "ios" },
+        steps: [
+          { kind: "echo", message: "hi" },
+          { kind: "echo", message: "{{output:user.id}}" },
+        ],
+      },
+      true,
+    ],
+    ["no field", { kind: "tap", selector: { text: "Buy" } }, false],
+    [
+      "only a secret placeholder",
+      { kind: "type", into: { identifier: "pw" }, text: "{{secret:APP_PASSWORD}}" },
+      false,
+    ],
+  ])("holdsOutputReference sees a reference in %s: %s", (_label, step, holds) => {
+    expect(holdsOutputReference(step)).toBe(holds);
   });
 
   describe("resolveStepReferences", () => {

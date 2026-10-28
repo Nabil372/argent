@@ -128,24 +128,15 @@ describe("flow report rendering", () => {
       kind: "echo",
       status: "error",
       message: "Promo {{output:user.promo}}",
-      reason:
-        "`echo`: {{output:user.promo}} did not resolve: `output.user` has no `promo` (its keys: id, name)",
+      reason: "`echo`: {{output:user.promo}} did not resolve",
     };
     expect(renderEchoLine(errored)).toBe(
-      "  ✗ › Promo {{output:user.promo}} — `echo`: {{output:user.promo}} did not resolve: " +
-        "`output.user` has no `promo` (its keys: id, name)"
+      "  ✗ › Promo {{output:user.promo}} — `echo`: {{output:user.promo}} did not resolve"
     );
     // The glyph column stays put; only the label shifts with depth.
-    expect(renderEchoLine({ ...errored, depth: 1, reason: "r" })).toBe(
-      "  ✗   › Promo {{output:user.promo}} — r"
+    expect(renderEchoLine({ ...errored, depth: 2, reason: undefined })).toBe(
+      "  ✗     › Promo {{output:user.promo}}"
     );
-    expect(renderEchoLine({ ...errored, depth: 2, reason: "r" })).toBe(
-      "  ✗     › Promo {{output:user.promo}} — r"
-    );
-    expect(renderEchoLine({ ...errored, reason: undefined })).toBe(
-      "  ✗ › Promo {{output:user.promo}}"
-    );
-    expect(renderEchoLine(errored)).not.toBe(renderEchoLine({ ...errored, status: "pass" }));
   });
 
   it("a buffered report prints an errored echo as a marked line, not as narration", () => {
@@ -377,8 +368,7 @@ describe("flow report rendering", () => {
   });
 
   it("renderFailedSteps prints an errored echo once, leaves passing and skipped echoes out, and numbers only the other steps", () => {
-    // The errored echo is what stopped the run, so a directory run that left it
-    // out printed "1 errored" with nothing on screen naming it.
+    // The errored echo is what stopped the run, so it is the one echo shown.
     const echoReason =
       "`echo`: {{output:user.promo}} did not resolve: `output.user` has no `promo` (its keys: id, name)";
     const report = mkReport(

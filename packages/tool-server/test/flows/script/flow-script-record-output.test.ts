@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
-import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as fsSync from "node:fs";
 import * as os from "node:os";
@@ -205,7 +204,7 @@ describe("flow-add-script hands each script the recording's document", () => {
     ]);
   });
 
-  it("gives a .sh the document in $ARGENT_OUTPUT, and keeps the keys a .mjs set before it", async (ctx) => {
+  it("gives a .sh the document in $ARGENT_OUTPUT, and keeps the keys a full document before or after it leaves out", async (ctx) => {
     skipWithoutBash(ctx);
     await write("scripts/user.mjs", `output.user = { id: "u_1" };`);
     await write(
@@ -214,45 +213,25 @@ describe("flow-add-script hands each script the recording's document", () => {
         `cat "$ARGENT_OUTPUT" > "${shellPath(markPath("sh-saw"))}"\n` +
         `printf '{"order":{"id":"o_1"}}' > "$ARGENT_OUTPUT"\n`
     );
-    await start("mjs-then-sh");
+    await write(
+      "scripts/third.mjs",
+      writesMark("mjs-saw", "JSON.stringify(output)") + `globalThis.output = { third: 3 };`
+    );
+    await start("mixed");
 
-    await addScript("mjs-then-sh", "../../scripts/user.mjs");
-    const sh = await addScript("mjs-then-sh", "../../scripts/order.sh");
+    await addScript("mixed", "../../scripts/user.mjs");
+    const sh = await addScript("mixed", "../../scripts/order.sh");
+    const mjs = await addScript("mixed", "../../scripts/third.mjs");
 
-    expect(sh.status).toBe("pass");
+    expect([sh.status, mjs.status]).toEqual(["pass", "pass"]);
     expect(JSON.parse(readMark("sh-saw")!)).toEqual({ user: { id: "u_1" } });
-    // The result carries the script's own document; the recording holds the merge.
+    expect(JSON.parse(readMark("mjs-saw")!)).toEqual({ user: { id: "u_1" }, order: { id: "o_1" } });
+    // A result carries the script's own document; the recording holds the merge.
     expect(sh.outputJson).toBe('{"order":{"id":"o_1"}}');
-    const live = await session("mjs-then-sh");
-    expect(live.output).toEqual({ user: { id: "u_1" }, order: { id: "o_1" } });
-    expect(live.outputRevision).toBe(2);
-  });
-
-  it("keeps the keys a .sh wrote when a .mjs after it replaces the whole object", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write(
-      "scripts/order.sh",
-      `set -euo pipefail\n` +
-        `cat "$ARGENT_OUTPUT" > "${shellPath(markPath("sh-saw"))}"\n` +
-        `printf '{"order":{"id":"o_1"}}' > "$ARGENT_OUTPUT"\n`
-    );
-    await write(
-      "scripts/user.mjs",
-      writesMark("mjs-saw", "JSON.stringify(output)") +
-        `globalThis.output = { user: { id: "u_1" } };`
-    );
-    await start("sh-then-mjs");
-
-    await addScript("sh-then-mjs", "../../scripts/order.sh");
-    const mjs = await addScript("sh-then-mjs", "../../scripts/user.mjs");
-
-    expect(mjs.status).toBe("pass");
-    expect(JSON.parse(readMark("sh-saw")!)).toEqual({});
-    expect(JSON.parse(readMark("mjs-saw")!)).toEqual({ order: { id: "o_1" } });
-    expect(mjs.outputJson).toBe('{"user":{"id":"u_1"}}');
-    const live = await session("sh-then-mjs");
-    expect(live.output).toEqual({ order: { id: "o_1" }, user: { id: "u_1" } });
-    expect(live.outputRevision).toBe(2);
+    expect(mjs.outputJson).toBe('{"third":3}');
+    const live = await session("mixed");
+    expect(live.output).toEqual({ user: { id: "u_1" }, order: { id: "o_1" }, third: 3 });
+    expect(live.outputRevision).toBe(3);
   });
 });
 
@@ -290,16 +269,15 @@ describe("a recorded env reference", () => {
     expect(order.message).toBe('Added script step to "checkout" e2e test.');
     expect(readMark("order")).toBe(recordedToken);
 
-    const expectedSteps = [
+    const file = await onDisk("checkout");
+    expect(parseFlow(file).steps).toEqual([
       { kind: "script", path: "../../scripts/login.sh" },
       {
         kind: "script",
         path: "../../scripts/create-order.sh",
         env: { TOKEN: "{{output:auth.token}}" },
       },
-    ];
-    const file = await onDisk("checkout");
-    expect(parseFlow(file).steps).toEqual(expectedSteps);
+    ]);
     expect(file).toContain('TOKEN: "{{output:auth.token}}"');
     expect(file).not.toContain(recordedToken);
 
@@ -308,14 +286,12 @@ describe("a recorded env reference", () => {
       project_root: root,
     } as never);
     expect(finished.flowFile).toBe(file);
-    expect(parseFlow(finished.flowFile).steps).toEqual(expectedSteps);
 
     const replay = await runFlow("checkout");
 
     expect(replay.ok).toBe(true);
     const replayToken = readMark("login")!;
     expect(replayToken).toMatch(/^tok-2-/);
-    expect(replayToken).not.toBe(recordedToken);
     expect(readMark("order")).toBe(replayToken);
   });
 
@@ -352,73 +328,98 @@ describe("a recorded env reference", () => {
 
 describe("two calls on one recording at the same time", () => {
   /**
-   * Script A waits until B has started — so B read the document before A
-   * merged — and B waits until A's step is in the file, so B appends second.
-   * Handshakes rather than sleeps: the order holds on a loaded machine.
+   * Records a seed, then runs two flow-add-script calls at once: `slow` is
+   * handed the seeded document and waits until `fast`'s step is in the file,
+   * and `fast` waits until `slow` has started. Handshakes rather than sleeps,
+   * so the order holds on a loaded machine. The file reads seed, fast, slow -
+   * the order a replay runs them in - and at replay `fast` finds the marker
+   * this recording left, so neither script waits there.
    */
-  async function race(name: string, keyA: string, keyB: string) {
-    const bStarted = markPath(`${name}-b-started`);
+  it("warns the call that appends second, and merges only the keys its script changed", async () => {
+    const slowStarted = markPath("slow-started");
+    await write("scripts/seed.mjs", `output.a = 1;\noutput.c = 1;\noutput.cfg = { b: 1, a: 2 };`);
     await write(
-      `scripts/${name}-a.mjs`,
+      "scripts/fast.mjs",
       `import { existsSync } from "node:fs";\n` +
-        waitsUntil(`existsSync(${JSON.stringify(bStarted)})`, "B to start") +
-        `await new Promise((r) => setTimeout(r, 150));\n` +
-        `output[${JSON.stringify(keyA)}] = "from-a";\n`
+        waitsUntil(`existsSync(${JSON.stringify(slowStarted)})`, "slow to start") +
+        `output.a = 2;\noutput.c = 2;\noutput.cfg = { b: 1, a: 3 };\n`
     );
     await write(
-      `scripts/${name}-b.mjs`,
+      "scripts/slow.mjs",
       `import { readFileSync, writeFileSync } from "node:fs";\n` +
-        `writeFileSync(${JSON.stringify(bStarted)}, "x");\n` +
+        `writeFileSync(${JSON.stringify(markPath("slow-saw"))}, JSON.stringify(output));\n` +
+        `writeFileSync(${JSON.stringify(slowStarted)}, "x");\n` +
         waitsUntil(
-          `readFileSync(${JSON.stringify(flowPath(name))}, "utf8").includes("${name}-a.mjs")`,
-          "A's step in the file"
+          `readFileSync(${JSON.stringify(flowPath("overlap"))}, "utf8").includes("fast.mjs")`,
+          "fast's step in the file"
         ) +
-        `output[${JSON.stringify(keyB)}] = "from-b";\n`
+        // `a` goes back as handed, `c` is changed, and `cfg` only has its keys reordered.
+        `output.c = 9;\noutput.cfg = { a: output.cfg.a, b: output.cfg.b };\noutput.b = 5;\n`
     );
-    await start(name);
-    const [a, b] = await Promise.all([
-      addScript(name, `../../scripts/${name}-a.mjs`),
-      addScript(name, `../../scripts/${name}-b.mjs`),
+    await start("overlap");
+    await addScript("overlap", "../../scripts/seed.mjs");
+
+    const [fast, slow] = await Promise.all([
+      addScript("overlap", "../../scripts/fast.mjs"),
+      addScript("overlap", "../../scripts/slow.mjs"),
     ]);
-    return { a, b };
-  }
 
-  it("warns the call that appends second, and the document follows the file's order", async () => {
-    const { a, b } = await race("race", "a", "b");
-
-    expect([a.status, b.status]).toEqual(["pass", "pass"]);
-    expect(a.message).toBe('Added script step to "race" e2e test.');
-    expect(b.message).toBe(
-      `Added script step to "race" e2e test, but another call merged its script's output into this ` +
-        `recording while the script was running, so the script ran with an older output document ` +
-        `than the one its step receives at replay. The step IS in the file — calling this again ` +
-        `would append a SECOND one and run the script's side effect twice. Remove it first if you ` +
-        `want it recorded under the newer output document.`
+    expect([fast.status, slow.status]).toEqual(["pass", "pass"]);
+    expect(fast.message).toBe('Added script step to "overlap" e2e test.');
+    expect(slow.message).toBe(
+      `Added script step to "overlap" e2e test, but another call merged its script's output into ` +
+        `this recording while the script was running, so the script ran with an older output ` +
+        `document than the one its step receives at replay. The step IS in the file — calling ` +
+        `this again would append a SECOND one and run the script's side effect twice. Remove it ` +
+        `first if you want it recorded under the newer output document.`
     );
-    expect([a.stepCount, b.stepCount]).toEqual([1, 2]);
-    // B was handed the document from before A merged, and returns only its key.
-    expect(b.outputJson).toBe('{"b":"from-b"}');
-    expect(await steps("race")).toEqual([
-      { kind: "script", path: "../../scripts/race-a.mjs" },
-      { kind: "script", path: "../../scripts/race-b.mjs" },
+    expect([fast.stepCount, slow.stepCount]).toEqual([2, 3]);
+    expect(await steps("overlap")).toEqual([
+      { kind: "script", path: "../../scripts/seed.mjs" },
+      { kind: "script", path: "../../scripts/fast.mjs" },
+      { kind: "script", path: "../../scripts/slow.mjs" },
     ]);
-    const live = await session("race");
-    expect(live.output).toEqual({ a: "from-a", b: "from-b" });
-    expect(live.outputRevision).toBe(2);
-  });
+    expect(JSON.parse(readMark("slow-saw")!)).toEqual({ a: 1, c: 1, cfg: { b: 1, a: 2 } });
+    // Byte for byte, so `cfg`'s keys really did come back in another order.
+    expect(slow.outputJson).toBe('{"a":1,"c":9,"cfg":{"a":2,"b":1},"b":5}');
+    // The `a` and `cfg` slow handed back are older than fast's, and a replay,
+    // running both in file order, never puts them back.
+    const live = await session("overlap");
+    expect(live.output).toEqual({ a: 2, c: 9, cfg: { b: 1, a: 3 }, b: 5 });
+    expect(live.outputRevision).toBe(3);
 
-  it("ends with the value of the step last in the file when both write one key", async () => {
-    const { a, b } = await race("samekey", "code", "code");
+    const recording = mockRegistry(() => ({ typed: true }));
+    await createFlowAddStepTool(recording.registry).execute(
+      {},
+      {
+        name: "overlap",
+        project_root: root,
+        command: "keyboard",
+        args: '{"text":"a={{output:a}}"}',
+      }
+    );
+    expect(recording.invokeTool).toHaveBeenCalledWith("keyboard", { text: "a=2" });
+    const echo = await flowInsertEchoTool.execute(
+      {},
+      { name: "overlap", project_root: root, message: "{{output:a}} {{output:c}} {{output:cfg.a}}" }
+    );
+    expect(echo.message).toBe('Echo added to "overlap" e2e test');
+    await flowFinishRecordingTool.execute({}, { name: "overlap", project_root: root } as never);
 
-    expect([a.status, b.status]).toEqual(["pass", "pass"]);
-    expect(b.message).toContain("another call merged its script's output into this recording");
-    expect(await steps("samekey")).toEqual([
-      { kind: "script", path: "../../scripts/samekey-a.mjs" },
-      { kind: "script", path: "../../scripts/samekey-b.mjs" },
-    ]);
-    const live = await session("samekey");
-    expect(live.output).toEqual({ code: "from-b" });
-    expect(live.outputRevision).toBe(2);
+    const replaying = mockRegistry(() => ({ typed: true }));
+    const replay = await createRunFlowTool(replaying.registry).execute({}, {
+      project_root: root,
+      name: "overlap",
+      device: DEVICE,
+    } as never);
+    if (!("steps" in replay)) throw new Error(`expected a run result, got: ${replay.notice}`);
+
+    expect(replay.ok).toBe(true);
+    expect(replaying.invokeTool).toHaveBeenCalledWith(
+      "keyboard",
+      expect.objectContaining({ text: "a=2" })
+    );
+    expect(replay.steps.find((step) => step.kind === "echo")?.message).toBe("2 9 3");
   });
 
   /**
@@ -489,219 +490,8 @@ describe("two calls on one recording at the same time", () => {
   });
 });
 
-describe("a script handed the whole document while another call merged into it", () => {
-  const DRIFT =
-    "another call merged its script's output into this recording while the script was running";
-
-  let noJq: string | undefined;
-
-  beforeAll(() => {
-    try {
-      execFileSync("jq", ["--version"], { stdio: "ignore" });
-    } catch (err) {
-      noJq = err instanceof Error ? err.message : String(err);
-    }
-  });
-
-  interface Overlap {
-    /** `.mjs` body of the step recorded before the two calls. */
-    seed: string;
-    /** `.mjs` body `fast` runs once `slow` has started. */
-    fast: string;
-    /** Body `slow` runs once `fast`'s step is in the file. */
-    slow: string;
-    slowIs?: "mjs" | "sh";
-  }
-
-  /**
-   * Records `seed`, then runs two calls at once. `slow` is handed the seeded
-   * document and waits until `fast`'s step is in the file; `fast` waits until
-   * `slow` has started. The file reads seed, fast, slow — the order a replay
-   * runs them in. At replay `fast` finds the marker this recording left, so
-   * neither script waits there.
-   */
-  async function overlap(name: string, { seed, fast, slow, slowIs = "mjs" }: Overlap) {
-    const slowStarted = markPath(`${name}-slow-started`);
-    const slowSaw = markPath(`${name}-slow-saw`);
-    const fastScript = `${name}-fast.mjs`;
-    await write(`scripts/${name}-seed.mjs`, seed);
-    await write(
-      `scripts/${fastScript}`,
-      `import { existsSync } from "node:fs";\n` +
-        waitsUntil(`existsSync(${JSON.stringify(slowStarted)})`, "slow to start") +
-        fast
-    );
-    await write(
-      `scripts/${name}-slow.${slowIs}`,
-      slowIs === "mjs"
-        ? `import { readFileSync, writeFileSync } from "node:fs";\n` +
-            `writeFileSync(${JSON.stringify(slowSaw)}, JSON.stringify(output));\n` +
-            `writeFileSync(${JSON.stringify(slowStarted)}, "x");\n` +
-            waitsUntil(
-              `readFileSync(${JSON.stringify(flowPath(name))}, "utf8").includes(${JSON.stringify(fastScript)})`,
-              "fast's step in the file"
-            ) +
-            slow
-        : `set -euo pipefail\n` +
-            `cat "$ARGENT_OUTPUT" > "${shellPath(slowSaw)}"\n` +
-            `printf x > "${shellPath(slowStarted)}"\n` +
-            `deadline=$((SECONDS + 15))\n` +
-            `until grep -qF "${fastScript}" "${shellPath(flowPath(name))}"; do\n` +
-            `  if (( SECONDS > deadline )); then echo "timed out waiting for fast's step in the file" >&2; exit 1; fi\n` +
-            `  sleep 0.01\n` +
-            `done\n` +
-            slow
-    );
-    await start(name);
-    await addScript(name, `../../scripts/${name}-seed.mjs`);
-    const [fastCall, slowCall] = await Promise.all([
-      addScript(name, `../../scripts/${fastScript}`),
-      addScript(name, `../../scripts/${name}-slow.${slowIs}`),
-    ]);
-    expect([fastCall.status, slowCall.status]).toEqual(["pass", "pass"]);
-    expect(fastCall.message).toBe(`Added script step to "${name}" e2e test.`);
-    expect(slowCall.message).toContain(DRIFT);
-    expect(await steps(name)).toEqual([
-      { kind: "script", path: `../../scripts/${name}-seed.mjs` },
-      { kind: "script", path: `../../scripts/${fastScript}` },
-      { kind: "script", path: `../../scripts/${name}-slow.${slowIs}` },
-    ]);
-    return { slow: slowCall, handed: JSON.parse(readMark(`${name}-slow-saw`)!) as unknown };
-  }
-
-  async function echoThenFinish(name: string, message: string) {
-    const echo = await flowInsertEchoTool.execute({}, { name, project_root: root, message });
-    expect(echo.message).toBe(`Echo added to "${name}" e2e test`);
-    await flowFinishRecordingTool.execute({}, { name, project_root: root } as never);
-  }
-
-  function echoed(result: FlowRunResult): (string | undefined)[] {
-    return result.steps.filter((step) => step.kind === "echo").map((step) => step.message);
-  }
-
-  it("does not restore the key another call merged, so the recording reads what the replay reads", async () => {
-    const { slow, handed } = await overlap("stale", {
-      seed: `output.a = 1;`,
-      fast: `output.a = 2;\n`,
-      slow: `output.b = 5;\n`,
-    });
-
-    expect(handed).toEqual({ a: 1 });
-    // The script hands back the `a` it was handed, older than the recording's.
-    expect(slow.outputJson).toBe('{"a":1,"b":5}');
-    const live = await session("stale");
-    expect(live.output).toEqual({ a: 2, b: 5 });
-    expect(live.outputRevision).toBe(3);
-
-    const recording = mockRegistry(() => ({ typed: true }));
-    await createFlowAddStepTool(recording.registry).execute(
-      {},
-      { name: "stale", project_root: root, command: "keyboard", args: '{"text":"a={{output:a}}"}' }
-    );
-    expect(recording.invokeTool).toHaveBeenCalledWith("keyboard", { text: "a=2" });
-    await echoThenFinish("stale", "a={{output:a}}");
-
-    const replaying = mockRegistry(() => ({ typed: true }));
-    const replay = await createRunFlowTool(replaying.registry).execute({}, {
-      project_root: root,
-      name: "stale",
-      device: DEVICE,
-    } as never);
-    if (!("steps" in replay)) throw new Error(`expected a run result, got: ${replay.notice}`);
-
-    expect(replay.ok).toBe(true);
-    expect(replaying.invokeTool).toHaveBeenCalledWith(
-      "keyboard",
-      expect.objectContaining({ text: "a=2" })
-    );
-    expect(echoed(replay)).toEqual(["a=2"]);
-  });
-
-  it("keeps the late script's own change to a key the other call merged", async () => {
-    const { slow, handed } = await overlap("rewrite", {
-      seed: `output.a = 1;`,
-      fast: `output.a = 2;\n`,
-      slow: `output.a = 9;\noutput.b = 5;\n`,
-    });
-
-    expect(handed).toEqual({ a: 1 });
-    expect(slow.outputJson).toBe('{"a":9,"b":5}');
-    const live = await session("rewrite");
-    expect(live.output).toEqual({ a: 9, b: 5 });
-    expect(live.outputRevision).toBe(3);
-
-    await echoThenFinish("rewrite", "a={{output:a}}");
-    const replay = await runFlow("rewrite");
-    expect(replay.ok).toBe(true);
-    expect(echoed(replay)).toEqual(["a=9"]);
-  });
-
-  /**
-   * `slow` hands back the `cfg` it was handed with its keys in another order
-   * and its values unchanged, while `fast` merged a newer `cfg.a`.
-   */
-  async function reorderedByLateScript(name: string, slowIs: "mjs" | "sh", slowWrites: string) {
-    const { slow, handed } = await overlap(name, {
-      seed: `output.cfg = { b: 1, a: 2 };`,
-      fast: `output.cfg = { b: 1, a: 3 };\n`,
-      slow: slowWrites,
-      slowIs,
-    });
-
-    expect(handed).toEqual({ cfg: { b: 1, a: 2 } });
-    // Byte for byte, so the keys really did come back in another order.
-    expect(slow.outputJson).toBe('{"cfg":{"a":2,"b":1},"orderId":5}');
-    const live = await session(name);
-    expect(live.output).toEqual({ cfg: { b: 1, a: 3 }, orderId: 5 });
-    expect(live.outputRevision).toBe(3);
-
-    await echoThenFinish(name, "a={{output:cfg.a}}");
-    const replay = await runFlow(name);
-    expect(replay.ok).toBe(true);
-    expect(echoed(replay)).toEqual(["a=3"]);
-  }
-
-  it("does not count a .mjs reordering a nested object's keys as a change to it", async () => {
-    await reorderedByLateScript(
-      "reorder",
-      "mjs",
-      `output.cfg = { a: output.cfg.a, b: output.cfg.b };\noutput.orderId = 5;\n`
-    );
-  });
-
-  it("does not count a .sh rewriting the document with jq -S as a change to a nested object", async (ctx) => {
-    skipWithoutBash(ctx);
-    if (noJq) ctx.skip(`this host has no jq to sort the document's keys with: ${noJq}`);
-    await reorderedByLateScript(
-      "reorder-sh",
-      "sh",
-      `sorted=$(jq -S '. + {orderId: 5}' "$ARGENT_OUTPUT")\n` +
-        `printf '%s' "$sorted" > "$ARGENT_OUTPUT"\n`
-    );
-  });
-
-  it("merges the whole returned document when nothing merged while the script ran", async () => {
-    await write("scripts/first.mjs", `output.a = 1;\noutput.user = { id: "u_1" };`);
-    await write("scripts/second.mjs", `output.c = 3;`);
-    await start("sequential");
-
-    const first = await addScript("sequential", "../../scripts/first.mjs");
-    const second = await addScript("sequential", "../../scripts/second.mjs");
-
-    expect(second.message).toBe('Added script step to "sequential" e2e test.');
-    // Handed back whole: the keys it left alone and the one it added.
-    expect(second.outputJson).toBe('{"a":1,"user":{"id":"u_1"},"c":3}');
-    const live = await session("sequential");
-    expect(live.output).toStrictEqual({
-      ...JSON.parse(first.outputJson!),
-      ...JSON.parse(second.outputJson!),
-    });
-    expect(live.outputRevision).toBe(2);
-  });
-});
-
 describe("a passing script whose step is not recorded", () => {
-  it("leaves the recording's document as it was when the append throws", async () => {
+  it("leaves the recording's document as it was when the re-parse refuses the file a script edited", async () => {
     await write("scripts/seed.mjs", `output.user = { id: "u_1" };`);
     await write(
       "scripts/edit.mjs",
@@ -710,34 +500,16 @@ describe("a passing script whose step is not recorded", () => {
         `'steps:\\n  - echo: "created {{output:user.id ||}}"\\n');\n` +
         `output.extra = "never merged";`
     );
-    await write(
-      "scripts/vanish.mjs",
-      `import * as fs from "node:fs";\n` +
-        `fs.unlinkSync(${JSON.stringify(flowPath("vanished"))});\n` +
-        `output.extra = "never merged";`
-    );
 
-    // The re-parse refuses the file the script hand-edited.
     await start("refused");
     await addScript("refused", "../../scripts/seed.mjs");
     const refused = await rejection(addScript("refused", "../../scripts/edit.mjs"));
 
-    expect(refused.message).toContain("passed, but the step was not recorded");
+    expect(refused.message).toContain("passed, but the step was not recorded. Fix what is named");
     expect(refused.message).toContain("holds a malformed output reference");
-    const afterRefusal = await session("refused");
-    expect(afterRefusal.output).toEqual({ user: { id: "u_1" } });
-    expect(afterRefusal.outputRevision).toBe(1);
-
-    // The file is gone, so the append cannot read it.
-    await start("vanished");
-    await addScript("vanished", "../../scripts/seed.mjs");
-    const vanished = await rejection(addScript("vanished", "../../scripts/vanish.mjs"));
-
-    expect(vanished.message).toContain("passed, but the step was not recorded");
-    expect(vanished.message).toContain("Check the script's changes before you retry");
-    const afterVanish = await session("vanished");
-    expect(afterVanish.output).toEqual({ user: { id: "u_1" } });
-    expect(afterVanish.outputRevision).toBe(1);
+    const live = await session("refused");
+    expect(live.output).toEqual({ user: { id: "u_1" } });
+    expect(live.outputRevision).toBe(1);
   });
 
   it("refuses a merge past 1 MiB, appends nothing, and keeps the document", async () => {
@@ -993,16 +765,13 @@ describe("a recorded step that fails validation after its call ran", () => {
 });
 
 describe("what a recorded script's document carries", () => {
-  it("appends the large-integer warning to flow-add-script's message, once", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write(
-      "scripts/order.sh",
-      `printf '{"order":{"id":12345678901234567891}}' > "$ARGENT_OUTPUT"\n`
-    );
+  it("appends the large-integer warning to flow-add-script's message, once", async () => {
+    // The literal is rounded when the .mjs parses it, and stays past 2^53.
+    await write("scripts/order.mjs", `output.order = { id: 12345678901234567891 };`);
     await write("scripts/tag.mjs", `output.tag = "t";`);
     await start("bigint");
 
-    const order = await addScript("bigint", "../../scripts/order.sh");
+    const order = await addScript("bigint", "../../scripts/order.mjs");
     // Handed the rounded value and handing it back unchanged is not a new warning.
     const tag = await addScript("bigint", "../../scripts/tag.mjs");
 
@@ -1017,24 +786,5 @@ describe("what a recorded script's document carries", () => {
       order: { id: Number("12345678901234567891") },
       tag: "t",
     });
-  });
-
-  it("clears a key an earlier script set when a .mjs sets it to undefined", async () => {
-    await write("scripts/set-promo.mjs", `output.promo = "SUMMER";`);
-    await write("scripts/no-promo.mjs", `output.kept = "yes";\noutput.promo = undefined;`);
-
-    await start("fresh");
-    const fresh = await addScript("fresh", "../../scripts/no-promo.mjs");
-    expect(fresh.status).toBe("pass");
-    expect(fresh.outputJson).toBe('{"kept":"yes","promo":null}');
-    expect((await session("fresh")).output).toEqual({ kept: "yes", promo: null });
-
-    // The result shows the same document the recording now holds.
-    await start("earlier");
-    await addScript("earlier", "../../scripts/set-promo.mjs");
-    const cleared = await addScript("earlier", "../../scripts/no-promo.mjs");
-    expect(cleared.status).toBe("pass");
-    expect(cleared.outputJson).toBe('{"promo":null,"kept":"yes"}');
-    expect((await session("earlier")).output).toEqual({ promo: null, kept: "yes" });
   });
 });

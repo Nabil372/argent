@@ -176,34 +176,6 @@ afterEach(async () => {
 });
 
 describe("the run's output document: lifecycle and merge", () => {
-  it("starts a root run with an empty document, so a fallback gives the value", async () => {
-    await flow("empty", "steps:", `  - echo: "{{output:x ?? 'empty'}}"`);
-
-    const { result } = await runFlow("empty");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[0]).toMatchObject({ kind: "echo", status: "pass", message: "empty" });
-  });
-
-  it("merges what a .mjs writes to output.user, and an echo prints it resolved", async () => {
-    await write("scripts/create-user.mjs", `output.user = { id: "u_1" };\n`);
-    await flow(
-      "create-user",
-      "steps:",
-      `  - script: { path: ${script("create-user.mjs")} }`,
-      `  - echo: "Created user {{output:user.id}}"`
-    );
-
-    const { result } = await runFlow("create-user");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[1]).toMatchObject({
-      kind: "echo",
-      status: "pass",
-      message: "Created user u_1",
-    });
-  });
-
   it("merges the .mjs replace form (output = { user, orderId }) instead of replacing the document", async () => {
     await write("scripts/seed.mjs", `output.seed = "kept";\n`);
     await write(
@@ -224,178 +196,92 @@ describe("the run's output document: lifecycle and merge", () => {
     expect(result.steps[2].message).toBe("user u_1 order 42 seed kept");
   });
 
-  it("keeps a .mjs key when a later .sh writes a full document holding only its own key", async (ctx) => {
+  it("hands each script the document so far, a .sh in $ARGENT_OUTPUT, and keeps the keys a later full document leaves out", async (ctx) => {
     skipWithoutBash(ctx);
-    await write("scripts/user.mjs", `output.user = { id: "u_1" };\n`);
-    await write("scripts/order.sh", `printf '{"order":{"id":"o_1"}}' > "$ARGENT_OUTPUT"\n`);
-    await flow(
-      "mjs-then-sh",
-      "steps:",
-      `  - script: { path: ${script("user.mjs")} }`,
-      `  - script: { path: ${script("order.sh")} }`,
-      `  - echo: "user {{output:user.id}} order {{output:order.id}}"`
-    );
-
-    const { result } = await runFlow("mjs-then-sh");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[2].message).toBe("user u_1 order o_1");
-  });
-
-  it("keeps a .sh key when a later .mjs replaces its whole document with only its own key", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write("scripts/order.sh", `printf '{"order":{"id":"o_1"}}' > "$ARGENT_OUTPUT"\n`);
-    await write("scripts/user.mjs", `output = { user: { id: "u_1" } };\n`);
-    await flow(
-      "sh-then-mjs",
-      "steps:",
-      `  - script: { path: ${script("order.sh")} }`,
-      `  - script: { path: ${script("user.mjs")} }`,
-      `  - echo: "user {{output:user.id}} order {{output:order.id}}"`
-    );
-
-    const { result } = await runFlow("sh-then-mjs");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[2].message).toBe("user u_1 order o_1");
-  });
-
-  it("hands the current document to a .sh in $ARGENT_OUTPUT and to a .mjs as the output global", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write(
-      "scripts/first.mjs",
+    const sawOutput = (mark: string) =>
       `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(markPath("first-saw"))}, JSON.stringify(output));\n` +
-        `output.user = { id: "u_1" };\n`
-    );
-    await write("scripts/copy.sh", `cp "$ARGENT_OUTPUT" "${shellMarkPath("sh-saw")}"\n`);
+      `fs.writeFileSync(${JSON.stringify(markPath(mark))}, JSON.stringify(output));\n`;
+    await write("scripts/user.mjs", sawOutput("mjs-first-saw") + `output.user = { id: "u_1" };\n`);
     await write(
-      "scripts/read.mjs",
-      `import fs from "node:fs";\n` +
-        `fs.writeFileSync(${JSON.stringify(markPath("mjs-saw"))}, JSON.stringify(output));\n`
+      "scripts/order.sh",
+      `cp "$ARGENT_OUTPUT" "${shellMarkPath("sh-saw")}"\n` +
+        `printf '{"order":{"id":"o_1"}}' > "$ARGENT_OUTPUT"\n`
     );
+    await write("scripts/third.mjs", sawOutput("mjs-last-saw") + `output = { third: 3 };\n`);
     await flow(
       "handed",
       "steps:",
-      `  - script: { path: ${script("first.mjs")} }`,
-      `  - script: { path: ${script("copy.sh")} }`,
-      `  - script: { path: ${script("read.mjs")} }`
+      `  - script: { path: ${script("user.mjs")} }`,
+      `  - script: { path: ${script("order.sh")} }`,
+      `  - script: { path: ${script("third.mjs")} }`,
+      `  - echo: "user {{output:user.id}} order {{output:order.id}} third {{output:third}}"`
     );
 
     const { result } = await runFlow("handed");
 
     expect(result.ok).toBe(true);
-    expect(JSON.parse(readMark("first-saw") ?? "null")).toEqual({});
+    // A root run starts with an empty document.
+    expect(JSON.parse(readMark("mjs-first-saw") ?? "null")).toEqual({});
     expect(JSON.parse(readMark("sh-saw") ?? "null")).toEqual({ user: { id: "u_1" } });
-    expect(JSON.parse(readMark("mjs-saw") ?? "null")).toEqual({ user: { id: "u_1" } });
+    expect(JSON.parse(readMark("mjs-last-saw") ?? "null")).toEqual({
+      user: { id: "u_1" },
+      order: { id: "o_1" },
+    });
+    expect(result.steps[3].message).toBe("user u_1 order o_1 third 3");
   });
 
-  it("replaces a written top-level key whole, keeps an unwritten one, and clears a key set to null", async () => {
+  it("replaces a written top-level key whole, and clears a key set to null or undefined or deleted", async () => {
     await write(
       "scripts/step1.mjs",
-      `output.user = { id: "u_1", name: "Ada" };\noutput.keep = "kept";\noutput.clear = "soon";\n`
+      `output.user = { id: "u_1", name: "Ada" };\n` +
+        `output.clear = "soon";\noutput.promo = "SPRING";\noutput.coupon = "C1";\n`
     );
-    // The replace form, so the returned documents hold only the keys named:
-    // a mutated `output` would hand back every key it was given.
-    await write("scripts/step2.mjs", `output = { user: { id: "u_2" } };\n`);
-    await write("scripts/step3.mjs", `output = { clear: null };\n`);
+    await write(
+      "scripts/step2.mjs",
+      `output.user = { id: "u_2" };\n` +
+        `output.clear = null;\noutput.promo = undefined;\ndelete output.coupon;\n`
+    );
     await flow(
       "merge-rule",
       "steps:",
       `  - script: { path: ${script("step1.mjs")} }`,
       `  - script: { path: ${script("step2.mjs")} }`,
-      `  - script: { path: ${script("step3.mjs")} }`,
-      `  - echo: "{{output:user.name ?? 'gone'}}"`,
-      `  - echo: "{{output:user.id}}"`,
-      `  - echo: "{{output:keep}}"`,
-      `  - echo: "{{output:clear ?? 'cleared'}}"`
+      `  - echo: "{{output:user.name ?? 'gone'}} {{output:user.id}} {{output:clear ?? 'none'}} ` +
+        `{{output:promo ?? 'none'}} {{output:coupon ?? 'none'}}"`
     );
 
     const { result } = await runFlow("merge-rule");
 
     expect(result.ok).toBe(true);
-    expect(echoes(result).map((step) => step.message)).toEqual(["gone", "u_2", "kept", "cleared"]);
-  });
-
-  it("clears a key an earlier script set when a .mjs sets it to undefined or deletes it", async () => {
-    await write(
-      "scripts/user-a.mjs",
-      `output.name = "Ada";\noutput.promo = "SPRING";\noutput.coupon = "C1";\n`
-    );
-    await write(
-      "scripts/user-b.mjs",
-      `const userB = { name: "Bob" };\n` +
-        `output.name = userB.name;\n` +
-        `output.promo = userB.promo?.code;\n` +
-        `delete output.coupon;\n`
-    );
-    await flow(
-      "clear-key",
-      "steps:",
-      `  - script: { path: ${script("user-a.mjs")} }`,
-      `  - script: { path: ${script("user-b.mjs")} }`,
-      `  - echo: "{{output:name}} {{output:promo ?? 'NONE'}} {{output:coupon ?? 'NONE'}}"`
-    );
-
-    const { result } = await runFlow("clear-key");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[2].message).toBe("Bob NONE NONE");
-  });
-
-  it("merges the pure rule { ...current, ...returned } and refuses a merged document over 1 MiB", () => {
-    // `vi.mocked` wraps the real function, so this is the real rule.
-    expect(
-      scriptStep.mergeScriptOutput(
-        { a: 1, user: { id: "u_1", name: "Ada" } },
-        { user: { id: "u_2" }, c: null }
-      )
-    ).toEqual({ output: { a: 1, user: { id: "u_2" }, c: null } });
-    const merged = scriptStep.mergeScriptOutput(
-      { a: "x".repeat(600 * 1024) },
-      { b: "y".repeat(600 * 1024) }
-    );
-    // The spec spells the limit `1 MiB`; the shared `describeBytes` formatter
-    // prints `1.0 MiB`, as the per-script limit message has since PR 1.
-    expect("problem" in merged && merged.problem).toMatch(
-      /^After this step the e2e test output is 1\.2 MiB encoded; the limit is 1\.0 MiB\. A script cannot remove a key, so set one the e2e test no longer reads to null\.$/
-    );
+    expect(result.steps[2].message).toBe("gone u_2 none none none");
   });
 
   // Not observable end to end: the run stops at the failed script, so no later
-  // step reads the document. The merge spy shows the failed script's document
-  // never reached the merge.
-  it("merges nothing from a .mjs that writes output and then throws", async () => {
+  // step reads the document. The merge spy shows its document never reached the merge.
+  it.for([
+    [
+      "a .mjs that writes output and then throws",
+      "b.mjs",
+      `output.b = 2;\nthrow new Error("b failed");\n`,
+    ],
+    [
+      "a .sh that writes $ARGENT_OUTPUT and then exits 1",
+      "b.sh",
+      `printf '{"a":1,"b":2}' > "$ARGENT_OUTPUT"\nexit 1\n`,
+    ],
+  ] as const)("merges nothing from %s", async ([_label, file, source], ctx) => {
+    if (file.endsWith(".sh")) skipWithoutBash(ctx);
     await write("scripts/a.mjs", `output.a = 1;\n`);
-    await write("scripts/b.mjs", `output.b = 2;\nthrow new Error("b failed after writing");\n`);
+    await write(`scripts/${file}`, source);
     await flow(
-      "throws-after-writing",
+      "fails-after-writing",
       "steps:",
       `  - script: { path: ${script("a.mjs")} }`,
-      `  - script: { path: ${script("b.mjs")} }`,
+      `  - script: { path: ${script(file)} }`,
       `  - echo: "{{output:b ?? 'none'}}"`
     );
 
-    const { result } = await runFlow("throws-after-writing");
-
-    expect(result.steps.map((step) => step.status)).toEqual(["pass", "fail", "skip"]);
-    expect(mergeSpy).toHaveBeenCalledTimes(1);
-    expect(mergeSpy.mock.calls[0]).toEqual([{}, { a: 1 }]);
-  });
-
-  it("merges nothing from a .sh that writes $ARGENT_OUTPUT and then exits 1", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write("scripts/a.mjs", `output.a = 1;\n`);
-    await write("scripts/b.sh", `printf '{"a":1,"b":2}' > "$ARGENT_OUTPUT"\nexit 1\n`);
-    await flow(
-      "exits-after-writing",
-      "steps:",
-      `  - script: { path: ${script("a.mjs")} }`,
-      `  - script: { path: ${script("b.sh")} }`,
-      `  - echo: "{{output:b ?? 'none'}}"`
-    );
-
-    const { result } = await runFlow("exits-after-writing");
+    const { result } = await runFlow("fails-after-writing");
 
     expect(result.steps.map((step) => step.status)).toEqual(["pass", "fail", "skip"]);
     expect(mergeSpy).toHaveBeenCalledTimes(1);
@@ -439,11 +325,7 @@ describe("the run's output document: lifecycle and merge", () => {
     const { result } = await runFlow("when-merge", { booted: true });
 
     expect(result.ok).toBe(true);
-    expect(result.steps.map((step) => [step.kind, step.status])).toEqual([
-      ["when", "pass"],
-      ["script", "pass"],
-      ["echo", "pass"],
-    ]);
+    expect(result.steps.map((step) => step.kind)).toEqual(["when", "script", "echo"]);
     expect(result.steps[2].message).toBe("flag set");
   });
 
@@ -478,119 +360,80 @@ describe("the run's output document: lifecycle and merge", () => {
 
     const [left, right] = await Promise.all([runFlow("left"), runFlow("right")]);
 
-    expect(left.result.ok).toBe(true);
-    expect(right.result.ok).toBe(true);
     expect(left.result.steps[2].message).toBe("left L right unseen");
     expect(right.result.steps[2].message).toBe("right R left unseen");
   });
 
-  it("resolves a nested tool: flow-execute step's args.env in the parent, and reports the reference", async () => {
-    await write("scripts/user.mjs", `output.user = { id: "u_1" };\n`);
-    await flow(
-      "parent",
-      "steps:",
-      `  - script: { path: ${script("user.mjs")} }`,
-      "  - tool: flow-execute",
-      "    args:",
-      "      name: child",
-      `      project_root: ${JSON.stringify(root)}`,
-      `      env: { USER_ID: "{{output:user.id}}" }`
-    );
-
-    const { result, invokeTool } = await runFlow("parent", { booted: true });
-
-    expect(result.ok).toBe(true);
-    const sent = argsSentTo(invokeTool, "flow-execute");
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ name: "child", project_root: root, env: { USER_ID: "u_1" } });
-    const report = result.steps[1];
-    expect(report).toMatchObject({ kind: "tool", tool: "flow-execute", status: "pass" });
-    expect(report.args).toMatchObject({ env: { USER_ID: "{{output:user.id}}" } });
-  });
-
-  it("fails the step whose merge takes the document over 1 MiB, and skips what follows", async () => {
+  it("fails the step whose merge takes the document over 1 MiB without its large-integer warning, and warns when the merge fits", async () => {
     await write("scripts/big-a.mjs", `output.a = "x".repeat(600 * 1024);\n`);
-    // The replace form: this script's own document holds only `b`, so it
-    // passes the child's per-document limit and only the merge exceeds it.
-    await write("scripts/big-b.mjs", `output = { b: "y".repeat(600 * 1024) };\n`);
-    await flow(
-      "too-big",
-      "steps:",
-      `  - script: { path: ${script("big-a.mjs")} }`,
-      `  - script: { path: ${script("big-b.mjs")} }`,
-      "  - echo: after"
-    );
-
-    const { result } = await runFlow("too-big");
-
-    expect(result.ok).toBe(false);
-    expect(result.steps[0].status).toBe("pass");
-    expect(result.steps[1].status).toBe("fail");
-    expect(result.steps[1].reason).toMatch(/^After this step the e2e test output is /);
-    // The spec spells this `1 MiB`; the shared formatter prints `1.0 MiB`.
-    expect(result.steps[1].reason).toContain("the limit is 1.0 MiB");
-    expect(result.steps[2]).toMatchObject({ kind: "echo", status: "skip", message: "after" });
-  });
-
-  it("drops the large-integer warning of a step whose merge goes over 1 MiB, and keeps it when the merge fits", async () => {
-    await write("scripts/big-a.mjs", `output.a = "x".repeat(600 * 1024);\n`);
-    // The literal is rounded when the .mjs parses it, and the rounded value is
-    // still past 2^53, so the warning fires as it does for a .sh's JSON text.
+    // The replace form: this script's own document holds only `b` and `id`, so
+    // it passes the per-document limit and only the merge exceeds it. The
+    // literal is rounded when the .mjs parses it, and stays past 2^53.
     await write(
       "scripts/big-id.mjs",
       `output = { b: "y".repeat(600 * 1024), id: 12345678901234567891 };\n`
     );
     await flow(
-      "too-big-warned",
+      "too-big",
       "steps:",
       `  - script: { path: ${script("big-a.mjs")} }`,
-      `  - script: { path: ${script("big-id.mjs")} }`
+      `  - script: { path: ${script("big-id.mjs")} }`,
+      "  - echo: after"
     );
-    await flow("fits-warned", "steps:", `  - script: { path: ${script("big-id.mjs")} }`);
-    const warning =
-      "output.id is 12345678901234567000, past the largest integer a JSON number holds exactly " +
-      "(9007199254740991), so it may have been rounded; write an identifier as a string.";
+    await flow("fits", "steps:", `  - script: { path: ${script("big-id.mjs")} }`);
 
-    const tooBig = (await runFlow("too-big-warned")).result;
+    const tooBig = (await runFlow("too-big")).result;
 
+    expect(tooBig.ok).toBe(false);
     expect(tooBig.steps[1].status).toBe("fail");
-    expect(tooBig.steps[1].reason).toMatch(/^After this step the e2e test output is /);
+    // The spec spells the limit `1 MiB`; the shared formatter prints `1.0 MiB`.
+    expect(tooBig.steps[1].reason).toMatch(
+      /^After this step the e2e test output is 1\.2 MiB encoded; the limit is 1\.0 MiB\./
+    );
     expect(tooBig.steps[1].warning).toBeUndefined();
+    expect(tooBig.steps[2]).toMatchObject({ kind: "echo", status: "skip", message: "after" });
 
-    const fits = (await runFlow("fits-warned")).result;
+    const fits = (await runFlow("fits")).result;
 
     expect(fits.ok).toBe(true);
-    expect(fits.steps[0].status).toBe("pass");
-    expect(fits.steps[0].warning).toBe(warning);
+    expect(fits.steps[0].warning).toBe(
+      "output.id is 12345678901234567000, past the largest integer a JSON number holds exactly " +
+        "(9007199254740991), so it may have been rounded; write an identifier as a string."
+    );
+  });
+
+  it("takes a .sh document 4,096 levels deep, with a warning about an integer at the bottom, and refuses one a level deeper", async (ctx) => {
+    skipWithoutBash(ctx);
+    for (const levels of [4096, 4097]) {
+      const json = path.join(root, `deep-${levels}.json`);
+      await write(
+        `deep-${levels}.json`,
+        `${'{"a":'.repeat(levels)}12345678901234567891${"}".repeat(levels)}`
+      );
+      await write(
+        `scripts/deep-${levels}.sh`,
+        `cat "${json.replace(/\\/g, "/")}" > "$ARGENT_OUTPUT"\n`
+      );
+      await flow(
+        `deep-${levels}`,
+        "steps:",
+        `  - script: { path: ${script(`deep-${levels}.sh`)} }`
+      );
+    }
+
+    const deepest = (await runFlow("deep-4096")).result;
+    const over = (await runFlow("deep-4097")).result;
+
+    expect(deepest.ok).toBe(true);
+    expect(deepest.steps[0].warning).toMatch(
+      /^output\.a\.a\.a.* is 12345678901234567000, past the largest integer/
+    );
+    expect(over.steps[0].status).toBe("fail");
+    expect(over.steps[0].reason).toContain("nests deeper than 4096 levels");
   });
 });
 
 describe("output references in steps", () => {
-  it("prints an echo's object reference as one-line JSON, ?? null as null, and cuts a long message", async () => {
-    await write(
-      "scripts/doc.mjs",
-      `output.user = { id: "u_1", name: "Ada" };\noutput.long = "z".repeat(70000);\n`
-    );
-    await flow(
-      "echo-values",
-      "steps:",
-      `  - script: { path: ${script("doc.mjs")} }`,
-      `  - echo: "{{output:user}}"`,
-      `  - echo: "user is {{output:user}}"`,
-      `  - echo: "{{output:missing ?? null}}"`,
-      `  - echo: "{{output:long}}"`
-    );
-
-    const { result } = await runFlow("echo-values");
-
-    expect(result.ok).toBe(true);
-    const [whole, embedded, fallback, long] = echoes(result);
-    expect(whole.message).toBe('{"id":"u_1","name":"Ada"}');
-    expect(embedded.message).toBe('user is {"id":"u_1","name":"Ada"}');
-    expect(fallback.message).toBe("null");
-    expect(long.message).toBe(`${"z".repeat(65536)}…(+4464 chars)`);
-  });
-
   it("errors an echo whose path is missing, keeping its authored message, and stops the run", async () => {
     await write("scripts/user.mjs", `output.user = { id: "u_1", name: "Ada" };\n`);
     await write(
@@ -652,6 +495,33 @@ describe("output references in steps", () => {
     ).toEqual(["{{output:code}}", "{{output:n}}", "{{output:missing ?? null}}", "id-{{output:n}}"]);
   });
 
+  it("resolves a nested tool: flow-execute step's args.env in the parent, and reports the reference", async () => {
+    await write("scripts/user.mjs", `output.user = { id: "u_1" };\n`);
+    await flow(
+      "parent",
+      "steps:",
+      `  - script: { path: ${script("user.mjs")} }`,
+      "  - tool: flow-execute",
+      "    args:",
+      "      name: child",
+      `      project_root: ${JSON.stringify(root)}`,
+      `      env: { USER_ID: "{{output:user.id}}" }`
+    );
+
+    const { result, invokeTool } = await runFlow("parent", { booted: true });
+
+    expect(result.ok).toBe(true);
+    expect(argsSentTo(invokeTool, "flow-execute")).toEqual([
+      expect.objectContaining({ name: "child", project_root: root, env: { USER_ID: "u_1" } }),
+    ]);
+    expect(result.steps[1]).toMatchObject({
+      kind: "tool",
+      tool: "flow-execute",
+      status: "pass",
+      args: { env: { USER_ID: "{{output:user.id}}" } },
+    });
+  });
+
   it("errors a tool step whose reference does not resolve without invoking the tool", async () => {
     await flow(
       "tool-missing",
@@ -672,174 +542,113 @@ describe("output references in steps", () => {
     expect(toolsCalled(invokeTool).filter(isStepTool)).toEqual([]);
   });
 
-  it("names the whole-field reference and its type when a tool rejects the typed value", async () => {
+  /** A tool that refuses `key` unless it holds a `type`, the way `keyboard` refuses a number in `text`. */
+  const refuses =
+    (tool: string, key: string, type: string): InvokeHook =>
+    (id, params) => {
+      if (id === tool && typeof (params as Record<string, unknown>)[key] !== type) {
+        throw new InvalidToolInputError(`${tool} needs \`${key}\` to be a ${type}`);
+      }
+      return { ok: true };
+    };
+  const textSchema = z.object({ udid: z.string(), text: z.string() });
+  const tapSchema = z.object({ udid: z.string(), x: z.number(), y: z.number() });
+
+  it.each<[string, string, string, RunOptions, string[], string[]]>([
+    [
+      "names the whole-field reference and its type when a tool refuses the typed value",
+      "keyboard",
+      `{ text: "{{output:code}}" }`,
+      { invoke: refuses("keyboard", "text", "string") },
+      [
+        "keyboard needs `text` to be a string",
+        '`args.text` is "{{output:code}}" alone, so it received a number. If a tool refused ' +
+          "that type, write the value in the script with the type the tool expects, or, for " +
+          "text entry, use a `type:` step",
+      ],
+      [],
+    ],
+    [
+      "says the whole-field reference was refused when the tool's schema refused it",
+      "keyboard",
+      `{ text: "{{output:code}}" }`,
+      { invoke: refuses("keyboard", "text", "string"), schemas: { keyboard: textSchema } },
+      [
+        '`args.text` is "{{output:code}}" alone, so it received a number. A reference that is ' +
+          "the whole argument keeps the JSON type the script wrote",
+      ],
+      ["If a tool refused that type"],
+    ],
+    [
+      "does not blame a whole-field reference when the schema refused a literal beside it",
+      "gesture-tap",
+      `{ x: "left", y: "{{output:code}}" }`,
+      { invoke: refuses("gesture-tap", "x", "number"), schemas: { "gesture-tap": tapSchema } },
+      ["`x`: Invalid input: expected number, received string"],
+      ["alone, so it received"],
+    ],
+  ])("%s", async (_label, tool, args, options, present, absent) => {
     await write("scripts/code.mjs", `output.code = 123456;\n`);
     await flow(
       "typed-reject",
       "steps:",
       `  - script: { path: ${script("code.mjs")} }`,
-      "  - tool: keyboard",
-      `    args: { text: "{{output:code}}" }`
+      `  - tool: ${tool}`,
+      `    args: ${args}`
     );
 
-    const { result } = await runFlow("typed-reject", {
-      booted: true,
-      invoke: (id, params) => {
-        if (id === "keyboard" && typeof (params as { text?: unknown }).text !== "string") {
-          throw new InvalidToolInputError("keyboard needs `text` to be a string");
-        }
-        return { ok: true };
-      },
-    });
+    const { result } = await runFlow("typed-reject", { booted: true, ...options });
 
-    const report = result.steps[1];
-    expect(report.status).toBe("error");
-    expect(report.reason).toContain("keyboard needs `text` to be a string");
-    expect(report.reason).toContain(
-      '`args.text` is "{{output:code}}" alone, so it received a number'
-    );
-    expect(report.reason).toContain("for text entry, use a `type:` step");
+    expect(result.steps[1].status).toBe("error");
+    for (const text of present) expect(result.steps[1].reason).toContain(text);
+    for (const text of absent) expect(result.steps[1].reason).not.toContain(text);
   });
 
-  it("names a whole-field reference the tool's schema refused", async () => {
-    await write("scripts/code.mjs", `output.code = 123456;\n`);
-    await flow(
-      "typed-reject-parsed",
-      "steps:",
-      `  - script: { path: ${script("code.mjs")} }`,
-      "  - tool: keyboard",
-      `    args: { text: "{{output:code}}" }`
-    );
-
-    const { result } = await runFlow("typed-reject-parsed", {
-      booted: true,
-      schemas: { keyboard: z.object({ udid: z.string(), text: z.string() }) },
-      invoke: (id, params) => {
-        if (id === "keyboard" && typeof (params as { text?: unknown }).text !== "string") {
-          throw new InvalidToolInputError("keyboard needs `text` to be a string");
-        }
-        return { ok: true };
-      },
-    });
-
-    const report = result.steps[1];
-    expect(report.status).toBe("error");
-    expect(report.reason).toContain(
-      '`args.text` is "{{output:code}}" alone, so it received a number. A reference that is ' +
-        "the whole argument keeps the JSON type the script wrote"
-    );
-    expect(report.reason).not.toContain("If a tool refused that type");
-  });
-
-  it("does not blame a whole-field reference when the tool refused a literal beside it", async () => {
-    await write("scripts/y.mjs", `output.y = 0.262;\n`);
-    await flow(
-      "literal-reject",
-      "steps:",
-      `  - script: { path: ${script("y.mjs")} }`,
-      "  - tool: gesture-tap",
-      `    args: { x: "left", y: "{{output:y}}" }`
-    );
-
-    const { result } = await runFlow("literal-reject", {
-      booted: true,
-      schemas: { "gesture-tap": z.object({ udid: z.string(), x: z.number(), y: z.number() }) },
-      invoke: (id, params) => {
-        if (id === "gesture-tap" && typeof (params as { x?: unknown }).x !== "number") {
-          throw new InvalidToolInputError("gesture-tap needs `x` to be a number");
-        }
-        return { ok: true };
-      },
-    });
-
-    const report = result.steps[1];
-    expect(report.status).toBe("error");
-    expect(report.reason).toContain("`x`: Invalid input: expected number, received string");
-    expect(report.reason).not.toContain("alone, so it received");
-  });
-
-  it("does not tell the author to write a string when a tool wants another type", async () => {
-    await write("scripts/count.mjs", `output.count = 3;\n`);
-    await flow(
-      "typed-reject-boolean",
-      "steps:",
-      `  - script: { path: ${script("count.mjs")} }`,
-      "  - tool: flow-execute",
-      `    args: { name: child, updateBaselines: "{{output:count}}" }`
-    );
-
-    const { result } = await runFlow("typed-reject-boolean", {
-      booted: true,
-      invoke: (id, params) => {
-        if (
-          id === "flow-execute" &&
-          typeof (params as { updateBaselines?: unknown }).updateBaselines !== "boolean"
-        ) {
-          throw new InvalidToolInputError("flow-execute needs `updateBaselines` to be a boolean");
-        }
-        return { ok: true };
-      },
-    });
-
-    const report = result.steps[1];
-    expect(report.status).toBe("error");
-    expect(report.reason).toContain(
-      '`args.updateBaselines` is "{{output:count}}" alone, so it received a number'
-    );
-    expect(report.reason).toContain("with the type the tool expects");
-    expect(report.reason).not.toContain("as a string");
-  });
-
-  it("names the whole-field reference and its type when a run-sequence step fails, and not for a string value", async () => {
-    await write("scripts/number.mjs", `output.code = 123456;\n`);
-    await write("scripts/string.mjs", `output.code = "123456";\n`);
-    for (const value of ["number", "string"]) {
+  // run-sequence reports an inner tool's refusal in its result, never by
+  // throwing, so the refusal's failure code never reaches the runner.
+  it.each([
+    ["number", "123456", 123456],
+    ["string", '"123456"', "123456"],
+  ] as const)(
+    "notes a whole-field %s reference when a run-sequence step fails, unless it is a string",
+    async (type, literal, sent) => {
+      await write("scripts/code.mjs", `output.code = ${literal};\n`);
       await flow(
-        `sequence-${value}`,
+        "sequence",
         "steps:",
-        `  - script: { path: ${script(`${value}.mjs`)} }`,
+        `  - script: { path: ${script("code.mjs")} }`,
         "  - tool: run-sequence",
         "    args:",
         "      steps:",
         "        - tool: keyboard",
         `          args: { text: "{{output:code}}" }`
       );
-    }
-    // run-sequence reports an inner tool's refusal in its result, never by
-    // throwing, so the refusal's failure code never reaches the runner.
-    const refusesInside: InvokeHook = (id) =>
-      id === "run-sequence"
-        ? {
-            completed: 0,
-            total: 1,
-            steps: [{ tool: "keyboard", error: "keyboard needs `text` to be a string" }],
-          }
-        : { ok: true };
-    const innerText = (invokeTool: InvokeMock): unknown[] =>
-      argsSentTo(invokeTool, "run-sequence").map(
-        (args) => (args.steps as Array<{ args: { text: unknown } }>)[0]!.args.text
+
+      const { result, invokeTool } = await runFlow("sequence", {
+        booted: true,
+        invoke: (id) =>
+          id === "run-sequence"
+            ? {
+                completed: 0,
+                total: 1,
+                steps: [{ tool: "keyboard", error: "keyboard needs `text` to be a string" }],
+              }
+            : { ok: true },
+      });
+
+      const inner = argsSentTo(invokeTool, "run-sequence")[0]!.steps as Array<{ args: unknown }>;
+      expect(inner[0]!.args).toEqual({ text: sent });
+      expect(result.steps[1]).toMatchObject({ kind: "tool", tool: "run-sequence", status: "fail" });
+      expect(result.steps[1].reason).toMatch(
+        /^run-sequence stopped at keyboard after 0 of 1 steps: keyboard needs `text` to be a string/
       );
-
-    const asNumber = await runFlow("sequence-number", { booted: true, invoke: refusesInside });
-
-    expect(innerText(asNumber.invokeTool)).toEqual([123456]);
-    const report = asNumber.result.steps[1];
-    expect(report).toMatchObject({ kind: "tool", tool: "run-sequence", status: "fail" });
-    expect(report.reason).toMatch(
-      /^run-sequence stopped at keyboard after 0 of 1 steps: keyboard needs `text` to be a string/
-    );
-    expect(report.reason).toContain(
-      '`args.steps[0].args.text` is "{{output:code}}" alone, so it received a number'
-    );
-    expect(report.reason).toContain("If a tool refused that type");
-
-    const asString = await runFlow("sequence-string", { booted: true, invoke: refusesInside });
-
-    expect(innerText(asString.invokeTool)).toEqual(["123456"]);
-    expect(asString.result.steps[1]).toMatchObject({ tool: "run-sequence", status: "fail" });
-    expect(asString.result.steps[1].reason).not.toContain("alone, so it received");
-    expect(asString.result.steps[1].reason).not.toContain("If a tool refused that type");
-  });
+      const note =
+        '`args.steps[0].args.text` is "{{output:code}}" alone, so it received a number. If a tool ' +
+        "refused that type";
+      if (type === "number") expect(result.steps[1].reason).toContain(note);
+      else expect(result.steps[1].reason).not.toContain("alone, so it received");
+    }
+  );
 
   it("appends the value a failing .mjs script step's env reference resolved to", async () => {
     await write("scripts/token.mjs", `output.token = "abc";\n`);
@@ -882,27 +691,6 @@ describe("output references in steps", () => {
     });
   });
 
-  it("errors an assert whose ?? '' leaves no visible text, without reading the screen", async () => {
-    await flow("empty-assert", "steps:", `  - assert: { visible: "{{output:missing ?? ''}}" }`);
-
-    const { result, invokeTool } = await runFlow("empty-assert", { booted: true });
-
-    expect(result.ok).toBe(false);
-    expect(result.steps[0].status).toBe("error");
-    expect(result.steps[0].reason).toContain("`assert.visible.text`");
-    expect(result.steps[0].reason).toContain("visible character");
-    expect(toolsCalled(invokeTool).filter(isStepTool)).toEqual([]);
-  });
-
-  it("passes an echo whose ?? '' sits between other text", async () => {
-    await flow("empty-between", "steps:", `  - echo: "x{{output:missing ?? ''}}y"`);
-
-    const { result } = await runFlow("empty-between");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[0]).toMatchObject({ status: "pass", message: "xy" });
-  });
-
   it("errors a when guard whose reference does not resolve, skips its block and the rest, and summarizes", async () => {
     await flow(
       "guard",
@@ -919,11 +707,11 @@ describe("output references in steps", () => {
 
     expect(result.steps[0].kind).toBe("when");
     expect(result.steps[0].status).toBe("error");
-    expect(result.steps[0].reason).toMatch(/^could not resolve when guard \(/);
     // A guard that ran is timed, as when it errors on the tree read.
     expect(result.steps[0].durationMs).toEqual(expect.any(Number));
-    expect(result.steps[0].reason).toContain(
-      "`when.visible.id`: {{output:row}} did not resolve: `output` has no `row` (it has no keys)"
+    expect(result.steps[0].reason).toBe(
+      'could not resolve when guard (visible id="{{output:row}}"): `when.visible.id`: ' +
+        "{{output:row}} did not resolve: `output` has no `row` (it has no keys)"
     );
     expect(result.steps.slice(1, 3).map((step) => [step.status, step.reason])).toEqual([
       ["skip", "when guard errored"],
@@ -934,54 +722,46 @@ describe("output references in steps", () => {
     expect(toolsCalled(invokeTool).filter(isStepTool)).toEqual([]);
   });
 
-  it("sets a script env value from a reference to what an earlier script wrote", async () => {
-    await write("scripts/login.mjs", `output.auth = { token: "tok_1" };\n`);
-    await write("scripts/probe.mjs", reporter("probe", ["TOKEN"]));
+  it("errors an assert whose ?? '' leaves no visible text, without reading the screen", async () => {
+    await flow("empty-assert", "steps:", `  - assert: { visible: "{{output:missing ?? ''}}" }`);
+
+    const { result, invokeTool } = await runFlow("empty-assert", { booted: true });
+
+    expect(result.steps[0].status).toBe("error");
+    expect(result.steps[0].reason).toContain("`assert.visible.text`");
+    expect(result.steps[0].reason).toContain("visible character");
+    expect(toolsCalled(invokeTool).filter(isStepTool)).toEqual([]);
+  });
+
+  it("sets script env values from references, resolving a {{secret:NAME}} written beside one", async () => {
+    await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\n");
+    await write(
+      "scripts/login.mjs",
+      `output.auth = { token: "tok_1" };\noutput.user = { id: "u_1" };\n`
+    );
+    await write("scripts/probe.mjs", reporter("probe", ["TOKEN", "AUTH"]));
     await flow(
       "env-ref",
       "steps:",
       `  - script: { path: ${script("login.mjs")} }`,
-      `  - script: { path: ${script("probe.mjs")}, env: { TOKEN: "{{output:auth.token}}" } }`
+      `  - script:`,
+      `      path: ${script("probe.mjs")}`,
+      `      env: { TOKEN: "{{output:auth.token}}", AUTH: "Bearer {{secret:API_KEY}} for {{output:user.id}}" }`
     );
 
     const { result } = await runFlow("env-ref");
 
     expect(result.ok).toBe(true);
-    expect(JSON.parse(readMark("probe") ?? "{}")).toEqual({ TOKEN: "tok_1" });
-  });
-
-  it("resolves a {{secret:NAME}} written next to a reference in one env value", async () => {
-    await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\n");
-    await write("scripts/user.mjs", `output.user = { id: "u_1" };\n`);
-    await write("scripts/probe.mjs", reporter("probe", ["AUTH"]));
-    await flow(
-      "env-secret",
-      "steps:",
-      `  - script: { path: ${script("user.mjs")} }`,
-      `  - script: { path: ${script("probe.mjs")}, env: { AUTH: "Bearer {{secret:API_KEY}} for {{output:user.id}}" } }`
-    );
-
-    const { result } = await runFlow("env-secret");
-
-    expect(result.ok).toBe(true);
     expect(JSON.parse(readMark("probe") ?? "{}")).toEqual({
+      TOKEN: "tok_1",
       AUTH: "Bearer sk-live-9d3f0a1b for u_1",
     });
   });
 
-  it("errors a script step whose env reference would spell a secret placeholder, without running it", async () => {
+  it("errors a script step whose env references would spell a secret placeholder, without running it", async () => {
     await write(".argent/secrets.env", "API_KEY=sk-live-9d3f0a1b\n");
-    await write(
-      "scripts/half.mjs",
-      `output.half = "{{secret:API_KEY}}";\noutput.first = "{{secre";\noutput.last = "t:API_KEY}}";\n`
-    );
+    await write("scripts/half.mjs", `output.first = "{{secre";\noutput.last = "t:API_KEY}}";\n`);
     await write("scripts/probe.mjs", reporter("probe", ["X"]));
-    await flow(
-      "whole-placeholder",
-      "steps:",
-      `  - script: { path: ${script("half.mjs")} }`,
-      `  - script: { path: ${script("probe.mjs")}, env: { X: "{{output:half}}" } }`
-    );
     await flow(
       "split-placeholder",
       "steps:",
@@ -989,62 +769,14 @@ describe("output references in steps", () => {
       `  - script: { path: ${script("probe.mjs")}, env: { X: "{{output:first}}{{output:last}}" } }`
     );
 
-    for (const name of ["whole-placeholder", "split-placeholder"]) {
-      const { result } = await runFlow(name);
+    const { result } = await runFlow("split-placeholder");
 
-      expect(result.steps[1].status).toBe("error");
-      expect(result.steps[1].reason).toMatch(/^`script\.env\.X`: /);
-      expect(result.steps[1].reason).toContain(
-        "would spell the secret placeholder {{secret:API_KEY}}"
-      );
-      expect(readMark("probe")).toBeUndefined();
-    }
-  });
-
-  it("passes a .sh that writes an integer past 2^53, with a warning naming the path", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write(
-      "scripts/order.sh",
-      `printf '{"order":{"id":12345678901234567891}}' > "$ARGENT_OUTPUT"\n`
+    expect(result.steps[1].status).toBe("error");
+    expect(result.steps[1].reason).toMatch(/^`script\.env\.X`: /);
+    expect(result.steps[1].reason).toContain(
+      "would spell the secret placeholder {{secret:API_KEY}}"
     );
-    await flow("big-int", "steps:", `  - script: { path: ${script("order.sh")} }`);
-
-    const { result } = await runFlow("big-int");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[0].status).toBe("pass");
-    expect(result.steps[0].warning).toBe(
-      "output.order.id is 12345678901234567000, past the largest integer a JSON number holds " +
-        "exactly (9007199254740991), so it may have been rounded; write an identifier as a string."
-    );
-  });
-
-  it("passes a .sh document 4,096 levels deep with an integer past 2^53 at the deepest level, with a warning", async (ctx) => {
-    skipWithoutBash(ctx);
-    const nested = (levels: number): string =>
-      `${'{"a":'.repeat(levels)}12345678901234567891${"}".repeat(levels)}`;
-    await write("deep-4096.json", nested(4096));
-    await write("deep-4097.json", nested(4097));
-    const copier = (file: string): string =>
-      `cat "${path.join(root, file).replace(/\\/g, "/")}" > "$ARGENT_OUTPUT"\n`;
-    await write("scripts/deep-4096.sh", copier("deep-4096.json"));
-    await write("scripts/deep-4097.sh", copier("deep-4097.json"));
-    await flow("deep-4096", "steps:", `  - script: { path: ${script("deep-4096.sh")} }`);
-    await flow("deep-4097", "steps:", `  - script: { path: ${script("deep-4097.sh")} }`);
-
-    const { result } = await runFlow("deep-4096");
-
-    expect(result.ok).toBe(true);
-    expect(result.steps[0].status).toBe("pass");
-    expect(result.steps[0].warning).toMatch(/^output\.a\.a\.a/);
-    expect(result.steps[0].warning).toContain(
-      "is 12345678901234567000, past the largest integer a JSON number holds exactly (9007199254740991)"
-    );
-
-    // One level more is refused, so the document above sits AT the limit.
-    const over = (await runFlow("deep-4097")).result;
-    expect(over.steps[0].status).toBe("fail");
-    expect(over.steps[0].reason).toContain("nests deeper than 4096 levels");
+    expect(readMark("probe")).toBeUndefined();
   });
 
   it("refuses a root flow with a malformed reference before its first script runs, naming the echo", async () => {

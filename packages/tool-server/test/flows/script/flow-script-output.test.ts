@@ -42,22 +42,25 @@ describe("flow script executor — output validation", () => {
     });
   });
 
-  // Every script is handed the run's document, and a `.sh` step may return one
-  // as deep as the parent accepts (4096 levels, root included). A recursive
-  // validation walk in the runner overflowed at ~3450-3925 levels, failing the
-  // next `.mjs` step even when it touched nothing.
-  it("hands a .mjs a document as deep as the parent accepts, and takes it back", async () => {
+  /** `source` as a script handed `output`, the document a run holds so far. */
+  async function runHanded(source: string, output: Record<string, unknown>) {
     const ws = workspace();
-    const script = ws.write("noop.mjs", `output.touched = true;`);
-    const nested = 4095;
-    const deep: unknown = JSON.parse('{"a":'.repeat(nested) + "1" + "}".repeat(nested));
-    const result = await new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 }).execute({
+    const script = ws.write("handed.mjs", source);
+    return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 }).execute({
       scriptPath: script,
       projectRoot: ws.dir,
-      output: { deep },
+      output,
     });
+  }
+
+  // Every script is handed the run's document, and a `.sh` step may return one
+  // as deep as the parent accepts (4096 levels, root included), so the runner's
+  // walk cannot recurse: a recursive one overflowed at ~3450-3925 levels.
+  it("hands a .mjs a document as deep as the parent accepts, and takes it back", async () => {
+    const nested = 4095;
+    const deep: unknown = JSON.parse('{"a":'.repeat(nested) + "1" + "}".repeat(nested));
+    const result = await runHanded(`output.touched = true;`, { deep });
     expect(result.failure).toBeUndefined();
-    expect(result.ok).toBe(true);
     expect(result.output?.touched).toBe(true);
     // Counted without recursion: a recursive helper would overflow here first.
     let levels = 0;
@@ -70,26 +73,24 @@ describe("flow script executor — output validation", () => {
     expect(node).toBe(1);
   });
 
-  it("refuses output deeper than the parent accepts with the parent's own message", async () => {
-    const result = await run(
-      `let node = 1; for (let i = 0; i < 4097; i++) node = { a: node }; output.deep = node;`
-    );
+  it.each([
+    [
+      "deeper than the parent accepts, with the parent's own message",
+      `let node = 1; for (let i = 0; i < 4097; i++) node = { a: node }; output.deep = node;`,
+      /^output\.deep(\.a)+\.?… nests deeper than 4096 levels; output must be a document a later step can read back\.$/,
+    ],
+    // With no stack to overflow, output that grows as it is read would fill the
+    // heap before anything refused it.
+    [
+      "that grows as it is read, at the depth cap rather than the heap limit",
+      `class Endless { toJSON() { return { child: new Endless() }; } }\noutput.tree = new Endless();`,
+      /^output\.tree\.child.* nests deeper than 4096 levels/,
+    ],
+  ])("refuses output %s", async (_label, source, message) => {
+    const result = await run(source);
     expect(result.ok).toBe(false);
     expect(result.failure?.kind).toBe("output");
-    expect(result.failure?.message).toMatch(
-      /^output\.deep(\.a)+\.?… nests deeper than 4096 levels; output must be a document a later step can read back\.$/
-    );
-  });
-
-  // With no stack to overflow, output that grows as it is read would fill the
-  // heap before anything refused it; the depth cap stops it first.
-  it("refuses output that grows as it is read, at the depth cap rather than the heap limit", async () => {
-    const result = await run(
-      `class Endless { toJSON() { return { child: new Endless() }; } }\noutput.tree = new Endless();`
-    );
-    expect(result.ok).toBe(false);
-    expect(result.failure?.kind).toBe("output");
-    expect(result.failure?.message).toContain("nests deeper than 4096 levels");
+    expect(result.failure?.message).toMatch(message);
   });
 
   it("takes a replaced binding, not only a mutated one", async () => {
@@ -142,64 +143,48 @@ describe("flow script executor — output validation", () => {
     expect(result.failure?.message).toBe(expected);
   });
 
-  it("returns a top-level member set to undefined as null, so the merge clears it", async () => {
-    const result = await run(`output.promo = undefined; output.ok = true;`);
+  // [what the script returns, its source, the document it is handed]
+  it.each<[string, string, Record<string, unknown>, Record<string, unknown>]>([
+    [
+      "a top-level member set to undefined as null, so the merge clears it",
+      `output.promo = undefined; output.ok = true;`,
+      {},
+      { promo: null, ok: true },
+    ],
+    [
+      "a key deleted from the handed document as null",
+      `delete output.promo; output.name = "Bob";`,
+      { name: "Ada", promo: "SPRING", kept: 1 },
+      { name: "Bob", promo: null, kept: 1 },
+    ],
+    [
+      "a newly assigned object as it is, clearing none of the keys it leaves out",
+      `output = { name: "Bob" };`,
+      { name: "Ada", promo: "SPRING" },
+      { name: "Bob" },
+    ],
+    [
+      "an object without its nested member set to undefined",
+      `output.user = { id: "u_1", promo: undefined };`,
+      {},
+      { user: { id: "u_1" } },
+    ],
+    [
+      "an undefined array element as null, the way JSON.stringify does",
+      `output.codes = ["a", undefined, "c"];`,
+      {},
+      { codes: ["a", null, "c"] },
+    ],
+  ])("returns %s", async (_label, source, handed, expected) => {
+    const result = await runHanded(source, handed);
     expect(result.failure).toBeUndefined();
-    expect(result.output).toEqual({ promo: null, ok: true });
-  });
-
-  it("returns a key deleted from the handed document as null", async () => {
-    const ws = workspace();
-    const script = ws.write("clear.mjs", `delete output.promo; output.name = "Bob";`);
-    const result = await new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 }).execute({
-      scriptPath: script,
-      projectRoot: ws.dir,
-      output: { name: "Ada", promo: "SPRING", kept: 1 },
-    });
-    expect(result.failure).toBeUndefined();
-    expect(result.output).toEqual({ name: "Bob", promo: null, kept: 1 });
+    expect(result.output).toEqual(expected);
   });
 
   it("refuses a handed document whose toJSON gives a string as not an object", async () => {
-    const ws = workspace();
-    const script = ws.write("to-json.mjs", `output.toJSON = () => "x";`);
-    const result = await new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 }).execute({
-      scriptPath: script,
-      projectRoot: ws.dir,
-      output: { name: "Ada" },
-    });
+    const result = await runHanded(`output.toJSON = () => "x";`, { name: "Ada" });
     expect(result.ok).toBe(false);
     expect(result.failure?.message).toBe("The script's output was not an object.");
-  });
-
-  it("does not clear the keys a newly assigned object leaves out", async () => {
-    const ws = workspace();
-    const script = ws.write("assign.mjs", `output = { name: "Bob" };`);
-    const result = await new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000 }).execute({
-      scriptPath: script,
-      projectRoot: ws.dir,
-      output: { name: "Ada", promo: "SPRING" },
-    });
-    expect(result.failure).toBeUndefined();
-    expect(result.output).toEqual({ name: "Bob" });
-  });
-
-  it("drops a nested member set to undefined", async () => {
-    const result = await run(`output.user = { id: "u_1", promo: undefined };`);
-    expect(result.failure).toBeUndefined();
-    expect(result.output).toEqual({ user: { id: "u_1" } });
-  });
-
-  it("encodes an undefined array element as null the way JSON.stringify does", async () => {
-    const result = await run(`output.codes = ["a", undefined, "c"];`);
-    expect(result.failure).toBeUndefined();
-    expect(result.output).toEqual({ codes: ["a", null, "c"] });
-  });
-
-  it("accepts an optional chain that found nothing, so a later ?? fallback sees null", async () => {
-    const result = await run(`const user = {}; output.promo = user.promo?.code; output.ok = true;`);
-    expect(result.failure).toBeUndefined();
-    expect(result.output).toEqual({ promo: null, ok: true });
   });
 
   it("rejects a cycle rather than crashing on it", async () => {

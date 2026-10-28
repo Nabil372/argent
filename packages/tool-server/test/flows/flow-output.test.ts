@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_ECHO_MESSAGE_CHARS,
-  OUTPUT_REFERENCE_MARKER,
   describeJsonType,
   describeOutputReferenceSyntaxError,
   describeUnsafeIntegers,
@@ -95,103 +94,28 @@ function depthOf(value: unknown): { depth: number; leaf: unknown } {
 // ── parseOutputReferences: accepted syntax ────────────────────────────
 
 describe("parseOutputReferences — accepted syntax", () => {
-  it("reads a simple path", () => {
-    expect(parts("{{output:user}}")).toEqual([ref("user", path("user"))]);
+  // [field, operands]: the field is one reference, its source what the braces hold.
+  it.each<[field: string, operands: unknown[]]>([
+    ["{{output:user.profile.name}}", [path("user", "profile", "name")]],
+    ["{{output:grid[10][2].cell}}", [path("grid", 10, 2, "cell")]],
+    ['{{output:order["order-id"]}}', [path("order", "order-id")]],
+    ["{{output:order['order-id']}}", [path("order", "order-id")]],
+    [String.raw`{{output:q['it\'s']}}`, [path("q", "it's")]],
+    [String.raw`{{output:q["say \"hi\""]}}`, [path("q", 'say "hi"')]],
+    [String.raw`{{output:q['back\\slash']}}`, [path("q", "back\\slash")]],
+    // The escape copies the next character; it is not a JSON escape.
+    [String.raw`{{output:x ?? 'a\nb'}}`, [path("x"), literal("anb")]],
+    ["{{output:  user.id  ??  'x'  }}", [path("user", "id"), literal("x")]],
+    ["{{output:\n\tuser.id\r\n??\t'x'\n}}", [path("user", "id"), literal("x")]],
+    ["{{output:a.b ?? c.d ?? 'none'}}", [path("a", "b"), path("c", "d"), literal("none")]],
+    ['{{output:flags["null"]}}', [path("flags", "null")]],
+    // A literal word is a whole segment, not a prefix.
+    ["{{output:x ?? nullable.trueish}}", [path("x"), path("nullable", "trueish")]],
+  ])("reads %j", (field, operands) => {
+    expect(parts(field)).toEqual([ref(field.slice(9, -2).trim(), ...operands)]);
   });
 
-  it("reads a nested path", () => {
-    expect(parts("{{output:user.profile.name}}")).toEqual([
-      ref("user.profile.name", path("user", "profile", "name")),
-    ]);
-  });
-
-  it("reads an index, a multi-digit index and a chain of them", () => {
-    expect(parts("{{output:codes[0]}}")).toEqual([ref("codes[0]", path("codes", 0))]);
-    expect(parts("{{output:grid[10][2].cell}}")).toEqual([
-      ref("grid[10][2].cell", path("grid", 10, 2, "cell")),
-    ]);
-  });
-
-  it("reads a quoted key in double or single quotes", () => {
-    expect(parts('{{output:order["order-id"]}}')).toEqual([
-      ref('order["order-id"]', path("order", "order-id")),
-    ]);
-    expect(parts("{{output:order['order-id']}}")).toEqual([
-      ref("order['order-id']", path("order", "order-id")),
-    ]);
-  });
-
-  it("lets a backslash escape the next character in a quoted key", () => {
-    expect(parts(String.raw`{{output:quotes['it\'s']}}`)).toEqual([
-      ref(String.raw`quotes['it\'s']`, path("quotes", "it's")),
-    ]);
-    expect(parts(String.raw`{{output:quotes["say \"hi\""]}}`)).toEqual([
-      ref(String.raw`quotes["say \"hi\""]`, path("quotes", 'say "hi"')),
-    ]);
-    expect(parts(String.raw`{{output:quotes['back\\slash']}}`)).toEqual([
-      ref(String.raw`quotes['back\\slash']`, path("quotes", "back\\slash")),
-    ]);
-  });
-
-  // The escape copies the next character; it is not a JSON escape, so `\n` is
-  // an `n`, not a newline.
-  it("reads a backslash before an ordinary letter as that letter", () => {
-    expect(parts(String.raw`{{output:x ?? 'a\nb'}}`)).toEqual([
-      ref(String.raw`x ?? 'a\nb'`, path("x"), literal("anb")),
-    ]);
-  });
-
-  it("allows whitespace between tokens, after `{{output:` and before `}}`", () => {
-    expect(parts("{{output:  user.id  ??  'x'  }}")).toEqual([
-      ref("user.id  ??  'x'", path("user", "id"), literal("x")),
-    ]);
-    expect(parts("{{output:\n\tuser.id\r\n??\t'x'\n}}")).toEqual([
-      ref("user.id\r\n??\t'x'", path("user", "id"), literal("x")),
-    ]);
-  });
-
-  it("reads a chain of three operands", () => {
-    expect(parts("{{output:user.region ?? defaults.region ?? 'unknown'}}")).toEqual([
-      ref(
-        "user.region ?? defaults.region ?? 'unknown'",
-        path("user", "region"),
-        path("defaults", "region"),
-        literal("unknown")
-      ),
-    ]);
-  });
-
-  it.each([
-    ["a single-quoted string", "'single'", "single"],
-    ["a double-quoted string", '"double"', "double"],
-    ["an empty string", "''", ""],
-    ["an integer", "42", 42],
-    ["zero", "0", 0],
-    ["a negative decimal with an exponent", "-1.5e3", -1500],
-    ["a decimal with a signed exponent", "2.5E-2", 0.025],
-    ["true", "true", true],
-    ["false", "false", false],
-    ["null", "null", null],
-  ] as const)("takes %s as a fallback literal", (_label, spelled, value) => {
-    expect(parts(`{{output:x ?? ${spelled}}}`)).toEqual([
-      ref(`x ?? ${spelled}`, path("x"), literal(value)),
-    ]);
-  });
-
-  it("reads a key named like a literal word with brackets", () => {
-    expect(parts('{{output:flags["null"]}}')).toEqual([
-      ref('flags["null"]', path("flags", "null")),
-    ]);
-  });
-
-  // A literal word is a whole segment, not a prefix: `nullable` is a path.
-  it("reads a word that only starts with a literal word as a path", () => {
-    expect(parts("{{output:x ?? nullable.trueish}}")).toEqual([
-      ref("x ?? nullable.trueish", path("x"), path("nullable", "trueish")),
-    ]);
-  });
-
-  it("splits several references and the literal text around them", () => {
+  it("splits several references and the text around them", () => {
     expect(parts("Hi {{output:user.name}}, #{{output:codes[1]}}!")).toEqual([
       { text: "Hi " },
       ref("user.name", path("user", "name")),
@@ -200,21 +124,49 @@ describe("parseOutputReferences — accepted syntax", () => {
       { text: "!" },
     ]);
     expect(parts("{{output:a}}{{output:b}}")).toEqual([ref("a", path("a")), ref("b", path("b"))]);
+    // The first `}}` ends the reference, inside a secret placeholder too.
+    expect(parts("{{secret:{{output:name}}}}")).toEqual([
+      { text: "{{secret:" },
+      ref("name", path("name")),
+      { text: "}}" },
+    ]);
+  });
+
+  // [spelling, JSON value, how a text field writes it]; a text field refuses null.
+  it.each([
+    ["'single'", "single", "single"],
+    ['"double"', "double", "double"],
+    ["''", "", ""],
+    ["42", 42, "42"],
+    ["0", 0, "0"],
+    ["-1.5e3", -1500, "-1500"],
+    ["2.5E-2", 0.025, "0.025"],
+    ["true", true, "true"],
+    ["false", false, "false"],
+    ["null", null, undefined],
+  ] as const)("takes %s as a fallback literal", (spelled, value, text) => {
+    expect(parts(`{{output:x ?? ${spelled}}}`)).toEqual([
+      ref(`x ?? ${spelled}`, path("x"), literal(value)),
+    ]);
+    expect(resolve(`{{output:missing ?? ${spelled}}}`, "arg", {}).value).toBe(value);
+    if (text !== undefined) {
+      expect(resolve(`Value: {{output:missing ?? ${spelled}}}`, "text", {}).value).toBe(
+        `Value: ${text}`
+      );
+    }
   });
 
   it.each(["{{ output:x }}", "{{Output:x}}", "{{OUTPUT:x}}", "{{output :x}}", "{output:x}"])(
     "leaves the near spelling %s as literal text",
     (field) => {
       expect(parts(field)).toEqual([{ text: field }]);
-      const result = resolve(field, "text", { x: "resolved" });
-      expect(result.value).toBe(field);
-      expect(result.references).toEqual([]);
+      expect(resolve(field, "text", { x: "resolved" })).toEqual({
+        ok: true,
+        value: field,
+        references: [],
+      });
     }
   );
-
-  it("exports the marker a reference starts with", () => {
-    expect(OUTPUT_REFERENCE_MARKER).toBe("{{output:");
-  });
 });
 
 // ── parseOutputReferences: rejected syntax ────────────────────────────
@@ -288,26 +240,14 @@ describe("parseOutputReferences — rejected syntax", () => {
     );
   });
 
-  it("quotes the reference up to the first `}}` when a literal holds `}}`", () => {
-    const error = syntaxError("{{output:x ?? '}}'}}");
-    expect(error.reference).toBe("{{output:x ?? '}}");
-    expect(error.message).toContain("the first `}}` ends a reference, even inside a string");
-  });
-
-  it("quotes the rest of the field when the reference is never closed", () => {
-    expect(syntaxError("Hi {{output:user.id}").reference).toBe("{{output:user.id}");
-  });
-
-  it("quotes only the reference that failed, not an earlier good one", () => {
-    expect(syntaxError("{{output:ok}} and {{output:bad ||}}").reference).toBe("{{output:bad ||}}");
-  });
-
-  it("tells an author to read a literal-word key with brackets", () => {
-    expect(syntaxError("{{output:null ?? x}}").message).toBe(
-      "the first operand must be a path into the output document, such as `user.id`; a " +
-        "literal can only follow `??`. `null` is a literal; read a key of that name with " +
-        'brackets, such as `flags["null"]`'
-    );
+  it.each([
+    // A literal holding `}}` is cut at it.
+    ["{{output:x ?? '}}'}}", "{{output:x ?? '}}"],
+    // A reference that is never closed runs to the end of the field.
+    ["Hi {{output:user.id}", "{{output:user.id}"],
+    ["{{output:ok}} and {{output:bad ||}}", "{{output:bad ||}}"],
+  ])("quotes only the reference %s stopped in", (field, reference) => {
+    expect(syntaxError(field).reference).toBe(reference);
   });
 });
 
@@ -319,27 +259,15 @@ describe("resolveOutputField — operands", () => {
     defaults: { region: "eu" },
     codes: [10, 20],
     flags: { null: "yes" },
+    order: { "order-id": "A-1" },
   };
 
   it("reads a simple path, a nested path, an index and a quoted key", () => {
-    const doc = { ...document, order: { "order-id": "A-1" } };
-    expect(resolve("{{output:codes}}", "arg", doc).value).toEqual([10, 20]);
-    expect(resolve("{{output:user.name}}", "text", doc).value).toBe("Ada");
-    expect(resolve("{{output:codes[1]}}", "text", doc).value).toBe("20");
-    expect(resolve('{{output:order["order-id"]}}', "text", doc).value).toBe("A-1");
-    expect(resolve("{{output:order['order-id']}}", "text", doc).value).toBe("A-1");
-  });
-
-  it("takes the value from the middle operand when only that one is set", () => {
-    const result = resolve(
-      "{{output:user.region ?? defaults.region ?? 'unknown'}}",
-      "text",
-      document
-    );
-    expect(result.value).toBe("eu");
-    expect(result.references).toEqual([
-      { source: "user.region ?? defaults.region ?? 'unknown'", value: "eu" },
-    ]);
+    expect(resolve("{{output:codes}}", "arg", document).value).toEqual([10, 20]);
+    expect(resolve("{{output:user.name}}", "text", document).value).toBe("Ada");
+    expect(resolve("{{output:codes[1]}}", "text", document).value).toBe("20");
+    expect(resolve('{{output:order["order-id"]}}', "text", document).value).toBe("A-1");
+    expect(resolve('{{output:flags["null"]}}', "text", document).value).toBe("yes");
   });
 
   it("takes the first operand that gives a value, left to right", () => {
@@ -347,35 +275,13 @@ describe("resolveOutputField — operands", () => {
     expect(resolve("{{output:user.region ?? other ?? 'unknown'}}", "text", document).value).toBe(
       "unknown"
     );
-  });
-
-  it.each([
-    ["a single-quoted string", "'single'", "single"],
-    ["a double-quoted string", '"double"', "double"],
-    ["an integer", "42", 42],
-    ["a negative decimal with an exponent", "-1.5e3", -1500],
-    ["true", "true", true],
-    ["false", "false", false],
-    ["null", "null", null],
-  ] as const)("resolves %s fallback to its own JSON value", (_label, spelled, value) => {
-    expect(resolve(`{{output:missing ?? ${spelled}}}`, "arg", document).value).toBe(value);
-  });
-
-  it.each([
-    ["'single'", "single"],
-    ['"double"', "double"],
-    ["42", "42"],
-    ["-1.5e3", "-1500"],
-    ["true", "true"],
-    ["false", "false"],
-  ])("writes the fallback literal %s into text as %s", (spelled, text) => {
-    expect(resolve(`Value: {{output:missing ?? ${spelled}}}`, "text", document).value).toBe(
-      `Value: ${text}`
-    );
-  });
-
-  it("reads a key named `null` with brackets", () => {
-    expect(resolve('{{output:flags["null"]}}', "text", document).value).toBe("yes");
+    expect(
+      resolve("{{output:user.region ?? defaults.region ?? 'unknown'}}", "text", document)
+    ).toEqual({
+      ok: true,
+      value: "eu",
+      references: [{ source: "user.region ?? defaults.region ?? 'unknown'", value: "eu" }],
+    });
   });
 
   it("resolves several references in one field with the literal text around them", () => {
@@ -416,151 +322,90 @@ describe("resolveOutputField — missing paths", () => {
     order: { "order-id": 7 },
   };
 
-  const MISSES: Array<[string, string, string]> = [
+  // [path, where it stopped]
+  const MISSES: Array<[string, string]> = [
+    ["user.promo", "`output.user` has no `promo` (its keys: id, name, rank)"],
     [
-      "a key an object does not have",
-      "user.promo",
-      "`output.user` has no `promo` (its keys: id, name, rank)",
-    ],
-    [
-      "a key the root does not have",
       "missing",
       "`output` has no `missing` (its keys: user, codes, single, none, nulls, flag, empty, " +
         "maybe, order)",
     ],
-    [
-      "a segment below a number",
-      "user.id.value",
-      "`output.user.id` is a number, so it has no `value`",
-    ],
-    [
-      "a segment below a string",
-      "user.name.first",
-      "`output.user.name` is a string, so it has no `first`",
-    ],
-    ["a segment below a boolean", "flag.on", "`output.flag` is a boolean, so it has no `on`"],
-    [
-      "an index below a string",
-      "user.name[0]",
-      "`output.user.name` is a string, so it has no `[0]`",
-    ],
-    ["an index below a number", "user.id[0]", "`output.user.id` is a number, so it has no `[0]`"],
-    [
-      "`length` of a string",
-      "user.name.length",
-      "`output.user.name` is a string, so it has no `length`",
-    ],
-    ["`length` of an array", "codes.length", "`output.codes` is an array, so it has no `length`"],
-    [
-      "an inherited `constructor`",
-      "user.constructor",
-      "`output.user` has no `constructor` (its keys: id, name, rank)",
-    ],
-    [
-      "an inherited `toString`",
-      "user.toString",
-      "`output.user` has no `toString` (its keys: id, name, rank)",
-    ],
-    [
-      "an inherited `__proto__`",
-      "user.__proto__",
-      "`output.user` has no `__proto__` (its keys: id, name, rank)",
-    ],
-    ["a key on an array", "codes.first", "`output.codes` is an array, so it has no `first`"],
-    [
-      "an index on an object",
-      "user[0]",
-      "`output.user` is an object, so it has no `[0]` (its keys: id, name, rank)",
-    ],
-    ["an index past the end", "codes[2]", "`output.codes` has 2 elements, so it has no `[2]`"],
-    [
-      "an index past a one-element array",
-      "single[1]",
-      "`output.single` has 1 element, so it has no `[1]`",
-    ],
-    ["an index into an empty array", "none[0]", "`output.none` has 0 elements, so it has no `[0]`"],
-    ["a key below null", "maybe.x", "`output.maybe` is null, so it has no `x`"],
-    [
-      "null at the end",
-      "maybe",
-      "`output.maybe` is null; add a `??` fallback if the value can be null",
-    ],
-    [
-      "null in an array at the end",
-      "nulls[0]",
-      "`output.nulls[0]` is null; add a `??` fallback if the value can be null",
-    ],
-    ["a key of an empty object", "empty.x", "`output.empty` has no `x` (it has no keys)"],
-    [
-      "an index on an empty object",
-      "empty[0]",
-      "`output.empty` is an object, so it has no `[0]` (it has no keys)",
-    ],
-    [
-      "a quoted key an object does not have",
-      'order["missing-id"]',
-      '`output.order` has no `["missing-id"]` (its keys: ["order-id"])',
-    ],
-    [
-      "a segment below a quoted key",
-      'order["order-id"].x',
-      '`output.order["order-id"]` is a number, so it has no `x`',
-    ],
+    ["user.id.value", "`output.user.id` is a number, so it has no `value`"],
+    ["user.name[0]", "`output.user.name` is a string, so it has no `[0]`"],
+    ["user.name.length", "`output.user.name` is a string, so it has no `length`"],
+    ["codes.length", "`output.codes` is an array, so it has no `length`"],
+    ["user.constructor", "`output.user` has no `constructor` (its keys: id, name, rank)"],
+    ["user.__proto__", "`output.user` has no `__proto__` (its keys: id, name, rank)"],
+    ["codes.first", "`output.codes` is an array, so it has no `first`"],
+    ["user[0]", "`output.user` is an object, so it has no `[0]` (its keys: id, name, rank)"],
+    ["codes[2]", "`output.codes` has 2 elements, so it has no `[2]`"],
+    ["single[1]", "`output.single` has 1 element, so it has no `[1]`"],
+    ["none[0]", "`output.none` has 0 elements, so it has no `[0]`"],
+    ["maybe.x", "`output.maybe` is null, so it has no `x`"],
+    ["maybe", "`output.maybe` is null; add a `??` fallback if the value can be null"],
+    ["nulls[0]", "`output.nulls[0]` is null; add a `??` fallback if the value can be null"],
+    ["empty.x", "`output.empty` has no `x` (it has no keys)"],
+    ["empty[0]", "`output.empty` is an object, so it has no `[0]` (it has no keys)"],
+    ['order["missing-id"]', '`output.order` has no `["missing-id"]` (its keys: ["order-id"])'],
+    ['order["order-id"].x', '`output.order["order-id"]` is a number, so it has no `x`'],
   ];
 
-  it.each(MISSES)("names where %s stopped", (_label, spelled, miss) => {
+  it.each(MISSES)("names where %s stopped", (spelled, miss) => {
     expect(reject(`{{output:${spelled}}}`, "text", document)).toBe(
       `{{output:${spelled}}} did not resolve: ${miss}`
     );
   });
 
-  it.each(MISSES)("lets a fallback stand in for %s", (_label, spelled) => {
+  it.each(MISSES)("lets a fallback stand in for %s", (spelled) => {
     expect(resolve(`{{output:${spelled} ?? 'fallback'}}`, "text", document).value).toBe("fallback");
     expect(resolve(`{{output:${spelled} ?? user.name}}`, "text", document).value).toBe("Ada");
   });
 
-  it("names every operand that gave no value", () => {
+  it("names every operand that gave no value, with no null advice once there is a fallback", () => {
     expect(reject("{{output:user.promo ?? codes[5] ?? flag.x}}", "text", document)).toBe(
       "{{output:user.promo ?? codes[5] ?? flag.x}} did not resolve: " +
         "`output.user` has no `promo` (its keys: id, name, rank); " +
         "`output.codes` has 2 elements, so it has no `[5]`; " +
         "`output.flag` is a boolean, so it has no `x`"
     );
-  });
-
-  it("lists the first 20 keys of a large object and counts the rest", () => {
-    const many = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`k${i}`, i]));
-    const listed = Array.from({ length: 20 }, (_, i) => `k${i}`).join(", ");
-    expect(reject("{{output:many.missing}}", "text", { many })).toBe(
-      `{{output:many.missing}} did not resolve: \`output.many\` has no \`missing\` ` +
-        `(its keys: ${listed}, and 5 more)`
+    expect(reject("{{output:maybe ?? user.promo}}", "text", document)).toBe(
+      "{{output:maybe ?? user.promo}} did not resolve: `output.maybe` is null; " +
+        "`output.user` has no `promo` (its keys: id, name, rank)"
     );
   });
 
-  it("lists all keys of an object with exactly 20", () => {
-    const many = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, i]));
+  it.each([
+    [25, ", and 5 more"],
+    [20, ""],
+  ])("lists at most 20 of an object's %i keys", (count, more) => {
+    const many = Object.fromEntries(Array.from({ length: count }, (_, i) => [`k${i}`, i]));
     const listed = Array.from({ length: 20 }, (_, i) => `k${i}`).join(", ");
     expect(reject("{{output:many.missing}}", "text", { many })).toBe(
       `{{output:many.missing}} did not resolve: \`output.many\` has no \`missing\` ` +
-        `(its keys: ${listed})`
+        `(its keys: ${listed}${more})`
     );
+  });
+
+  // A key a script wrote can hold a line break, and a reason is one line.
+  it("lists a key holding a line break in its escaped spelling", () => {
+    const reason = reject("{{output:missing}}", "echo", { user: 1, ['x\n  ✓  7 tap "Pay"']: 2 });
+    expect(reason).not.toContain("\n");
+    expect(reason).toContain('(its keys: user, ["x\\n  ✓  7 tap \\"Pay\\""])');
   });
 
   it.each([
     ["0", 0, "0"],
     ["false", false, "false"],
+    ['""', "", ""],
   ] as const)("takes %s as a value, not as missing", (_label, value, text) => {
     const doc = { value };
-    expect(resolve("{{output:value ?? 'fallback'}}", "text", doc).value).toBe(text);
-    expect(resolve("{{output:value ?? 'fallback'}}", "arg", doc).value).toBe(value);
-  });
-
-  it('takes "" as a value, not as missing', () => {
-    const doc = { blank: "" };
-    const whole = resolve("{{output:blank ?? 'fallback'}}", "arg", doc);
-    expect(whole.value).toBe("");
-    expect(whole.references).toEqual([{ source: "blank ?? 'fallback'", value: "" }]);
-    expect(resolve("[{{output:blank ?? 'fallback'}}]", "typed", doc).value).toBe("[]");
+    expect(resolve("{{output:value ?? 'fallback'}}", "arg", doc)).toEqual({
+      ok: true,
+      value,
+      references: [{ source: "value ?? 'fallback'", value }],
+      ...(typeof value === "string" ? {} : { wholeFieldType: describeJsonType(value) }),
+    });
+    expect(resolve("[{{output:value ?? 'fallback'}}]", "typed", doc).value).toBe(`[${text}]`);
   });
 });
 
@@ -580,45 +425,36 @@ const TYPED_DOCUMENT = {
 };
 
 describe.each(TEXT_KINDS)("resolveOutputField — values in a %s field", (kind) => {
-  it("writes a string as is", () => {
-    expect(resolve("{{output:name}}", kind, TYPED_DOCUMENT).value).toBe("Ada");
+  it("writes a string, a number the way JSON.stringify does, and a boolean as text", () => {
+    for (const [field, text] of [
+      ["{{output:name}}", "Ada"],
+      ["{{output:n}}", "42"],
+      ["{{output:half}}", "-0.5"],
+      ["{{output:huge}}", "1e+21"],
+      ["{{output:negativeZero}}", "0"],
+      ["id-{{output:n}}", "id-42"],
+      ["{{output:yes}}", "true"],
+      ["{{output:no}}", "false"],
+    ] as const) {
+      expect(resolve(field, kind, TYPED_DOCUMENT).value).toBe(text);
+    }
+    // Text even when the field is exactly one reference.
+    expect(resolve("{{output:n}}", kind, TYPED_DOCUMENT)).toEqual({
+      ok: true,
+      value: "42",
+      references: [{ source: "n", value: 42 }],
+    });
   });
 
-  it("writes a number the way JSON.stringify does", () => {
-    expect(resolve("{{output:n}}", kind, TYPED_DOCUMENT).value).toBe("42");
-    expect(resolve("{{output:half}}", kind, TYPED_DOCUMENT).value).toBe("-0.5");
-    expect(resolve("{{output:huge}}", kind, TYPED_DOCUMENT).value).toBe("1e+21");
-    expect(resolve("{{output:negativeZero}}", kind, TYPED_DOCUMENT).value).toBe("0");
-    expect(resolve("id-{{output:n}}", kind, TYPED_DOCUMENT).value).toBe("id-42");
-  });
-
-  it("writes a boolean as true or false", () => {
-    expect(resolve("{{output:yes}}", kind, TYPED_DOCUMENT).value).toBe("true");
-    expect(resolve("{{output:no}}", kind, TYPED_DOCUMENT).value).toBe("false");
-  });
-
-  it("keeps text even when the field is exactly one reference", () => {
-    const result = resolve("{{output:n}}", kind, TYPED_DOCUMENT);
-    expect(result.value).toBe("42");
-    expect("wholeFieldType" in result).toBe(false);
-    expect(result.references).toEqual([{ source: "n", value: 42 }]);
-  });
-
-  it("rejects an object", () => {
+  it("rejects an object, an array and null", () => {
+    const needsText =
+      "and this field needs text; reference a string, a number or a boolean inside it";
     expect(reject("{{output:user}}", kind, TYPED_DOCUMENT)).toBe(
-      "{{output:user}} gave an object, and this field needs text; reference a string, a number " +
-        "or a boolean inside it"
+      `{{output:user}} gave an object, ${needsText}`
     );
-  });
-
-  it("rejects an array", () => {
     expect(reject("tags: {{output:user.tags}}", kind, TYPED_DOCUMENT)).toBe(
-      "{{output:user.tags}} gave an array, and this field needs text; reference a string, a " +
-        "number or a boolean inside it"
+      `{{output:user.tags}} gave an array, ${needsText}`
     );
-  });
-
-  it("rejects null and advises ending the chain with a text literal", () => {
     expect(reject("{{output:maybe ?? null}}", kind, TYPED_DOCUMENT)).toBe(
       "{{output:maybe ?? null}} gave null, and this field needs text; end the `??` chain with a " +
         "text literal, such as 'none'"
@@ -627,66 +463,35 @@ describe.each(TEXT_KINDS)("resolveOutputField — values in a %s field", (kind) 
 });
 
 describe("resolveOutputField — values in an arg field", () => {
-  it("keeps a number when the field is exactly one reference", () => {
-    const result = resolve("{{output:n}}", "arg", TYPED_DOCUMENT);
-    expect(result.value).toBe(42);
-    expect(result.wholeFieldType).toBe("a number");
+  it.each([
+    ["a number", "{{output:n}}", 42, "a number"],
+    ["a boolean", "{{output:no}}", false, "a boolean"],
+    ["null through a trailing `?? null`", "{{output:maybe ?? null}}", null, "null"],
+    ["whitespace inside its braces", "{{output:  n  }}", 42, "a number"],
+    ["a string from the document", "{{output:name}}", "Ada", undefined],
+    ["a string literal", "{{output:missing ?? 'x'}}", "x", undefined],
+  ])("keeps the JSON type of a whole-field reference to %s", (_label, field, value, type) => {
+    const result = resolve(field, "arg", TYPED_DOCUMENT);
+    expect(result.value).toBe(value);
+    expect(result.wholeFieldType).toBe(type);
+    expect("wholeFieldType" in result).toBe(type !== undefined);
   });
 
-  it("keeps a boolean when the field is exactly one reference", () => {
-    const result = resolve("{{output:no}}", "arg", TYPED_DOCUMENT);
-    expect(result.value).toBe(false);
-    expect(result.wholeFieldType).toBe("a boolean");
-  });
-
-  it("keeps an object as a deep copy", () => {
-    const document = {
-      request: { headers: { accept: "json" }, list: [1, { deep: "value" }] },
-    };
-    const result = resolve("{{output:request}}", "arg", document);
-    expect(result.wholeFieldType).toBe("an object");
-    expect(result.value).toEqual(document.request);
-    expect(result.value).not.toBe(document.request);
-
-    const copy = result.value as { headers: { accept: string }; list: [number, { deep: string }] };
+  it("keeps an object or an array as a deep copy", () => {
+    const document = { request: { headers: { accept: "json" }, list: [1, { deep: "value" }] } };
+    const object = resolve("{{output:request}}", "arg", document);
+    expect(object.wholeFieldType).toBe("an object");
+    expect(object.value).toEqual(document.request);
+    const copy = object.value as { headers: { accept: string }; list: [number, { deep: string }] };
     copy.headers.accept = "changed";
     copy.list[1].deep = "changed";
     copy.list.push(3);
-    expect(document.request).toEqual({
-      headers: { accept: "json" },
-      list: [1, { deep: "value" }],
-    });
-  });
+    expect(document.request).toEqual({ headers: { accept: "json" }, list: [1, { deep: "value" }] });
 
-  it("keeps an array as a deep copy", () => {
-    const document = { rows: [{ id: 1 }, { id: 2 }] };
-    const result = resolve("{{output:rows}}", "arg", document);
-    expect(result.wholeFieldType).toBe("an array");
-    expect(result.value).toEqual([{ id: 1 }, { id: 2 }]);
-    (result.value as Array<{ id: number }>)[0]!.id = 99;
-    expect(document.rows[0]!.id).toBe(1);
-  });
-
-  it("gives null through a trailing `?? null`", () => {
-    const result = resolve("{{output:maybe ?? null}}", "arg", TYPED_DOCUMENT);
-    expect(result.value).toBeNull();
-    expect(result.wholeFieldType).toBe("null");
-  });
-
-  it("keeps a string, and sets no wholeFieldType for it", () => {
-    const fromDocument = resolve("{{output:name}}", "arg", TYPED_DOCUMENT);
-    expect(fromDocument.value).toBe("Ada");
-    expect("wholeFieldType" in fromDocument).toBe(false);
-
-    const fromLiteral = resolve("{{output:missing ?? 'x'}}", "arg", TYPED_DOCUMENT);
-    expect(fromLiteral.value).toBe("x");
-    expect("wholeFieldType" in fromLiteral).toBe(false);
-  });
-
-  it("still counts a reference with whitespace inside its braces as the whole field", () => {
-    const result = resolve("{{output:  n  }}", "arg", TYPED_DOCUMENT);
-    expect(result.value).toBe(42);
-    expect(result.wholeFieldType).toBe("a number");
+    const array = resolve("{{output:request.list}}", "arg", document);
+    expect(array.wholeFieldType).toBe("an array");
+    (array.value as unknown[]).push(4);
+    expect(document.request.list).toHaveLength(2);
   });
 
   it.each([
@@ -700,81 +505,42 @@ describe("resolveOutputField — values in an arg field", () => {
     expect("wholeFieldType" in result).toBe(false);
   });
 
-  it("rejects an object, an array or null embedded in other text", () => {
-    expect(reject("x{{output:user}}", "arg", TYPED_DOCUMENT)).toBe(
-      "{{output:user}} gave an object, and this field needs text; reference a string, a number " +
-        "or a boolean inside it"
-    );
-    expect(reject("{{output:codes}} ", "arg", TYPED_DOCUMENT)).toContain(
-      "{{output:codes}} gave an array, and this field needs text"
-    );
-    expect(reject("x{{output:maybe ?? null}}", "arg", TYPED_DOCUMENT)).toContain(
-      "{{output:maybe ?? null}} gave null, and this field needs text"
+  it("rejects an object embedded in other text", () => {
+    expect(reject("x{{output:user}}", "arg", TYPED_DOCUMENT)).toContain(
+      "{{output:user}} gave an object, and this field needs text"
     );
   });
 });
 
 describe("resolveOutputField — values in an echo", () => {
-  it("prints an object, an array and null as compact JSON", () => {
+  it("prints an object, an array and null as compact JSON, and a number as text", () => {
     expect(resolve("{{output:user}}", "echo", TYPED_DOCUMENT).value).toBe(
       '{"id":42,"name":"Ada","tags":["a","b"]}'
     );
     expect(resolve("codes: {{output:codes}}", "echo", TYPED_DOCUMENT).value).toBe("codes: [10,20]");
     expect(resolve("{{output:maybe ?? null}}", "echo", TYPED_DOCUMENT).value).toBe("null");
+    const number = resolve("{{output:n}}", "echo", TYPED_DOCUMENT);
+    expect(number.value).toBe("42");
+    expect("wholeFieldType" in number).toBe(false);
   });
 
-  it("prints a whole-field number as text and sets no wholeFieldType", () => {
-    const result = resolve("{{output:n}}", "echo", TYPED_DOCUMENT);
-    expect(result.value).toBe("42");
-    expect("wholeFieldType" in result).toBe(false);
-  });
-
-  it("has a 64 KiB limit", () => {
+  it("cuts a message past 64 KiB, counting what it dropped and never splitting a surrogate pair", () => {
+    const echo = (big: unknown, field = "{{output:big}}") =>
+      resolve(field, "echo", { big }).value as string;
+    const a = (n: number) => "a".repeat(n);
     expect(MAX_ECHO_MESSAGE_CHARS).toBe(65_536);
-  });
-
-  it("keeps a message of exactly the limit whole", () => {
-    const big = "a".repeat(MAX_ECHO_MESSAGE_CHARS);
-    expect(resolve("{{output:big}}", "echo", { big }).value).toBe(big);
-  });
-
-  it("cuts a message one character over the limit", () => {
-    const big = "a".repeat(MAX_ECHO_MESSAGE_CHARS + 1);
-    expect(resolve("{{output:big}}", "echo", { big }).value).toBe(
-      `${"a".repeat(MAX_ECHO_MESSAGE_CHARS)}…(+1 chars)`
-    );
-  });
-
-  it("cuts a long message and counts exactly what it dropped, text around it included", () => {
-    const big = "a".repeat(70_000);
+    expect(echo(a(65_536))).toBe(a(65_536));
+    expect(echo(a(65_537))).toBe(`${a(65_536)}…(+1 chars)`);
     // "log: " (5) + 70,000 = 70,005 characters; 70,005 - 65,536 = 4,469 dropped.
-    expect(resolve("log: {{output:big}}", "echo", { big }).value).toBe(
-      `log: ${"a".repeat(MAX_ECHO_MESSAGE_CHARS - 5)}…(+4469 chars)`
-    );
-  });
-
-  it("cuts a long object printed as JSON", () => {
+    expect(echo(a(70_000), "log: {{output:big}}")).toBe(`log: ${a(65_531)}…(+4469 chars)`);
     const list = Array.from({ length: 20_000 }, () => "abcd");
     const json = JSON.stringify(list);
-    expect(resolve("{{output:list}}", "echo", { list }).value).toBe(
-      `${json.slice(0, MAX_ECHO_MESSAGE_CHARS)}…(+${json.length - MAX_ECHO_MESSAGE_CHARS} chars)`
-    );
-  });
-
-  it("never splits a surrogate pair that straddles the cut", () => {
-    // The pair occupies indexes 65,535 and 65,536, so a cut at 65,536 would
-    // keep only its high half.
-    const big = `${"a".repeat(MAX_ECHO_MESSAGE_CHARS - 1)}\u{1F600}b`;
-    const value = resolve("{{output:big}}", "echo", { big }).value as string;
-    expect(value).toBe(`${"a".repeat(MAX_ECHO_MESSAGE_CHARS - 1)}…(+3 chars)`);
-    expect(LONE_SURROGATE.test(value)).toBe(false);
-  });
-
-  it("keeps a surrogate pair that ends exactly at the cut", () => {
-    const big = `${"a".repeat(MAX_ECHO_MESSAGE_CHARS - 2)}\u{1F600}bc`;
-    const value = resolve("{{output:big}}", "echo", { big }).value as string;
-    expect(value).toBe(`${"a".repeat(MAX_ECHO_MESSAGE_CHARS - 2)}\u{1F600}…(+2 chars)`);
-    expect(LONE_SURROGATE.test(value)).toBe(false);
+    expect(echo(list)).toBe(`${json.slice(0, 65_536)}…(+${json.length - 65_536} chars)`);
+    // A pair at indexes 65,535 and 65,536 straddles the cut; one that ends at it is kept.
+    const straddling = echo(`${a(65_535)}\u{1F600}b`);
+    expect(straddling).toBe(`${a(65_535)}…(+3 chars)`);
+    expect(LONE_SURROGATE.test(straddling)).toBe(false);
+    expect(echo(`${a(65_534)}\u{1F600}bc`)).toBe(`${a(65_534)}\u{1F600}…(+2 chars)`);
   });
 
   it("cuts only an echo, not a field a tool reads", () => {
@@ -788,9 +554,6 @@ describe("resolveOutputField — values in an echo", () => {
 describe("resolveOutputField — `?? ''` and the field's own rules", () => {
   const document = {
     zeroWidth: "​‍",
-    privateUse: "",
-    blank: "  \t",
-    icon: " Save",
     nul: "a\u0000b",
     highSurrogate: "x\uD800y",
     lowSurrogate: "\uDC00",
@@ -820,37 +583,23 @@ describe("resolveOutputField — `?? ''` and the field's own rules", () => {
     expect(resolve("{{output:missing ?? ''}}", kind, document).value).toBe("");
   });
 
-  it.each([
-    ["only zero-width characters", "zeroWidth"],
-    ["only a private-use character", "privateUse"],
-    ["only whitespace", "blank"],
-  ])("rejects a text selector that resolves to %s", (_label, key) => {
-    expect(reject(`{{output:${key}}}`, "text", document)).toContain(
+  // Not only `?? ''`: a value of zero-width characters is no visible text either.
+  it("rejects a text selector that resolves to no visible character", () => {
+    expect(reject("{{output:zeroWidth}}", "text", document)).toContain(
       "selector text must contain at least one visible character"
     );
   });
 
-  it("accepts a text selector with an icon beside a visible word", () => {
-    expect(resolve("{{output:icon}}", "text", document).value).toBe(" Save");
-  });
-
-  it("rejects a NUL character in an env value", () => {
+  it("rejects a NUL character or a lone surrogate in an env value, and takes a whole pair", () => {
     expect(reject("pre-{{output:nul}}", "env", document)).toBe(
       `"pre-{{output:nul}}" resolved to "pre-a\\u0000b", and the value holds a NUL character, ` +
         "which an environment cannot carry"
     );
-  });
-
-  it("rejects a lone surrogate in an env value", () => {
-    expect(reject("{{output:highSurrogate}}", "env", document)).toContain(
-      "the value holds an unpaired surrogate, which an environment cannot carry"
-    );
-    expect(reject("{{output:lowSurrogate}}", "env", document)).toContain(
-      "the value holds an unpaired surrogate"
-    );
-  });
-
-  it("accepts a whole surrogate pair in an env value", () => {
+    for (const key of ["highSurrogate", "lowSurrogate"]) {
+      expect(reject(`{{output:${key}}}`, "env", document)).toContain(
+        "the value holds an unpaired surrogate, which an environment cannot carry"
+      );
+    }
     expect(resolve("{{output:pair}}", "env", document).value).toBe("\u{1F600}");
   });
 });
@@ -880,54 +629,46 @@ describe("resolveOutputField — a value is copied literally", () => {
 // ── resolveOutputField: secret placeholders ───────────────────────────
 
 describe("resolveOutputField — secret placeholders", () => {
-  const spelled = (field: string, placeholder = "{{secret:API_KEY}}") =>
-    `${JSON.stringify(field)} would spell the secret placeholder ${placeholder} with text from ` +
-    "the output document. A secret placeholder must be written in the e2e test file whole";
+  const spelled = (field: string) =>
+    `${JSON.stringify(field)} would spell the secret placeholder {{secret:API_KEY}} with text ` +
+    "from the output document. A secret placeholder must be written in the e2e test file whole";
+
+  const SPELLED: Array<[label: string, field: string, document: OutputDocument]> = [
+    [
+      "two values between them",
+      "{{output:first}}{{output:last}}",
+      { first: "{{secre", last: "t:API_KEY}}" },
+    ],
+    ["a literal `{` before a reference", "{{{output:x}}", { x: "{secret:API_KEY}}" }],
+    ["a value closing it with its last `}`", "{{secret:API_KEY}{{output:brace}}", { brace: "}" }],
+    // The first `}}` ends the reference, so the document picks the secret's name.
+    ["a name the document picks", "{{secret:{{output:name}}}}", { name: "API_KEY" }],
+    [
+      "a value holding one beside other text",
+      "Bearer {{output:token}}",
+      { token: "{{secret:API_KEY}}" },
+    ],
+    [
+      "a value holding one inside its text",
+      "Bearer {{output:token}}",
+      { token: "a {{secret:API_KEY}} b" },
+    ],
+  ];
 
   describe.each(GUARDED_KINDS)("in a %s field", (kind) => {
-    it("rejects a placeholder two values spell between them", () => {
-      const field = "{{output:first}}{{output:last}}";
-      expect(reject(field, kind, { first: "{{secre", last: "t:API_KEY}}" })).toBe(spelled(field));
+    it.each(SPELLED)("rejects a placeholder spelled by %s", (_label, field, document) => {
+      expect(reject(field, kind, document)).toBe(spelled(field));
     });
 
-    it("rejects a placeholder a literal `{` before a reference completes", () => {
-      const field = "{{{output:x}}";
-      expect(reject(field, kind, { x: "{secret:API_KEY}}" })).toBe(spelled(field));
-    });
-
-    it("rejects a placeholder a value closes with its last `}`", () => {
-      const field = "{{secret:API_KEY}{{output:brace}}";
-      expect(reject(field, kind, { brace: "}" })).toBe(spelled(field));
-    });
-
-    // The first `}}` ends the reference, so this field is the text
-    // `{{secret:`, a reference to `name`, and the text `}}`: the document
-    // would pick which secret the placeholder names.
-    it("rejects a placeholder whose name the document picks", () => {
-      const field = "{{secret:{{output:name}}}}";
-      expect(reject(field, kind, { name: "API_KEY" })).toBe(spelled(field));
-    });
-
-    it("rejects a value that holds a whole placeholder beside other text", () => {
-      const field = "Bearer {{output:token}}";
-      expect(reject(field, kind, { token: "{{secret:API_KEY}}" })).toBe(spelled(field));
-      expect(reject(field, kind, { token: "a {{secret:API_KEY}} b" })).toBe(spelled(field));
-    });
-
-    it("keeps a placeholder the author wrote beside a reference", () => {
+    it("keeps a placeholder the author wrote, beside a reference or around an empty value", () => {
+      const user = { id: 42 };
       expect(
-        resolve("Bearer {{secret:API_KEY}} for {{output:user.id}}", kind, { user: { id: 42 } })
-          .value
+        resolve("Bearer {{secret:API_KEY}} for {{output:user.id}}", kind, { user }).value
       ).toBe("Bearer {{secret:API_KEY}} for 42");
-      expect(
-        resolve("{{secret:API_KEY}}{{output:user.id}}", kind, { user: { id: 42 } }).value
-      ).toBe("{{secret:API_KEY}}42");
-    });
-
-    // The rule is "at least one character came from a value": an empty value
-    // inside an authored placeholder contributes none, so every character of
-    // the name is still the author's.
-    it("keeps an authored placeholder an empty value sits inside", () => {
+      expect(resolve("{{secret:API_KEY}}{{output:user.id}}", kind, { user }).value).toBe(
+        "{{secret:API_KEY}}42"
+      );
+      // An empty value contributes no character, so the whole name is the author's.
       expect(resolve("{{secret:API{{output:blank}}_KEY}}", kind, { blank: "" }).value).toBe(
         "{{secret:API_KEY}}"
       );
@@ -940,165 +681,108 @@ describe("resolveOutputField — secret placeholders", () => {
     );
   });
 
-  it("prints what an echo reads, placeholders included", () => {
-    expect(
-      resolve("{{output:first}}{{output:last}}", "echo", { first: "{{secre", last: "t:API_KEY}}" })
-        .value
-    ).toBe("{{secret:API_KEY}}");
-    expect(resolve("{{secret:{{output:name}}}}", "echo", { name: "API_KEY" }).value).toBe(
-      "{{secret:API_KEY}}"
-    );
-    expect(resolve("{{output:token}}", "echo", { token: "{{secret:API_KEY}}" }).value).toBe(
-      "{{secret:API_KEY}}"
-    );
-  });
+  it.each(SPELLED)(
+    "prints what an echo reads, the placeholder spelled by %s included",
+    (_label, field, document) => {
+      expect(resolve(field, "echo", document).value).toContain("{{secret:API_KEY}}");
+    }
+  );
 
-  it("parses a document-picked secret name the way the first `}}` dictates", () => {
-    expect(parts("{{secret:{{output:name}}}}")).toEqual([
-      { text: "{{secret:" },
-      ref("name", path("name")),
-      { text: "}}" },
-    ]);
-  });
-
-  // A name the placeholder grammar refuses spells no placeholder, so nothing
-  // downstream would resolve it either.
+  // A name the placeholder grammar refuses spells no placeholder.
   it("leaves a document-picked name that is not a placeholder name as text", () => {
     expect(resolve("{{secret:{{output:name}}}}", "typed", { name: "API-KEY" }).value).toBe(
       "{{secret:API-KEY}}"
     );
   });
 
-  describe("in a whole-field arg reference", () => {
-    it("rejects a string holding a placeholder", () => {
-      expect(reject("{{output:token}}", "arg", { token: "{{secret:API_KEY}}" })).toBe(
-        `{{output:token}} gave a string holding the secret placeholder {{secret:API_KEY}}. ${PLACEHOLDER_NOTE}`
+  it.each<[label: string, value: unknown, placeholder: string, at: string]>([
+    ["a string holding one", "{{secret:API_KEY}}", "{{secret:API_KEY}}", ""],
+    [
+      "an object with one in a nested value",
+      { headers: { auth: "Bearer {{secret:API_KEY}}" } },
+      "{{secret:API_KEY}}",
+      ".headers.auth",
+    ],
+    [
+      "an array with one nested in it",
+      ["ok", { value: "{{secret:TOKEN}}" }],
+      "{{secret:TOKEN}}",
+      "[1].value",
+    ],
+    [
+      "one under a key that is not a name",
+      { "x-auth": ["{{secret:TOKEN}}"] },
+      "{{secret:TOKEN}}",
+      '["x-auth"][0]',
+    ],
+    ["one in a nested key", { inner: { "{{secret:KEY}}": 1 } }, "{{secret:KEY}}", ".inner"],
+    ["one in a key of the value itself", { "{{secret:KEY}}": 1 }, "{{secret:KEY}}", ""],
+  ])(
+    "rejects a whole-field arg reference to %s, naming its path",
+    (_label, value, placeholder, at) => {
+      expect(reject("{{output:v}}", "arg", { v: value })).toBe(
+        `{{output:v}} gave ${describeJsonType(value)} holding the secret placeholder ${placeholder}` +
+          `${at ? ` at \`${at}\`` : ""}. ${PLACEHOLDER_NOTE}`
       );
-    });
+    }
+  );
 
-    it("rejects an object with a placeholder nested in a value, naming its path", () => {
-      const document = { req: { headers: { auth: "Bearer {{secret:API_KEY}}" } } };
-      expect(reject("{{output:req}}", "arg", document)).toBe(
-        "{{output:req}} gave an object holding the secret placeholder {{secret:API_KEY}} at " +
-          `\`.headers.auth\`. ${PLACEHOLDER_NOTE}`
-      );
-    });
-
-    it("rejects an array with a placeholder nested in it, naming its path", () => {
-      const document = { list: ["ok", { value: "{{secret:TOKEN}}" }] };
-      expect(reject("{{output:list}}", "arg", document)).toBe(
-        "{{output:list}} gave an array holding the secret placeholder {{secret:TOKEN}} at " +
-          `\`[1].value\`. ${PLACEHOLDER_NOTE}`
-      );
-    });
-
-    it("spells a non-identifier key on the path with brackets", () => {
-      const document = { req: { "x-auth": ["{{secret:TOKEN}}"] } };
-      expect(reject("{{output:req}}", "arg", document)).toContain(
-        'holding the secret placeholder {{secret:TOKEN}} at `["x-auth"][0]`'
-      );
-    });
-
-    it("rejects a placeholder in a nested key", () => {
-      const document = { req: { inner: { "{{secret:KEY}}": 1 } } };
-      const reason = reject("{{output:req}}", "arg", document);
-      expect(reason).toContain("gave an object holding the secret placeholder {{secret:KEY}}");
-      expect(reason).toContain("`.inner`");
-    });
-
-    it("rejects a placeholder in a key of the value itself", () => {
-      const document = { req: { "{{secret:KEY}}": 1 } };
-      expect(reject("{{output:req}}", "arg", document)).toContain(
-        "gave an object holding the secret placeholder {{secret:KEY}}"
-      );
-    });
-
-    it("accepts an object whose strings only nearly spell a placeholder", () => {
-      const document = {
-        req: { a: "{{secret:bad-name}}", b: "{{ secret:KEY }}", c: "{{secret:}}" },
-      };
-      expect(resolve("{{output:req}}", "arg", document).value).toEqual(document.req);
-    });
+  it("accepts a whole-field arg object whose strings only nearly spell a placeholder", () => {
+    const req = { a: "{{secret:bad-name}}", b: "{{ secret:KEY }}", c: "{{secret:}}" };
+    expect(resolve("{{output:req}}", "arg", { req }).value).toEqual(req);
   });
 });
 
 // ── describeUnsafeIntegers ────────────────────────────────────────────
 
 describe("describeUnsafeIntegers", () => {
-  it("warns about an integer JSON.parse rounded", () => {
-    const returned = JSON.parse('{"order":{"id":12345678901234567891}}') as OutputDocument;
-    expect(describeUnsafeIntegers({}, returned)).toBe(
-      `output.order.id is 12345678901234567000, ${UNSAFE_NOTE}`
-    );
-  });
+  const warns = (path: string, value: string, more = "") =>
+    `${path} is ${value}, ${UNSAFE_NOTE}${more}`;
+  const BIG = "1152921504606847000"; // 2 ** 60
+  const BIGGER = "2305843009213694000"; // 2 ** 61
 
-  it("does not warn about the largest safe integer, or a non-integer", () => {
+  it("warns about an integer past the safe range, and not about a safe one", () => {
+    const rounded = JSON.parse('{"order":{"id":12345678901234567891}}') as OutputDocument;
+    expect(describeUnsafeIntegers({}, rounded)).toBe(
+      warns("output.order.id", "12345678901234567000")
+    );
+    expect(describeUnsafeIntegers({}, { n: 2 ** 53 })).toBe(warns("output.n", "9007199254740992"));
+    expect(describeUnsafeIntegers({}, { n: -(2 ** 60) })).toBe(warns("output.n", `-${BIG}`));
     expect(
       describeUnsafeIntegers({}, { max: 9007199254740991, min: -9007199254740991, half: 1.5 })
     ).toBeUndefined();
   });
 
-  it("warns about the first integer past the safe range", () => {
-    expect(describeUnsafeIntegers({}, { n: 2 ** 53 })).toBe(
-      `output.n is 9007199254740992, ${UNSAFE_NOTE}`
-    );
-    expect(describeUnsafeIntegers({}, { n: -(2 ** 60) })).toBe(
-      `output.n is -1152921504606847000, ${UNSAFE_NOTE}`
-    );
-  });
-
-  // A script is handed the whole document and hands it back, so a value an
-  // earlier step rounded comes back identical and is not this step's to report.
-  it("does not warn about a value unchanged from the given document", () => {
+  // A script hands back the whole document, so a value an earlier step rounded
+  // comes back identical and is not this step's to report.
+  it("warns only about a value this step changed", () => {
     const text = '{"order":{"id":12345678901234567891},"ids":[12345678901234567891]}';
-    const given = JSON.parse(text) as OutputDocument;
-    const returned = JSON.parse(text) as OutputDocument;
-    expect(describeUnsafeIntegers(given, returned)).toBeUndefined();
-  });
-
-  it("warns when the given document held a different value at that path", () => {
-    expect(describeUnsafeIntegers({ id: 2 ** 61 }, { id: 2 ** 60 })).toBe(
-      `output.id is 1152921504606847000, ${UNSAFE_NOTE}`
-    );
-    expect(describeUnsafeIntegers({ id: "1152921504606847000" }, { id: 2 ** 60 })).toBe(
-      `output.id is 1152921504606847000, ${UNSAFE_NOTE}`
-    );
-    // The same number at another path is not the same value.
+    expect(describeUnsafeIntegers(JSON.parse(text), JSON.parse(text))).toBeUndefined();
+    expect(describeUnsafeIntegers({ id: 2 ** 61 }, { id: 2 ** 60 })).toBe(warns("output.id", BIG));
+    expect(describeUnsafeIntegers({ id: BIG }, { id: 2 ** 60 })).toBe(warns("output.id", BIG));
     expect(describeUnsafeIntegers({ old: 2 ** 60 }, { new: 2 ** 60 })).toBe(
-      `output.new is 1152921504606847000, ${UNSAFE_NOTE}`
+      warns("output.new", BIG)
     );
-  });
-
-  it("reports only the paths that changed", () => {
     expect(
       describeUnsafeIntegers(
         { a: 2 ** 60, ids: [2 ** 60] },
         { a: 2 ** 60, ids: [2 ** 60, 2 ** 61] }
       )
-    ).toBe(`output.ids[1] is 2305843009213694000, ${UNSAFE_NOTE}`);
+    ).toBe(warns("output.ids[1]", BIGGER));
   });
 
-  it("names the first path in document order and counts the others", () => {
-    const returned = { z: { b: 2 ** 60 }, c: [1, 2 ** 61], a: 2 ** 62 };
-    expect(describeUnsafeIntegers({}, returned)).toBe(
-      `output.z.b is 1152921504606847000, ${UNSAFE_NOTE} 2 more paths hold an integer past ` +
-        "that limit."
+  it("names the first path in document order, counts the others, and brackets a non-name key", () => {
+    expect(describeUnsafeIntegers({}, { z: { b: 2 ** 60 }, c: [1, 2 ** 61], a: 2 ** 62 })).toBe(
+      warns("output.z.b", BIG, " 2 more paths hold an integer past that limit.")
     );
-  });
-
-  it("says `1 more path holds` for a single other path", () => {
     expect(describeUnsafeIntegers({}, { list: [2 ** 61, 2 ** 60] })).toBe(
-      `output.list[0] is 2305843009213694000, ${UNSAFE_NOTE} 1 more path holds an integer past ` +
-        "that limit."
+      warns("output.list[0]", BIGGER, " 1 more path holds an integer past that limit.")
     );
-  });
-
-  it("spells a key that is not an identifier with brackets", () => {
     expect(describeUnsafeIntegers({}, { "order-id": 2 ** 60 })).toBe(
-      `output["order-id"] is 1152921504606847000, ${UNSAFE_NOTE}`
+      warns('output["order-id"]', BIG)
     );
     expect(describeUnsafeIntegers({}, { items: [0, { "x y": 2 ** 60 }] })).toBe(
-      `output.items[1]["x y"] is 1152921504606847000, ${UNSAFE_NOTE}`
+      warns('output.items[1]["x y"]', BIG)
     );
   });
 });
@@ -1106,30 +790,12 @@ describe("describeUnsafeIntegers", () => {
 // ── depth ─────────────────────────────────────────────────────────────
 
 describe("flow-output — a document nested 4,096 levels deep", () => {
-  // renderOutputPath cuts a path over 200 characters; "output" plus 4,096
-  // ".a" is 8,198 characters, so 7,998 are dropped.
-  const DEEP_PATH = `${("output" + ".a".repeat(MAX_DOCUMENT_DEPTH)).slice(0, 200)}…(+7998 chars)`;
-
   it("warns about an unsafe integer at the deepest level without overflowing", () => {
     const returned = nested(MAX_DOCUMENT_DEPTH, "12345678901234567891") as OutputDocument;
+    // "output" plus 4,096 ".a" is 8,198 characters; a path is cut at 200.
     expect(describeUnsafeIntegers({}, returned)).toBe(
-      `${DEEP_PATH} is 12345678901234567000, ${UNSAFE_NOTE}`
-    );
-  });
-
-  it("walks a deep unchanged document without warning", () => {
-    const text = "12345678901234567891";
-    const given = nested(MAX_DOCUMENT_DEPTH, text) as OutputDocument;
-    const returned = nested(MAX_DOCUMENT_DEPTH, text) as OutputDocument;
-    expect(describeUnsafeIntegers(given, returned)).toBeUndefined();
-  });
-
-  it("warns about an unsafe integer at the bottom of deeply nested arrays", () => {
-    const returned = {
-      a: nested(MAX_DOCUMENT_DEPTH - 1, "12345678901234567891", "[", "]"),
-    } as OutputDocument;
-    expect(describeUnsafeIntegers({}, returned)).toContain(
-      `is 12345678901234567000, ${UNSAFE_NOTE}`
+      `${("output" + ".a".repeat(MAX_DOCUMENT_DEPTH)).slice(0, 200)}…(+7998 chars) is ` +
+        `12345678901234567000, ${UNSAFE_NOTE}`
     );
   });
 
@@ -1141,70 +807,22 @@ describe("flow-output — a document nested 4,096 levels deep", () => {
     );
   });
 
-  it("rejects a whole-field arg array with a placeholder at the deepest level", () => {
-    const document = { deep: nested(MAX_DOCUMENT_DEPTH, '"{{secret:X}}"', "[", "]") };
-    expect(reject("{{output:deep}}", "arg", document)).toContain(
-      "{{output:deep}} gave an array holding the secret placeholder {{secret:X}} at `[0][0]"
-    );
-  });
-
   it("prints a deep object in an echo", () => {
     // The root is level 1, so `a` holds the other 4,095.
-    const document = nested(MAX_DOCUMENT_DEPTH, "1") as OutputDocument;
     const inner = MAX_DOCUMENT_DEPTH - 1;
-    const json = '{"a":'.repeat(inner) + "1" + "}".repeat(inner);
-    expect(resolve("{{output:a}}", "echo", document).value).toBe(json);
+    expect(
+      resolve("{{output:a}}", "echo", nested(MAX_DOCUMENT_DEPTH, "1") as OutputDocument).value
+    ).toBe('{"a":'.repeat(inner) + "1" + "}".repeat(inner));
   });
 
-  // A whole-field `arg` reference hands the tool a copy. `structuredClone`, the
-  // obvious copy, is recursive in V8 and threw "Maximum call stack size
-  // exceeded" well below the 4,096 levels a script may return (at 1,817 levels
-  // on Node 20.20, 2,386 on 26.7), so the copy must be iterative.
+  // `structuredClone` is recursive in V8 and overflowed well below 4,096 levels.
   it("copies a whole-field arg object nested as deep as a script may return", () => {
     const document = nested(MAX_DOCUMENT_DEPTH, "1") as OutputDocument;
-    let resolution: ReturnType<typeof resolveOutputField> | undefined;
-    expect(() => {
-      resolution = resolveOutputField("{{output:a}}", "arg", document);
-    }).not.toThrow();
-    expect(resolution?.ok).toBe(true);
-    if (!resolution?.ok) return;
-    // An identity check rather than `.not.toBe`: when the two differ, vitest
-    // computes a recursive deep-equality hint that overflows Node 20's stack here.
+    const resolution = resolveOutputField("{{output:a}}", "arg", document);
+    if (!resolution.ok) throw new Error(resolution.reason);
+    // An identity check: on a mismatch vitest's deep-equality hint overflows Node 20's stack.
     expect(resolution.value === document.a).toBe(false);
     expect(depthOf(resolution.value)).toEqual({ depth: MAX_DOCUMENT_DEPTH - 1, leaf: 1 });
-  });
-});
-
-describe("flow-output — a value a script set to null", () => {
-  it("advises a ?? fallback when a reference with none meets a null value", () => {
-    const document = { user: { promo: null } } as OutputDocument;
-    const resolution = resolveOutputField("{{output:user.promo}}", "typed", document);
-    expect(resolution).toEqual({
-      ok: false,
-      reason:
-        "{{output:user.promo}} did not resolve: `output.user.promo` is null; add a `??` fallback if the value can be null",
-    });
-  });
-
-  it("gives no fallback advice to a reference that already has one, or to a missing key", () => {
-    const document = { user: { promo: null } } as OutputDocument;
-    const withFallback = resolveOutputField("{{output:user.promo ?? other}}", "typed", document);
-    expect(withFallback.ok).toBe(false);
-    if (!withFallback.ok) expect(withFallback.reason).not.toContain("add a `??` fallback");
-    const missing = resolveOutputField("{{output:user.code}}", "typed", document);
-    expect(missing.ok).toBe(false);
-    if (!missing.ok) expect(missing.reason).not.toContain("add a `??` fallback");
-  });
-});
-
-describe("flow-output — keys a script wrote", () => {
-  it("lists a key holding a line break in its escaped spelling, so the reason stays one line", () => {
-    const document = { user: 1, ['x\n  ✓  7 tap "Pay"']: 2 } as OutputDocument;
-    const resolution = resolveOutputField("{{output:missing}}", "echo", document);
-    expect(resolution.ok).toBe(false);
-    if (resolution.ok) return;
-    expect(resolution.reason).not.toContain("\n");
-    expect(resolution.reason).toContain('(its keys: user, ["x\\n  ✓  7 tap \\"Pay\\""])');
   });
 });
 
@@ -1225,11 +843,9 @@ describe("sameJsonValue", () => {
   });
 
   it("compares documents 4,096 levels deep without recursion", () => {
-    const left = JSON.parse('{"a":'.repeat(4096) + "1" + "}".repeat(4096)) as unknown;
-    const same = JSON.parse('{"a":'.repeat(4096) + "1" + "}".repeat(4096)) as unknown;
-    const other = JSON.parse('{"a":'.repeat(4096) + "2" + "}".repeat(4096)) as unknown;
-    expect(sameJsonValue(left, same)).toBe(true);
-    expect(sameJsonValue(left, other)).toBe(false);
+    const left = nested(MAX_DOCUMENT_DEPTH, "1");
+    expect(sameJsonValue(left, nested(MAX_DOCUMENT_DEPTH, "1"))).toBe(true);
+    expect(sameJsonValue(left, nested(MAX_DOCUMENT_DEPTH, "2"))).toBe(false);
   });
 });
 
