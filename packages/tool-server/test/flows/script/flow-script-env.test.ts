@@ -291,7 +291,6 @@ describe("environment shape rules", () => {
   const noEnv = "steps:\n  - echo: hi\n";
 
   const STEERS = /steers the runner's own process/;
-  const TEMPLATE = /env.X` uses unsupported template syntax/;
 
   it.each<[string, string, RegExp]>([
     ["a reserved name", fileEnv("{ NODE_OPTIONS: --inspect }"), /NODE_OPTIONS/],
