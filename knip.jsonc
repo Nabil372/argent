@@ -41,7 +41,6 @@
   "ignoreBinaries": [
     "ffmpeg",
     "ffprobe",
-    "jq",
     "locale",
     "netstat",
     "pgrep",
