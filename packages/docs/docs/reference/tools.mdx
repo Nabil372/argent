@@ -120,6 +120,8 @@ Debug timestamps mark when the tool-server parses each frame, not device present
 
 Argent stages local copies and downloads before publishing the completed file. Filesystems without hard links use a visible `recording-*` subdirectory. Later saves remove abandoned staging directories from dead processes in the same boot and PID namespace. Cleanup skips environments where ownership cannot be established. On Windows, or after reboot or identity detection failure, remove abandoned JPEG and staging directories manually.
 
+JPEG spools are named `argent-recording-frames-*` in the server’s temporary directory (`os.tmpdir()`). Partial client saves use hidden `.argent-download-*` directories inside `recordings.directory` (default `.argent/recordings`), containing `recording.part`. Remove only abandoned directories. Completed `recording-*` subdirectories contain saved videos.
+
 Linked recording downloads have a 2 GiB limit. Larger recordings remain on the tool-server. The result preserves its metadata and adds a retrieval warning with the server location.
 
 Extract debug frames with `ffmpeg -i recording.mp4 -fps_mode passthrough -enc_time_base 1:1000000 frame-%06d.png` to avoid resampling. Use frame PTS, not the guessed `r_frame_rate`, to inspect the recorded timeline. The final frame repeats the last image at stop time to preserve the final hold. It does not represent a device update.
