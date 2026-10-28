@@ -354,7 +354,7 @@ describe("screen-recording session blueprint", () => {
         mode,
         pointer,
       });
-      const rejected = expect(starting).rejects.toThrow("torn down");
+      const rejected = starting.catch((error: Error) => error);
       await vi.waitFor(() => expect(instance.api.pendingChild).not.toBeNull());
       await vi.advanceTimersByTimeAsync(READY_GRACE_MS);
       expect(pointer.enable).toHaveBeenCalledOnce();
@@ -364,7 +364,12 @@ describe("screen-recording session blueprint", () => {
       await instance.dispose();
       expect(child.kill).not.toHaveBeenCalled();
       enabled(true);
-      await rejected;
+      const error = await rejected;
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("torn down");
+      expect((error as Error).message).toContain(`a video may have been saved at ${output}`);
+      expect((error as Error).message).toContain("Check that path on the tool-server");
+      expect((error as Error).message).not.toMatch(/nothing was recorded/i);
       expect(instance.api.recordingTimeout).toBeNull();
       expect(getActiveScreenRecordings()).toHaveLength(0);
       expect((await fs.stat(output)).size).toBeGreaterThan(0);
@@ -920,7 +925,7 @@ describe("screen recording capture", () => {
       // the old one-liner otherwise leaves the suite green.
       const message = (err as Error).message;
       expect(message).toContain("stop-all-simulator-servers");
-      expect(message).toContain("nothing was recorded");
+      expect(message).toMatch(/nothing was recorded/i);
       expect(message).toContain("start the recording again");
       expect(message).toContain(IOS_UDID);
     }

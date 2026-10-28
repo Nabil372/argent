@@ -136,7 +136,7 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
 }
 
 /**
- * Reject a start whose readiness resumed after the session was disposed. Call
+ * Reject a start that resumed after the session was disposed. Call
  * synchronously right before spawn, with no await between this check and the
  * spawn/pendingChild stamp, so no capture is launched that dispose's teardown
  * can no longer reap.
@@ -144,17 +144,25 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
  * `dispose()` runs on process shutdown but also whenever
  * `stop-all-simulator-servers` reaps this device-owned session (commonly another
  * agent ending its session). `api.disposed` cannot tell the two apart, so the
- * message names both and invites a retry: after a reap the device is usually
+ * message names both: after a reap the device is usually
  * still up. The `SCREEN_RECORDING_SERVER_SHUTTING_DOWN` wording is historical,
  * not a second claim about the cause.
  */
-export function assertNotDisposed(api: ScreenRecordingSessionApi, stage: string): void {
+export function assertNotDisposed(
+  api: ScreenRecordingSessionApi,
+  stage: string,
+  outputFile?: string
+): void {
   if (api.disposed) {
     throw new FailureError(
       `The screen-recording session for device ${api.deviceId} was torn down while this start ` +
-        `was still initializing, so nothing was recorded. That is either the tool-server shutting ` +
+        `was still initializing. That is either the tool-server shutting ` +
         `down or a stop-all-simulator-servers reaping this device (e.g. another agent ending its ` +
-        `session). If the device is still up, start the recording again.`,
+        `session). ` +
+        (outputFile
+          ? `Capture had already begun, and a video may have been saved at ${outputFile}. ` +
+            `Check that path on the tool-server before starting another recording.`
+          : `Nothing was recorded. If the device is still up, start the recording again.`),
       {
         error_code: FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN,
         failure_stage: stage,

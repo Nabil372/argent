@@ -663,7 +663,7 @@ async function startCaptureLocked(
     api.pointerDisable = params.pointer.disable;
     api.pointerFailed = !(await params.pointer.enable());
   }
-  assertNotDisposed(api, "screen_recording_start");
+  assertNotDisposed(api, "screen_recording_start", outputFile);
 
   api.recordingTimeout = setTimeout(() => {
     api.recordingTimeout = null;
