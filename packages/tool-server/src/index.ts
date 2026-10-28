@@ -83,7 +83,10 @@ export function start(): void {
   initializeStdioTimestampWrapper();
 
   const adbServerPort = configuredAdbServerPort(process.env, getAndroidAdbServerPort());
-  if (adbServerPort !== null) process.env.ANDROID_ADB_SERVER_PORT = adbServerPort;
+  if (adbServerPort !== null) {
+    process.env.ANDROID_ADB_SERVER_PORT = adbServerPort;
+    process.stderr.write(`android.adbServerPort → ANDROID_ADB_SERVER_PORT=${adbServerPort}\n`);
+  }
 
   // Exit on uncaught errors (state may be corrupted), but clean up first so
   // child processes are not orphaned.
