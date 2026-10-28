@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, mkdir, rm, readFile, writeFile, stat, symlink, readdir } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import * as fs from "node:fs/promises";
 import {
   materializeArtifacts,
   isArtifactHandle,
@@ -13,6 +14,10 @@ import {
   type ArtifactHandle,
 } from "../src/artifacts.js";
 import { redirectHomeTo } from "./helpers/home-redirect.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
+}));
 
 function handle(id: string, filename: string, mimeType: string): ArtifactHandle {
   return { [ARTIFACT_MARKER]: true, id, filename, mimeType, size: 0 };
@@ -1009,6 +1014,81 @@ describe("materializeArtifacts durable destination", () => {
     controller.close();
     expect((await downloading).result).toEqual({ video: file });
     expect((await readFile(file)).toString()).toBe("partrest");
+  });
+
+  it("cancels a recording download when the destination cannot be opened", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const denied = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const opening = vi.spyOn(fs, "open").mockRejectedValueOnce(denied);
+    try {
+      await expect(
+        materializeArtifacts(
+          {
+            video: {
+              ...handle("denied", "denied.mp4", "video/mp4"),
+              kind: "screen-recording",
+              size: 8,
+              saveDir: ".argent/recordings",
+            },
+          },
+          { toolsUrl: "http://remote:3001", fetchImpl: vi.fn(async () => new Response(body)) }
+        )
+      ).rejects.toThrow(/permission denied.*already stopped/);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+      expect(await absent(join(projectRoot, ".argent/recordings", "denied.mp4"))).toBe(true);
+    } finally {
+      opening.mockRestore();
+    }
+  });
+
+  it("removes a partial recording and cancels the download when a later write fails", async () => {
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+      },
+      cancel,
+    });
+    const file = join(projectRoot, ".argent/recordings", "partial.mp4");
+    const openFile = fs.open;
+    let writing: ReturnType<typeof vi.spyOn> | undefined;
+    const opening = vi.spyOn(fs, "open").mockImplementationOnce(async (...args) => {
+      const output = await openFile(...args);
+      writing = vi
+        .spyOn(output, "writeFile")
+        .mockImplementationOnce(async (data) => {
+          await output.write(data as Uint8Array);
+        })
+        .mockRejectedValueOnce(Object.assign(new Error("disk full"), { code: "ENOSPC" }));
+      return output;
+    });
+    try {
+      const downloading = materializeArtifacts(
+        {
+          video: {
+            ...handle("partial", "partial.mp4", "video/mp4"),
+            kind: "screen-recording",
+            size: 8,
+            saveDir: ".argent/recordings",
+          },
+        },
+        { toolsUrl: "http://remote:3001", fetchImpl: vi.fn(async () => new Response(body)) }
+      );
+      const rejected = expect(downloading).rejects.toThrow(/disk full.*already stopped/);
+      controller.enqueue(Buffer.from("part"));
+      await vi.waitFor(async () => expect((await stat(file)).size).toBe(4));
+      controller.enqueue(Buffer.from("rest"));
+      await rejected;
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(body.locked).toBe(false);
+      expect(await absent(file)).toBe(true);
+    } finally {
+      writing?.mockRestore();
+      opening.mockRestore();
+    }
   });
 
   it("co-located copy never clobbers an existing recording — lands as `name (2).ext`", async () => {

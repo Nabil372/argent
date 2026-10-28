@@ -231,6 +231,8 @@ async function writeCappedResponse(res: Response, file: string, size: number): P
     if (output) {
       await output.close().catch(() => {});
       await rm(file, { force: true }).catch(() => {});
+    }
+    if (output || (err as NodeJS.ErrnoException).code !== "EEXIST") {
       await reader.cancel().catch(() => {});
     }
     throw err;
