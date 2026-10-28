@@ -54,9 +54,9 @@ describe("flow script executor — output validation", () => {
   }
 
   // Every script is handed the run's document, and a `.sh` step may return one
-  // as deep as the parent accepts (1024 levels, root included).
+  // as deep as the parent accepts (256 levels, root included).
   it("hands a .mjs a document as deep as the parent accepts, and takes it back", async () => {
-    const nested = 1023;
+    const nested = 255;
     const deep: unknown = JSON.parse('{"a":'.repeat(nested) + "1" + "}".repeat(nested));
     const result = await runHanded(`output.touched = true;`, { deep });
     expect(result.failure).toBeUndefined();
@@ -75,15 +75,15 @@ describe("flow script executor — output validation", () => {
   it.each([
     [
       "deeper than the parent accepts, with the parent's own message",
-      `let node = 1; for (let i = 0; i < 1025; i++) node = { a: node }; output.deep = node;`,
-      /^output\.deep(\.a)+\.?… nests deeper than 1024 levels; output must be a document a later step can read back\.$/,
+      `let node = 1; for (let i = 0; i < 257; i++) node = { a: node }; output.deep = node;`,
+      /^output\.deep(\.a)+\.?… nests deeper than 256 levels; output must be a document a later step can read back\.$/,
     ],
     // With no stack to overflow, output that grows as it is read would fill the
     // heap before anything refused it.
     [
       "that grows as it is read, at the depth cap rather than the heap limit",
       `class Endless { toJSON() { return { child: new Endless() }; } }\noutput.tree = new Endless();`,
-      /^output\.tree\.child.* nests deeper than 1024 levels/,
+      /^output\.tree\.child.* nests deeper than 256 levels/,
     ],
   ])("refuses output %s", async (_label, source, message) => {
     const result = await run(source);

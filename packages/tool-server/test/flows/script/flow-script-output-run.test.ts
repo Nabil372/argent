@@ -402,9 +402,9 @@ describe("the run's output document: lifecycle and merge", () => {
     );
   });
 
-  it("takes a .sh document 1,024 levels deep, with a warning about an integer at the bottom, and refuses one a level deeper", async (ctx) => {
+  it("takes a .sh document 256 levels deep, with a warning about an integer at the bottom, and refuses one a level deeper", async (ctx) => {
     skipWithoutBash(ctx);
-    for (const levels of [1024, 1025]) {
+    for (const levels of [256, 257]) {
       const json = path.join(root, `deep-${levels}.json`);
       await write(
         `deep-${levels}.json`,
@@ -421,15 +421,15 @@ describe("the run's output document: lifecycle and merge", () => {
       );
     }
 
-    const deepest = (await runFlow("deep-1024")).result;
-    const over = (await runFlow("deep-1025")).result;
+    const deepest = (await runFlow("deep-256")).result;
+    const over = (await runFlow("deep-257")).result;
 
     expect(deepest.steps[0].status, deepest.steps[0].reason).toBe("pass");
     expect(deepest.steps[0].warning).toMatch(
       /^output\.a\.a\.a.* is 12345678901234567000, past the largest integer/
     );
     expect(over.steps[0].status).toBe("fail");
-    expect(over.steps[0].reason).toContain("nests deeper than 1024 levels");
+    expect(over.steps[0].reason).toContain("nests deeper than 256 levels");
   });
 });
 

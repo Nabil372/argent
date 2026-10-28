@@ -736,8 +736,7 @@ function placeholderInValue(value: unknown): { placeholder: string; path: string
 /**
  * A deep copy of JSON data, so a tool that changes an object it was handed
  * cannot change the run's document. Iterative for the same reason as the walks
- * above: `structuredClone` is recursive and ran out of stack at 1,817 levels on
- * Node 20, too close to the 1024 a document may nest.
+ * above: `structuredClone` is recursive.
  */
 function copyJsonValue(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;

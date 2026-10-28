@@ -922,7 +922,7 @@ function validate(root) {
  * a getter or a `toJSON` that makes a fresh object each time — would otherwise
  * fill the heap before the parent could refuse it.
  */
-const MAX_OUTPUT_DEPTH = 1024;
+const MAX_OUTPUT_DEPTH = 256;
 
 const MAX_PROBLEM_PATH_CHARS = 80;
 
