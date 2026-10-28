@@ -26,6 +26,7 @@ it("disposes later services while a recording is still encoding and bounds the s
   await registry.resolveService("ScreenRecordingSession:device");
   await registry.resolveService("Later:device");
   const shutdown = beginRecordingShutdown(registry);
+  expect(laterDispose).not.toHaveBeenCalled();
   await registry.dispose();
   expect(laterDispose).toHaveBeenCalledOnce();
   expect(registry.getSnapshot().services.get("ScreenRecordingSession:device")?.state).toBe(
@@ -120,4 +121,30 @@ it("prevents a running sequence from recreating disposed services while an admit
   finishRecording();
   expect(await stopping).toEqual({ video: "saved.mp4" });
   await shutdown;
+});
+
+it("includes a recording still initializing in the independent shutdown", async () => {
+  const registry = new Registry();
+  let finish!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const dispose = vi.fn(async () => {});
+  registry.registerBlueprint({
+    namespace: "ScreenRecordingSession",
+    getURN: () => "ScreenRecordingSession:device",
+    factory: async () => {
+      await pending;
+      return { api: {}, events: new TypedEventEmitter(), dispose };
+    },
+  });
+  const starting = registry
+    .resolveService("ScreenRecordingSession:device")
+    .catch((err: Error) => err);
+  expect(registry.getServiceState("ScreenRecordingSession:device")).toBe(ServiceState.STARTING);
+  await beginRecordingShutdown(registry);
+  expect(registry.getServiceState("ScreenRecordingSession:device")).toBe(ServiceState.IDLE);
+  finish();
+  expect(await starting).toBeInstanceOf(Error);
+  expect(dispose).toHaveBeenCalledOnce();
 });
