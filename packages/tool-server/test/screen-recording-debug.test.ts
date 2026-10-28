@@ -351,7 +351,7 @@ it.skipIf(!hasEncoder || process.platform === "win32")(
     const wrapper = path.join(scratch, "unavailable-encoder");
     await fs.writeFile(
       wrapper,
-      `#!${process.execPath}\nprocess.stderr.write("Unknown encoder libx264\\n"); process.exit(1);\n`,
+      `#!${process.execPath}\nconst args = process.argv.slice(2);\nif (args[args.indexOf("-c:v") + 1] === "libx264") {\n  process.stderr.write("Unknown encoder libx264\\n"); process.exit(1);\n}\nprocess.exit(0);\n`,
       { mode: 0o755 }
     );
     await expect(verifyDebugEncoder(wrapper, jpeg([255, 0, 0]))).rejects.toThrow(
@@ -443,4 +443,18 @@ it.skipIf(!hasEncoder)(
     });
     await expect(verifyDebugEncoder("ffmpeg", frame)).resolves.toBeUndefined();
   }
+);
+
+it.skipIf(!hasEncoder || process.platform === "win32")(
+  "identifies a timed-out debug preflight",
+  async () => {
+    const wrapper = path.join(scratch, "stalled-encoder");
+    await fs.writeFile(wrapper, `#!${process.execPath}\nsetTimeout(() => {}, 30000);\n`, {
+      mode: 0o755,
+    });
+    await expect(verifyDebugEncoder(wrapper, jpeg([255, 0, 0]))).rejects.toThrow(
+      "preflight timed out after 10 seconds"
+    );
+  },
+  15_000
 );

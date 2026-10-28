@@ -79,6 +79,10 @@ export async function verifyDebugEncoder(ffmpeg: string, jpeg: Buffer): Promise<
       "1",
       "-c:v",
       "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "12",
       "-f",
       "null",
       "-",
@@ -91,8 +95,13 @@ export async function verifyDebugEncoder(ffmpeg: string, jpeg: Buffer): Promise<
     await probe;
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
+    const timedOut =
+      (error as Error & { killed?: boolean }).killed &&
+      (error as Error & { signal?: string }).signal === "SIGKILL";
     throw new FailureError(
-      `ffmpeg could not encode the first debug frame: ${error.message}`,
+      timedOut
+        ? "Debug encoder preflight timed out after 10 seconds. The host may be busy; retry when load is lower."
+        : `ffmpeg could not encode the first debug frame: ${error.message}`,
       {
         error_code: FAILURE_CODES.SCREEN_RECORDING_START_EXITED,
         failure_stage: "screen_recording_encoder_ready",
