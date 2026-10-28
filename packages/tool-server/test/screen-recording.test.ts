@@ -2294,30 +2294,35 @@ describe("debug finalization safeguards", () => {
     expect((await stopCapture(api)).outputFile).not.toBe(result.outputFile);
   });
 
-  it("reports the real stop lifetime to its enclosing invocation", async () => {
-    const api = await makeSession(iosDevice);
-    fakeStream();
-    const child = fakeChild();
-    await startAndSettle(api, { mode: "debug" });
-    const outputFile = api.outputFile!;
-    await fs.writeFile(outputFile, Buffer.alloc(64, 1));
-    const release = vi.fn();
-    const onRecordingStop = vi.fn(() => release);
-    const stopping = screenRecordingStopTool.execute(
-      { session: api },
-      { udid: IOS_UDID },
-      {
-        artifacts: new ArtifactStore(),
-        onRecordingStop,
-      }
-    );
-    expect(onRecordingStop).toHaveBeenCalledWith(IOS_UDID, outputFile);
-    expect(release).not.toHaveBeenCalled();
-    await api.debugCapture!.finish();
-    child.exit(0);
-    await stopping;
-    expect(release).toHaveBeenCalledOnce();
-  });
+  it.each([true, false])(
+    "reports the real stop lifetime to its enclosing invocation (saved: %s)",
+    async (saved) => {
+      const api = await makeSession(iosDevice);
+      fakeStream();
+      const child = fakeChild();
+      await startAndSettle(api, { mode: "debug" });
+      const outputFile = api.outputFile!;
+      if (saved) await fs.writeFile(outputFile, Buffer.alloc(64, 1));
+      const release = vi.fn();
+      const onRecordingStop = vi.fn(() => release);
+      const stopping = screenRecordingStopTool.execute(
+        { session: api },
+        { udid: IOS_UDID },
+        {
+          artifacts: new ArtifactStore(),
+          onRecordingStop,
+        }
+      );
+      const outcome = stopping.catch((err: Error) => err);
+      expect(onRecordingStop).toHaveBeenCalledWith(IOS_UDID, outputFile);
+      expect(release).not.toHaveBeenCalled();
+      await api.debugCapture!.finish();
+      child.exit(0);
+      const result = await outcome;
+      expect(result instanceof Error).toBe(!saved);
+      expect(release).toHaveBeenCalledOnce();
+    }
+  );
 
   it("does not publish stale or missing captures through the stop tool", async () => {
     const api = await makeSession(iosDevice);

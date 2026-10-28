@@ -111,7 +111,11 @@ function serverShutdownError(
   details: { admitted?: boolean; outputFiles?: string[] } = {}
 ): FailureError {
   const suppliedOutput =
-    args && typeof args === "object" && "outputFile" in args && typeof args.outputFile === "string"
+    toolId === "screen-recording-stop" &&
+    args &&
+    typeof args === "object" &&
+    "outputFile" in args &&
+    typeof args.outputFile === "string"
       ? args.outputFile
       : undefined;
   const outputFiles = details.outputFiles?.length
@@ -119,13 +123,15 @@ function serverShutdownError(
     : suppliedOutput
       ? [suppliedOutput]
       : [];
-  const recording = toolId === "screen-recording-stop" || outputFiles.length > 0;
+  const recording =
+    toolId === "screen-recording-stop" || (details.admitted === true && outputFiles.length > 0);
   const admission = details.admitted
     ? "The tool may have run and may still finish. Check its effect before running it again."
     : "This call was not started.";
-  const guidance = recording
-    ? `Recording finalization may continue, but this response does not confirm a saved video. Check ${outputFiles.join(", ") || "the outputFile returned by screen-recording-start"} on the tool-server after encoding finishes. A restart loses result retrieval state.`
-    : "Reconnect after the server exits. This call was not retried automatically.";
+  const guidance =
+    recording || outputFiles.length > 0
+      ? `Recording finalization may continue, but this response does not confirm a saved video. Check ${outputFiles.join(", ") || "the outputFile returned by screen-recording-start"} on the tool-server after encoding finishes. A restart loses result retrieval state.`
+      : "Reconnect after the server exits. This call was not retried automatically.";
   return new FailureError(`The tool-server is shutting down. ${admission} ${guidance}`, {
     error_code: recording
       ? FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
@@ -474,9 +480,9 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       toolId === "screen-recording-stop"
         ? shutdownRecordings.get(extractDeviceArg(args) ?? "")
         : undefined;
-    const error = serverShutdownError(toolId, args, {
-      outputFiles: outputFile ? [outputFile] : [],
-    });
+    const outputFiles =
+      toolId === undefined ? [...shutdownRecordings.values()] : outputFile ? [outputFile] : [];
+    const error = serverShutdownError(toolId, args, { outputFiles });
     res.status(503).json({ error: error.message, ...errorSignalFields(error) });
   }
   // 48mb: file-input wrappers may inline base64 file content when the client is
@@ -1191,10 +1197,11 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         } else {
           res.json({ data, ...notePayload, ...profilingPayload });
         }
-      } catch (err: unknown) {
-        if (getFailureSignal(err)?.error_code === FAILURE_CODES.REGISTRY_SHUTTING_DOWN) {
-          err = shutdownFailure();
-        }
+      } catch (error: unknown) {
+        const err =
+          getFailureSignal(error)?.error_code === FAILURE_CODES.REGISTRY_SHUTTING_DOWN
+            ? shutdownFailure()
+            : error;
         /**
          * Attribution, applied once here rather than at ~30 throw sites. A
          * failure on a provider-supplied device names the provider and points
@@ -1314,16 +1321,17 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      shutdownRecordings = new Map(
-        getActiveScreenRecordings().flatMap((recording) =>
+      shutdownRecordings = new Map([
+        ...[...pendingCalls].flatMap((call) =>
+          [...call.recordings].map(
+            (recording) => [recording.deviceId, recording.outputFile] as const
+          )
+        ),
+        ...getActiveScreenRecordings().flatMap((recording) =>
           recording.outputFile ? [[recording.deviceId, recording.outputFile] as const] : []
-        )
-      );
-      for (const call of pendingCalls) {
-        for (const recording of call.recordings)
-          shutdownRecordings.set(recording.deviceId, recording.outputFile);
-        call.interrupt();
-      }
+        ),
+      ]);
+      for (const call of pendingCalls) call.interrupt();
       idleTimer.dispose();
       clearInterval(uploadSweeper);
       for (const cancel of activeUploads) cancel();

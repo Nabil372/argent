@@ -366,7 +366,19 @@ export function createToolsClient(options: CreateToolsClientOptions = {}): Tools
       { headers: authHeaders(token), signal: opts?.signal },
       { longRunning: false, carriesUpload: false }
     );
-    if (!res.ok) throw new Error(`GET /tools failed: ${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const json = ((await res.json().catch(() => {
+        opts?.signal?.throwIfAborted();
+        return {};
+      })) ?? {}) as { error?: string; message?: string; error_code?: string; error_kind?: string };
+      throw new ToolInvocationError(
+        errorBodyMessage(json) ?? `GET /tools failed: ${res.status} ${res.statusText}`,
+        {
+          errorCode: json.error_code,
+          errorKind: json.error_kind,
+        }
+      );
+    }
     const json = (await res.json()) as { tools: ToolMeta[] };
     return json.tools;
   }

@@ -212,6 +212,9 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     handle = createHttpApp(stubRegistry(async () => ({})));
     handle.dispose();
     clearActiveScreenRecording("device");
+    const listing = await supertest(handle.app).get("/tools").expect(503);
+    expect(listing.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+    expect(listing.body.error).toContain("/server/original.mp4");
     const response = await supertest(handle.app)
       .post("/tools/screen-recording-stop")
       .send({ udid: "device" })
@@ -335,7 +338,7 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     let delivered = false;
     const response = supertest(handle.app)
       .post("/tools/test-tool")
-      .send({})
+      .send({ outputFile: "/server/profile.cpuprofile" })
       .then((res) => {
         delivered = true;
         return res;
@@ -350,12 +353,68 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       await vi.advanceTimersByTimeAsync(1);
       const result = await response;
       expect(result.status).toBe(503);
+      expect(result.body.error_code).toBe(FAILURE_CODES.HTTP_SERVER_SHUTTING_DOWN);
+      expect(result.body.error).not.toContain("Recording finalization");
       expect(result.body.error).toContain("The tool may have run");
       expect(result.body.error).not.toContain("This call was not started");
       expect(signal?.aborted).toBe(true);
     } finally {
       finish();
       vi.useRealTimers();
+    }
+  });
+
+  it("aborts later flow work after a completed stop while retaining its output path", async () => {
+    const registry = new Registry();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    registry.registerTool({
+      id: "screen-recording-stop",
+      services: () => ({}),
+      execute: async (_services, _args, ctx) => {
+        const release = ctx?.onRecordingStop?.("device", "/server/previous.mp4");
+        release?.();
+        return { video: "saved.mp4" };
+      },
+    });
+    registry.registerTool({
+      id: "e2e-execute",
+      services: () => ({}),
+      execute: async (_services, _args, ctx) => {
+        signal = ctx?.signal;
+        await invokeSubTool(registry, ctx, "screen-recording-stop", {});
+        enter();
+        await pending;
+        return { ok: true };
+      },
+    });
+    handle = createHttpApp(registry);
+    const response = supertest(handle.app)
+      .post("/tools/e2e-execute")
+      .send({})
+      .then((res) => res);
+    await entered;
+    registerActiveScreenRecording("device", Date.now(), 60, "/server/current.mp4");
+    try {
+      registry.beginShutdown();
+      handle.dispose();
+      clearActiveScreenRecording("device");
+      const listing = await supertest(handle.app).get("/tools").expect(503);
+      expect(listing.body.error).toContain("/server/current.mp4");
+      expect(listing.body.error).not.toContain("/server/previous.mp4");
+      const result = await response;
+      expect(result.body.error).toContain("/server/previous.mp4");
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      finish();
+      clearActiveScreenRecording("device");
     }
   });
 

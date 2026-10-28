@@ -141,6 +141,55 @@ describe("createToolsClient options", () => {
     );
   });
 
+  it.each(["fetchTools", "callTool"])(
+    "preserves shutdown guidance and classification during %s discovery",
+    async (operation) => {
+      const message =
+        "The tool-server is shutting down. Check /server/original.mp4 after encoding finishes. A restart loses retrieval state.";
+      const fetchImpl = vi.fn(
+        async (_url: string) =>
+          new Response(
+            JSON.stringify({
+              error: message,
+              error_code: "HTTP_SERVER_SHUTTING_DOWN",
+              error_kind: "unknown",
+            }),
+            {
+              status: 503,
+              statusText: "Service Unavailable",
+              headers: { "Content-Type": "application/json" },
+            }
+          )
+      );
+      const client = createToolsClient({
+        baseUrl: async () => ({ url, token: "t", remote: false }),
+        fetchImpl,
+      });
+      const error = await (
+        operation === "fetchTools"
+          ? client.fetchTools()
+          : client.callTool("screen-recording-stop", { udid: "device" })
+      ).catch((err: Error) => err);
+      expect(error).toBeInstanceOf(ToolInvocationError);
+      expect(error).toMatchObject({
+        message,
+        errorCode: "HTTP_SERVER_SHUTTING_DOWN",
+        errorKind: "unknown",
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl.mock.calls[0][0]).toBe(`${url}/tools`);
+    }
+  );
+
+  it("keeps the discovery HTTP fallback for a non-JSON proxy response", async () => {
+    const client = createToolsClient({
+      baseUrl: async () => ({ url, token: "", remote: false }),
+      fetchImpl: async () =>
+        new Response("unavailable", { status: 503, statusText: "Service Unavailable" }),
+    });
+    await expect(client.fetchTools()).rejects.toThrow("GET /tools failed: 503 Service Unavailable");
+  });
+
   it("routes GET /tools and POST /tools/:name through fetchImpl with the tool's longRunning flag", async () => {
     const fetchImpl = vi.fn((u: string, init: RequestInit) => fetch(u, init));
     const { callTool } = createToolsClient({
