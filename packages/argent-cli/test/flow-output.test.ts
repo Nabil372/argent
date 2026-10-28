@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { MaterializeContext } from "@argent/tools-client";
-import { exportFailureArtifacts, type FlowReport, type StepReport } from "../src/flow.js";
+import { exportFailureArtifacts, type FlowReport, type StepReport } from "../src/e2e.js";
 
 // Spies over the real implementations, not stubs: every test here runs against
 // a real temp filesystem. Only the three marker-window tests override anything,
@@ -161,6 +161,75 @@ describe("exportFailureArtifacts", () => {
     await expect(fs.access(outDir)).rejects.toThrow();
   });
 
+  it("copies each failed step's screen to step-<n>-screen.png, numbered as the report prints steps", async () => {
+    const passedScreen = await writeFile("p.png", "passed-bytes");
+    const failed: StepReport = {
+      index: 2,
+      kind: "tool",
+      status: "fail",
+      artifacts: { screen: await writeHandle("s1.png", "fail-screen") },
+    };
+    // Nested inside a `when:` block: a flat report entry, numbered like any other.
+    const nested: StepReport = {
+      index: 4,
+      kind: "tool",
+      status: "error",
+      depth: 1,
+      artifacts: { screen: await writeFile("s2.png", "error-screen") },
+    };
+    const snapshot: StepReport = {
+      index: 5,
+      kind: "snapshot",
+      status: "fail",
+      snapshotKey: "home__ios-390x844",
+      artifacts: { current: await writeFile("c.png", "current-bytes") },
+    };
+    const passed: StepReport = {
+      index: 1,
+      kind: "tool",
+      status: "pass",
+      artifacts: { screen: passedScreen },
+    };
+    const steps: StepReport[] = [
+      { index: 0, kind: "echo", status: "pass" },
+      passed,
+      failed,
+      { index: 3, kind: "when", status: "pass" },
+      nested,
+      snapshot,
+    ];
+
+    await exportFailureArtifacts(mkReport(steps), outDir, flowFile, ctx);
+
+    const dir = path.join(outDir, "checkout");
+    // The echo is unnumbered, so the failed step is step 2 and the nested one step 4.
+    expect(failed.artifacts?.screen).toBe(path.join(dir, "step-2-screen.png"));
+    expect(nested.artifacts?.screen).toBe(path.join(dir, "step-4-screen.png"));
+    expect(snapshot.artifacts?.current).toBe(path.join(dir, "home__ios-390x844-current.png"));
+    expect(await fs.readFile(path.join(dir, "step-2-screen.png"), "utf8")).toBe("fail-screen");
+    expect(await fs.readFile(path.join(dir, "step-4-screen.png"), "utf8")).toBe("error-screen");
+    expect(passed.artifacts?.screen).toBe(passedScreen);
+    expect((await fs.readdir(dir)).filter((f) => f.endsWith(".png")).sort()).toEqual([
+      "home__ios-390x844-current.png",
+      "step-2-screen.png",
+      "step-4-screen.png",
+    ]);
+  });
+
+  it("leaves --output untouched when a failed step's screen cannot be materialized", async () => {
+    const step: StepReport = {
+      index: 0,
+      kind: "tool",
+      status: "fail",
+      artifacts: { screen: null },
+    };
+
+    await exportFailureArtifacts(mkReport([step]), outDir, flowFile, ctx);
+
+    expect(step.artifacts?.screen).toBeNull();
+    await expect(fs.access(outDir)).rejects.toThrow();
+  });
+
   it("derives the key from the baseline path when the server sent no snapshotKey", async () => {
     const baseline = await writeFile("home__android-1080x2400.png", "baseline-bytes");
     const step: StepReport = {
@@ -308,7 +377,7 @@ describe("exportFailureArtifacts", () => {
 
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(step.artifacts?.diff).toBe(handle);
-      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("unsafe flow filename"));
+      expect(errSpy).toHaveBeenCalledWith(expect.stringContaining("unsafe e2e test filename"));
       await expect(fs.access(outDir)).rejects.toThrow();
     } finally {
       errSpy.mockRestore();
@@ -553,7 +622,7 @@ describe("exportFailureArtifacts", () => {
         expect.stringContaining(`${occupied} already holds artifacts from ${suiteD}`)
       );
       for (const call of errSpy.mock.calls) {
-        expect(call[0]).toContain(`writing this flow's artifacts to ${dest}`);
+        expect(call[0]).toContain(`writing this e2e test's artifacts to ${dest}`);
       }
     } finally {
       errSpy.mockRestore();
@@ -871,7 +940,7 @@ describe("exportFailureArtifacts", () => {
       );
       expect(errSpy).toHaveBeenCalledWith(
         `warning: ${stemDir} already holds artifacts from ${winner.flow}; ` +
-          `writing this flow's artifacts to ${loser.dir} so neither set is overwritten`
+          `writing this e2e test's artifacts to ${loser.dir} so neither set is overwritten`
       );
     } finally {
       errSpy.mockRestore();
@@ -970,7 +1039,7 @@ describe("exportFailureArtifacts", () => {
       expect(errSpy).toHaveBeenCalledTimes(1);
       expect(errSpy).toHaveBeenCalledWith(
         `warning: ${stemDir} already holds files from an unknown source; ` +
-          `writing this flow's artifacts to ${target} so neither set is overwritten`
+          `writing this e2e test's artifacts to ${target} so neither set is overwritten`
       );
     } finally {
       vi.mocked(fs.writeFile).mockRestore();
@@ -1118,7 +1187,7 @@ describe("exportFailureArtifacts", () => {
       expect(errSpy).toHaveBeenCalledTimes(1);
       expect(errSpy).toHaveBeenCalledWith(
         `warning: ${stemDir} already holds files from an unknown source; ` +
-          `writing this flow's artifacts to ${target} so neither set is overwritten`
+          `writing this e2e test's artifacts to ${target} so neither set is overwritten`
       );
     } finally {
       vi.mocked(fs.readFile).mockRestore();
@@ -1157,7 +1226,7 @@ describe("exportFailureArtifacts", () => {
         expect(errSpy).toHaveBeenCalledWith(
           `warning: ${stemDir} could not be claimed (EACCES: permission denied, ` +
             `open '${path.join(stemDir, ".argent-flow-source")}'); ` +
-            `writing this flow's artifacts to ${target} so neither set is overwritten`
+            `writing this e2e test's artifacts to ${target} so neither set is overwritten`
         );
       } finally {
         await fs.chmod(stemDir, 0o755);

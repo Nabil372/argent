@@ -40,6 +40,8 @@ function mockRegistry(calls: Array<{ tool: string; args: Record<string, unknown>
   return {
     invokeTool: vi.fn(async (id: string, args: Record<string, unknown>) => {
       if (id === "list-devices") return { devices: [] };
+      // A failed step's screenshot (flow-failure-screen.test.ts) is not a step's action.
+      if (id === "screenshot") return {};
       calls.push({ tool: id, args });
       return { ok: true };
     }),
@@ -359,7 +361,7 @@ describe("rotate: gating", () => {
     expect(result.steps[0]).toMatchObject({ kind: "rotate", status: "fail" });
     expect(result.steps[0].reason).toMatch(/rotate is unsupported on a physical iOS device/);
     expect(result.steps[0].reason).toMatch(/no two-finger coordinate API on hardware/);
-    expect(result.steps[0].reason).toMatch(/run this flow on a simulator/);
+    expect(result.steps[0].reason).toMatch(/run this e2e test on a simulator/);
     expect(result.steps[0].reason).not.toMatch(/simulator-server/);
     expect(result.calls).toHaveLength(0);
     expect(reads).toBe(0);

@@ -1789,7 +1789,7 @@ describe("finding the interpreter", () => {
   // arms, so its time is inside `durationMs` and outside `timeoutMs`, and
   // `queuedMs` does not carry it either: a step declared at 500 ms took 3.3
   // seconds behind a candidate slow only for the version probe, with `notes`
-  // empty. `flow-yaml.mdx` lists Bash selection beside the queue wait as time
+  // empty. `e2e-yaml.mdx` lists Bash selection beside the queue wait as time
   // outside `timeout`, and this note is what tells the author the lookup was
   // the cause.
   onPosix(

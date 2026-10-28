@@ -776,10 +776,8 @@ export class FlowScriptExecutor {
     // Unref'd because the lifeline end holds a reference on the tool server's
     // event loop, which would keep the server alive past its idle shutdown.
     // Never read from or write to it — the runner only watches for its close.
-    const lifeline = child.stdio[4] as
-      | { unref?: () => void; destroy?: () => void }
-      | null
-      | undefined;
+    const lifeline = child.stdio?.[4] as
+      { unref?: () => void; destroy?: () => void } | null | undefined;
     lifeline?.unref?.();
 
     let startedSeen = false;
@@ -1497,7 +1495,7 @@ function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null
 function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): string {
   const candidates: Array<{ label: string; value: string | undefined }> = [
     { label: "project_root", value: request.projectRoot },
-    { label: "the flow file's directory", value: request.flowDir },
+    { label: "the e2e test file's directory", value: request.flowDir },
   ];
   const named = candidates.filter((c) => c.value);
   const problems: string[] = [];
@@ -1514,7 +1512,7 @@ function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): s
   throw new ScriptSetupError(
     "invalid",
     named.length === 0
-      ? "No working directory was given for the script (neither project_root nor a flow directory)."
+      ? "No working directory was given for the script (neither project_root nor an e2e test directory)."
       : `No working directory exists on the machine running the tool server: ${problems.join("; ")}.`
   );
 }
@@ -1538,11 +1536,14 @@ function encodeRequestOutput(output: Record<string, unknown> | undefined): strin
   } catch (err) {
     throw new ScriptSetupError(
       "invalid",
-      `The flow output could not be encoded for the script: ${errorMessage(err)}`
+      `The e2e test output could not be encoded for the script: ${errorMessage(err)}`
     );
   }
   if (typeof encoded !== "string") {
-    throw new ScriptSetupError("invalid", "The flow output could not be encoded for the script.");
+    throw new ScriptSetupError(
+      "invalid",
+      "The e2e test output could not be encoded for the script."
+    );
   }
   return encoded;
 }
@@ -1939,7 +1940,7 @@ function describeEnvNameProblem(name: string): string | null {
  * time is inside `durationMs` and outside `timeoutMs`, and the queue's
  * `queuedMs` does not carry it either — a step declared at 500 ms took 3.3
  * seconds behind a slow candidate, and 6.1 behind one that ignores SIGTERM,
- * with nothing anywhere saying why. `flow-yaml.mdx` lists the lookup beside the
+ * with nothing anywhere saying why. `e2e-yaml.mdx` lists the lookup beside the
  * queue wait as time spent outside `timeout`, and a `.mjs` step has no
  * equivalent — everything between those two points there is a `statSync` and a
  * `JSON.stringify`.

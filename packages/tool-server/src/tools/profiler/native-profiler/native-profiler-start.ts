@@ -10,6 +10,7 @@ import { ensureDeps } from "../../../utils/check-deps";
 import { startNativeProfilerIos } from "./platforms/ios";
 import { startNativeProfilerAndroid } from "./platforms/android";
 import { metroDeviceIdParam } from "../../../utils/debugger/device-id-param";
+import { trackProfilingRun } from "../../../utils/profiling-devices";
 
 const zodSchema = z.object({
   device_id: metroDeviceIdParam(
@@ -36,14 +37,14 @@ const zodSchema = z.object({
     .describe(
       "iOS-only. When true, cold-launches the app under the profiler with Malloc Stack Logging " +
         "enabled so memory leaks carry an allocation backtrace (responsible frame + library). " +
-        "Without it, leaks are still detected but unattributable — Instruments reports " +
+        "Without it, leaks are still detected but unattributable: Instruments reports " +
         "'<Call stack limit reached>'. Trade-offs: this RESTARTS the app (current state is lost), " +
         "adds memory/CPU overhead, and makes the app noticeably slow to launch (every startup " +
         "allocation records a backtrace), so leave it off for pure CPU/hang profiling. Requires a " +
         "non-degraded Xcode: on Xcode 26.4 and later the cold-launch path is broken, so the call is " +
         "rejected up front (re-run without the flag, or set ARGENT_IOS_CAPTURE=device to override if the " +
-        "device path works on your host). ARGENT_IOS_CAPTURE=all-processes — e.g. exported globally " +
-        "for the normal capture path — also rejects this flag up front, since that fallback cannot " +
+        "device path works on your host). ARGENT_IOS_CAPTURE=all-processes (e.g. exported globally " +
+        "for the normal capture path) also rejects this flag up front, since that fallback cannot " +
         "cold-launch; unset it (or set it to device) first. " +
         "Ignored on Android."
     ),
@@ -85,11 +86,15 @@ Fails if no app is running on the device, or the profiler cannot attach to the p
 
     // Dispatch on the session's platform, not the udid shape: tests pair a
     // synthetic platform with a fake udid that fails the iOS-UDID regex.
+    let started: Awaited<ReturnType<typeof startNativeProfilerAndroid>>;
     if (api.platform === "ios") {
       await ensureDeps(["xcrun"]);
-      return startNativeProfilerIos(api, params);
+      started = await startNativeProfilerIos(api, params);
+    } else {
+      await ensureDeps(["adb"]);
+      started = await startNativeProfilerAndroid(api, params);
     }
-    await ensureDeps(["adb"]);
-    return startNativeProfilerAndroid(api, params);
+    trackProfilingRun(device.id, api);
+    return started;
   },
 };
