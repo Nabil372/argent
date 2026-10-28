@@ -290,6 +290,28 @@ it.skipIf(!hasEncoder)(
       expect(raw.stdout.length / frameBytes).toBe(result.frames.length);
       const pixel = [...raw.stdout.subarray(frameBytes * 62, frameBytes * 62 + 3)];
       expect(pixel.every((channel) => channel > 240)).toBe(true);
+      const bar = frameBytes * 80 + 16 * 34 * 3;
+      expect([...raw.stdout.subarray(bar, bar + 3)].every((channel) => channel < 40)).toBe(true);
+      const extraction = spawnSync(
+        "ffmpeg",
+        [
+          "-v",
+          "error",
+          "-i",
+          file,
+          "-fps_mode",
+          "passthrough",
+          "-enc_time_base",
+          "1:1000000",
+          path.join(dir, "frame-%06d.png"),
+        ],
+        { encoding: "utf8" }
+      );
+      expect(extraction.status, extraction.stderr).toBe(0);
+      expect(extraction.stderr).not.toContain("non monotonically");
+      expect((await readdir(dir)).filter((name) => name.endsWith(".png"))).toHaveLength(
+        result.frames.length
+      );
       expect((await readFile(file)).length).toBeGreaterThan(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -517,3 +539,36 @@ it.skipIf(!hasEncoder)("rejects a nonempty MP4 missing its movie metadata", asyn
   await fs.writeFile(file, Buffer.from("00000020ftypisom00000008mdat"));
   await expect(verifyDebugVideo("ffmpeg", file)).rejects.toThrow();
 });
+
+it.skipIf(process.platform === "win32")(
+  "requires the debug preset and CRF during preflight",
+  async () => {
+    const wrapper = path.join(scratch, "probe-settings");
+    await fs.writeFile(
+      wrapper,
+      `#!${process.execPath}\nconst a = process.argv.slice(2);\nif (a[a.indexOf("-preset")+1] !== "ultrafast" || a[a.indexOf("-crf")+1] !== "12") { process.stderr.write("wrong debug settings"); process.exit(8); }\n`,
+      { mode: 0o755 }
+    );
+    await expect(
+      verifyDebugEncoder(wrapper, Buffer.from([0xff, 0xd8, 0xff, 0xd9]))
+    ).resolves.toBeUndefined();
+  }
+);
+
+it.skipIf(process.platform === "win32")(
+  "does not classify an external SIGKILL as a preflight timeout",
+  async () => {
+    const wrapper = path.join(scratch, "killed-probe");
+    await fs.writeFile(wrapper, `#!${process.execPath}\nprocess.kill(process.pid, "SIGKILL");\n`, {
+      mode: 0o755,
+    });
+    const error = await verifyDebugEncoder(wrapper, Buffer.from([0xff, 0xd8, 0xff, 0xd9])).catch(
+      (err: Error) => err
+    );
+    expect(getFailureSignal(error)).toMatchObject({
+      error_code: FAILURE_CODES.SCREEN_RECORDING_START_EXITED,
+      error_kind: "subprocess",
+    });
+    expect((error as Error).message).not.toContain("timed out");
+  }
+);

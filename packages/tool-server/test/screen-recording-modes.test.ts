@@ -180,3 +180,36 @@ it("explains start and stop calls during registry-owned recording teardown", asy
     await registry.dispose();
   }
 });
+
+it("uses recording teardown guidance through production registry wiring", async () => {
+  const { createRegistry } = await import("../src/utils/setup-registry");
+  const { screenRecordingSessionRef } = await import("../src/blueprints/screen-recording-session");
+  const registry = createRegistry();
+  const ref = screenRecordingSessionRef({
+    id: "emulator-5554",
+    platform: "android",
+    kind: "emulator",
+  });
+  const api = await registry.resolveService<
+    import("../src/blueprints/screen-recording-session").ScreenRecordingSessionApi
+  >(ref.urn, ref.options);
+  let release!: (result: { outputFile: string; sizeBytes: number; durationMs: number }) => void;
+  api.stopping = new Promise((resolve) => {
+    release = resolve;
+  });
+  const disposing = registry.disposeService(ref.urn);
+  try {
+    const error = await registry
+      .invokeTool("screen-recording-stop", { udid: "emulator-5554" })
+      .catch((err: Error) => err);
+    expect((error as Error).message).toContain("being torn down");
+    expect((error as Error).message).toContain("check the outputFile returned by start");
+    expect(getFailureSignal(error)?.error_code).toBe(
+      FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+    );
+  } finally {
+    release({ outputFile: "/unused/recording.mp4", sizeBytes: 1, durationMs: 0 });
+    await disposing;
+    await registry.dispose();
+  }
+});

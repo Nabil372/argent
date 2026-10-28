@@ -229,6 +229,47 @@ async function startFollowing(
 }
 
 describe("a recording of a foldable follows the live panel", () => {
+  it("closes a delayed replacement stream when debug disposal is still encoding", async () => {
+    serveStreams(() => COVER);
+    const child = fakeChild();
+    child.stdin.end.mockImplementation(() => {
+      child.stdin.ended = true;
+      child.stdin.writable = false;
+    });
+    const device: DeviceInfo = { id: DUO, platform: "ios", kind: "simulator" };
+    const instance = await screenRecordingSessionBlueprint.factory({}, device, { device } as never);
+    let screen = 1;
+    await startFollowing(instance.api, async () => live(screen), live(1), "debug");
+    let resolve!: (frame: Buffer) => void;
+    const pending = new Promise<Buffer>((done) => {
+      resolve = done;
+    });
+    const next = {
+      latest: INNER,
+      frameCount: 1,
+      error: null,
+      waitForFirstFrame: vi.fn(() => pending),
+      close: vi.fn(),
+      subscribe: vi.fn(() => vi.fn()),
+    };
+    mockOpenStream.mockResolvedValueOnce(next);
+    screen = 3;
+    await vi.advanceTimersByTimeAsync(PANEL_POLL_MS);
+    expect(next.waitForFirstFrame).toHaveBeenCalledOnce();
+    const disposing = instance.dispose();
+    try {
+      await vi.waitFor(() => expect(child.stdin.end).toHaveBeenCalledOnce());
+      resolve(INNER);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(next.close).toHaveBeenCalledOnce();
+      expect(instance.api.frameStream).not.toBe(next);
+    } finally {
+      resolve(INNER);
+      child.exit(0);
+      await disposing;
+    }
+  });
+
   it("moves the frame source to the other panel's stream and keeps one ffmpeg", async () => {
     serveStreams((url) => (url.includes("screen=3") ? INNER : COVER));
     const child = fakeChild();
