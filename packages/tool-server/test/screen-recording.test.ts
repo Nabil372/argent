@@ -1964,7 +1964,7 @@ describe("debug finalization safeguards", () => {
     await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
     child.stderr.emit("data", Buffer.from("No JPEG data found in image\n"));
     for (let i = 1; i <= 200; i++) {
-      const progress = `frame=${i}\nfps=30\nout_time_us=${i * 10000}\nprogress=continue\n`;
+      const progress = `frame=${i}\nfps=30\nstream_0_0_q=12.0\nbitrate=2300.0kbits/s\ntotal_size=123456\nout_time_us=${i * 10000}\nout_time_ms=${i * 10000}\nout_time=00:00:01.000000\ndup_frames=0\ndrop_frames=0\nspeed=0.85x\nprogress=continue\n`;
       child.stderr.emit("data", Buffer.from(progress.slice(0, 9)));
       child.stderr.emit("data", Buffer.from(progress.slice(9)));
     }

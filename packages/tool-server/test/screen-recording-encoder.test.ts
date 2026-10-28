@@ -59,3 +59,28 @@ it("retains a long failing input path beyond the old 300-character diagnostic li
   expect(diagnostics).toContain(`Impossible to open 'file:${file}'`);
   expect(diagnostics).not.toContain("progress=end");
 });
+
+it.each([
+  "frame=174",
+  "fps=29.98",
+  "stream_0_0_q=12.0",
+  "bitrate=2300.0kbits/s",
+  "total_size=123456",
+  "out_time_us=5800000",
+  "out_time_ms=5800000",
+  "out_time=00:00:05.800000",
+  "dup_frames=0",
+  "drop_frames=0",
+  "speed=0.85x",
+  "progress=continue",
+])("keeps decoder diagnostics after repeated %s progress", (line) => {
+  const diagnostic = "No JPEG data found in image";
+  const stderr = diagnostic + "\n" + (line + "\n").repeat(500);
+  expect(encoderDiagnostics(stderr)).toBe(diagnostic);
+});
+
+it("retains diagnostic text containing a progress-like key away from line start", () => {
+  expect(encoderDiagnostics("decoder rejected frame=174\nprogress=end\n")).toBe(
+    "decoder rejected frame=174"
+  );
+});
