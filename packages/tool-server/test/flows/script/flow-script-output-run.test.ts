@@ -424,8 +424,7 @@ describe("the run's output document: lifecycle and merge", () => {
     const deepest = (await runFlow("deep-4096")).result;
     const over = (await runFlow("deep-4097")).result;
 
-    // The whole step, so a failure shows its reason.
-    expect(deepest.steps[0]).toMatchObject({ status: "pass" });
+    expect(deepest.steps[0].status, deepest.steps[0].reason).toBe("pass");
     expect(deepest.steps[0].warning).toMatch(
       /^output\.a\.a\.a.* is 12345678901234567000, past the largest integer/
     );
