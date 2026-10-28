@@ -36,6 +36,25 @@ const OPENCODE_MODELS = [
 export const DEFAULT_HARNESSES = ["codex", "opencode", "gemini"];
 export const ACCOUNT_HARNESSES = ["claude", "kiro"];
 
+/** The process groups of the commands still running. */
+const running = new Set();
+
+function killGroup(pid) {
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // Already gone.
+  }
+}
+
+/**
+ * Kills every command still running. Each one leads its own process group, which Ctrl-C
+ * in the terminal does not reach, so the check calls this when it is interrupted.
+ */
+export function killRunning() {
+  for (const pid of running) killGroup(pid);
+}
+
 /**
  * Runs a command and collects its output. On timeout the whole process group is killed,
  * which includes the Argent server the harness spawned.
@@ -47,6 +66,7 @@ export function run(
 ) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { env, cwd, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    if (child.pid) running.add(child.pid);
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -54,18 +74,16 @@ export function run(
     child.stderr.on("data", (d) => (stderr += d));
     const timer = setTimeout(() => {
       timedOut = true;
-      try {
-        process.kill(-child.pid, "SIGKILL");
-      } catch {
-        // Already gone.
-      }
+      killGroup(child.pid);
     }, timeoutMs);
     child.on("error", (error) => {
       clearTimeout(timer);
+      running.delete(child.pid);
       resolve({ code: -1, stdout, stderr: `${stderr}${error.message}`, timedOut });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      running.delete(child.pid);
       resolve({ code: code ?? -1, stdout, stderr, timedOut });
     });
   });
@@ -81,8 +99,9 @@ async function installPinned(id, cacheDir, log) {
   const pin = PINS[id];
   const dir = join(cacheDir, id);
   const bin = join(dir, "node_modules", ".bin", pin.bin);
-  const manifest = join(dir, "node_modules", pin.pkg, "package.json");
-  const installed = existsSync(manifest) ? JSON.parse(readFileSync(manifest, "utf8")).version : "";
+  // Written only after a finished install, so an interrupted one is redone.
+  const marker = join(dir, "installed-version");
+  const installed = existsSync(marker) ? readFileSync(marker, "utf8").trim() : "";
   if (existsSync(bin) && installed === pin.version) return bin;
   log(`  installing ${pin.pkg}@${pin.version} into ${dir} (once per version)`);
   mkdirSync(dir, { recursive: true });
@@ -101,6 +120,7 @@ async function installPinned(id, cacheDir, log) {
   );
   if (r.code !== 0 || !existsSync(bin))
     throw new Error(`Installing ${pin.pkg} failed:\n${r.stderr}`);
+  writeFileSync(marker, pin.version);
   return bin;
 }
 
@@ -229,7 +249,8 @@ export async function planRuns(ids, ctx) {
     );
     // Every word of every tool name, so tool_search returns them all.
     const words = new Set(ctx.reference.tools.flatMap((t) => t.name.split("-")));
-    const env = { ...process.env, CODEX_HOME: home, HARNESS_CHECK_KEY: "x", DO_NOT_TRACK: "1" };
+    // HOME too, not just CODEX_HOME: Codex also reads skills from ~/.agents/skills.
+    const env = scratchEnv(home, { CODEX_HOME: home, HARNESS_CHECK_KEY: "x" });
     runs.push({
       id: "codex",
       label: "Codex",

@@ -366,6 +366,7 @@ export function compareRun(before, after) {
   const b = after.view ?? {};
   const names = new Set([...Object.keys(a), ...Object.keys(b)]);
   const diff = {
+    skipped: "",
     toolsAdded: [],
     toolsRemoved: [],
     toolDescriptions: [],
@@ -376,6 +377,12 @@ export function compareRun(before, after) {
     tokensBefore: null,
     tokensAfter: null,
   };
+  // A failed run has no view of the tools, and every tool would read as added or removed.
+  const failed = [before.failure && "the earlier run failed", after.failure && "this run failed"];
+  if (failed.some(Boolean)) {
+    diff.skipped = failed.filter(Boolean).join(", ");
+    return diff;
+  }
   for (const name of names) {
     if (!a[name]) diff.toolsAdded.push(name);
     else if (!b[name]) diff.toolsRemoved.push(name);

@@ -29,11 +29,17 @@ harness CLI ──starts──▶ Argent MCP server (server.mjs: your checkout's
 1. `server.mjs --reference` reads the server's tool list as it is before any
    client-specific text, plus the instructions. This is the reference.
 2. Each harness runs once, headless, with a scratch HOME. It starts the Argent server
-   itself, as it would for a user, and sends its first request to the model. That request
-   is saved.
-3. `analyze.mjs` reads the saved request. For every fact a schema keyword states in the
-   reference (a default, a range, a length or item limit), it looks for the places the
-   model can read it:
+   itself, as it would for a user, and sends its requests to the model. Every request is
+   saved.
+3. `analyze.mjs` reads the saved request with the most Argent tools in it:
+   - opencode first sends a request without tools, for the session title, so the check
+     reads its second one;
+   - Codex gives its model only a `tool_search` tool at first. The stand-in answers the
+     first request with a `tool_search` call that matches every Argent tool, so the
+     schemas arrive in the tool result of Codex's second request.
+
+   For every fact a schema keyword states in the reference (a default, a range, a length
+   or item limit), it looks for the places the model can read it:
    - the keyword itself;
    - Argent's own description text;
    - a sentence Argent added;
@@ -62,6 +68,8 @@ The check writes nothing to `~/.argent` and sends no Argent telemetry. Each harn
 with its own scratch HOME, except Claude Code and Kiro CLI, which need your account. Those
 two get Argent from a config file the check writes (`--mcp-config` for Claude Code, a
 `.kiro/settings/mcp.json` in the check's working folder for Kiro), not from your settings.
+Their saved requests contain whatever else they send their model from your HOME (for
+Claude Code, your `CLAUDE.md`), so check the results folder before you share it.
 
 ## Usage
 
@@ -118,6 +126,9 @@ Kiro CLI                    2.34.2   Q DEV CLI         77/77  0 of 140    0     
   `--compare`, the change per harness is shown. Every check runs the harnesses in the
   same folder (`argent-harness-check-workspace/` in the temp directory), because Claude
   Code puts its working directory into the prompt; that keeps two checks comparable.
+  Claude Code also runs with your own HOME, so the count includes your own setup (your
+  `CLAUDE.md`, for example). Only the change between two checks on one machine says
+  something about Argent.
 - **Result:** one of the following.
   - **OK**
   - **LOSES n**
@@ -144,8 +155,10 @@ The results folder holds:
   - GUI apps (Zed, VS Code, Kiro IDE) have to be driven by hand.
   - Cursor and Devin send to their own cloud and can't be pointed at a local endpoint.
   - Hermes is not included.
-- **Only the first request is checked.** A harness that loads tools on demand (Kiro IDE,
-  Hermes) sends schemas later, inside a tool result.
+- **One request per harness is checked**, the one with the most Argent tools (see
+  [How it works](#how-it-works)). A harness that loads tools on demand in a way the check
+  doesn't script (Kiro IDE, Hermes) sends schemas later, inside a tool result, and is not
+  covered.
 - **The text matching is a heuristic.** If a description states a value in unusual words,
   the check may count it as lost or miss a repeat. In that case, read the param in
   `report.md` and the saved request.

@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import { analyzeRun, compareRun, verdict } from "./analyze.mjs";
-import { ACCOUNT_HARNESSES, DEFAULT_HARNESSES, planRuns, run } from "./harnesses.mjs";
+import { ACCOUNT_HARNESSES, DEFAULT_HARNESSES, killRunning, planRuns, run } from "./harnesses.mjs";
 import { startModelStub, startRecordingProxy } from "./model-stub.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -70,6 +70,14 @@ const cacheDir = resolve(
 );
 const log = (line = "") => console.log(line);
 
+// Without this, Ctrl-C would leave the running harness and its Argent server behind.
+for (const signal of /** @type {const} */ (["SIGINT", "SIGTERM"])) {
+  process.on(signal, () => {
+    killRunning();
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
+
 /** @returns {never} */
 function fail(message) {
   console.error(`harness-check: ${message}`);
@@ -82,6 +90,13 @@ for (const file of [
 ]) {
   if (!existsSync(join(repo, file)))
     fail(`${join(repo, file)} is missing. Run \`npm run build\` in ${repo} first.`);
+}
+// Read the earlier check now, so a wrong path fails before any harness spends a request.
+let earlier = null;
+if (opts.compare) {
+  const earlierFile = join(resolve(opts.compare), "results.json");
+  if (!existsSync(earlierFile)) fail(`${earlierFile} not found.`);
+  earlier = JSON.parse(readFileSync(earlierFile, "utf8"));
 }
 mkdirSync(out, { recursive: true });
 
@@ -261,10 +276,7 @@ if (problems.length) {
 
 // 4. The comparison with an earlier check.
 let comparison = null;
-if (opts.compare) {
-  const earlierFile = join(resolve(opts.compare), "results.json");
-  if (!existsSync(earlierFile)) fail(`${earlierFile} not found.`);
-  const earlier = JSON.parse(readFileSync(earlierFile, "utf8"));
+if (earlier) {
   const sentences = (s) => s.split(/(?<=\.)\s+/).filter(Boolean);
   const before = new Set(sentences(earlier.reference.instructions));
   const now = new Set(sentences(reference.instructions));
@@ -287,26 +299,30 @@ if (opts.compare) {
     "Instructions in request",
     "Input tokens",
   ];
-  const cmpRows = comparison.runs.map((c) => [
-    c.label,
-    c.appended.length || c.otherText.length
-      ? [
-          c.appended.length && `${c.appended.length} with text added at the end`,
-          c.otherText.length && `${c.otherText.length} otherwise changed`,
+  const cmpRows = comparison.runs.map((c) =>
+    c.skipped
+      ? [c.label, `not compared: ${c.skipped}`, ...cmpColumns.slice(2).map(() => "-")]
+      : [
+          c.label,
+          c.appended.length || c.otherText.length
+            ? [
+                c.appended.length && `${c.appended.length} with text added at the end`,
+                c.otherText.length && `${c.otherText.length} otherwise changed`,
+              ]
+                .filter(Boolean)
+                .join(", ")
+            : "same",
+          count(c.toolDescriptions, "changed"),
+          count(c.schemas, "tools changed"),
+          c.toolsAdded.length || c.toolsRemoved.length
+            ? `+${c.toolsAdded.length} / -${c.toolsRemoved.length}`
+            : "same",
+          c.instructions,
+          c.tokensBefore != null && c.tokensAfter != null
+            ? `${c.tokensBefore} -> ${c.tokensAfter} (${c.tokensAfter - c.tokensBefore >= 0 ? "+" : ""}${c.tokensAfter - c.tokensBefore})`
+            : "-",
         ]
-          .filter(Boolean)
-          .join(", ")
-      : "same",
-    count(c.toolDescriptions, "changed"),
-    count(c.schemas, "tools changed"),
-    c.toolsAdded.length || c.toolsRemoved.length
-      ? `+${c.toolsAdded.length} / -${c.toolsRemoved.length}`
-      : "same",
-    c.instructions,
-    c.tokensBefore != null && c.tokensAfter != null
-      ? `${c.tokensBefore} -> ${c.tokensAfter} (${c.tokensAfter - c.tokensBefore >= 0 ? "+" : ""}${c.tokensAfter - c.tokensBefore})`
-      : "-",
-  ]);
+  );
   const cw = cmpColumns.map((c, i) =>
     Math.max(c.length, ...cmpRows.map((row) => String(row[i]).length))
   );
@@ -378,6 +394,10 @@ if (comparison) {
     ""
   );
   for (const c of comparison.runs) {
+    if (c.skipped) {
+      md.push(`### ${c.label}`, "", `- Not compared: ${c.skipped}`, "");
+      continue;
+    }
     md.push(`### ${c.label}`, "", `- Instructions in request: ${c.instructions}`);
     const section = (title, items) =>
       items.length && md.push("", `${title} (${items.length}):`, "", ...items.map((x) => `- ${x}`));
