@@ -118,88 +118,80 @@ const PEM: FlowScriptSecret = {
 const PASS: FlowScriptSecret = { name: "PASS", value: "hunter2-9d3f0a1b7c2e" };
 
 describe("script log redaction - a value an encoder rewrote", () => {
-  it("replaces a value console.log printed as it is", async () => {
-    const result = await runScript(
-      "plain.mjs",
-      `console.log("login with " + process.env.PASSWORD);`,
-      [PASSWORD]
-    );
+  const URL_PASS: FlowScriptSecret = { name: "URL_PASS", value: "P@ss$word&1" };
+  const FORM: FlowScriptSecret = { name: "FORM_PASS", value: "Tr0ub4dor&3!xyz'(~)" };
+  const connect = "postgres://svc:{{secret:URL_PASS}}@db.internal:5432/app";
 
-    expect(result.log).toBe("login with {{secret:PASSWORD}}\n");
-    expectRedacted(result.log, PASSWORD);
-  }, 30_000);
-
-  it("replaces a value JSON.stringify escaped", async () => {
-    const result = await runScript(
-      "json.mjs",
-      `console.log(JSON.stringify({ k: process.env.PASSWORD }));`,
-      [PASSWORD]
-    );
-
-    expect(result.log).toBe('{"k":"{{secret:PASSWORD}}"}\n');
-    expectRedacted(result.log, PASSWORD);
-  }, 30_000);
-
-  it("replaces a value encodeURIComponent escaped", async () => {
-    const result = await runScript(
-      "uri.mjs",
-      `console.log("GET https://api.example.com/login?p=" + encodeURIComponent(process.env.PASSWORD));`,
-      [PASSWORD]
-    );
-
-    expect(result.log).toBe("GET https://api.example.com/login?p={{secret:PASSWORD}}\n");
-    expectRedacted(result.log, PASSWORD);
-  }, 30_000);
-
-  it("replaces a value URLSearchParams encoded", async () => {
-    const result = await runScript(
-      "form.mjs",
-      `console.log("POST /login " + new URLSearchParams({ p: process.env.PASSWORD }));`,
-      [PASSWORD]
-    );
-
-    expect(result.log).toBe("POST /login p={{secret:PASSWORD}}\n");
-    expectRedacted(result.log, PASSWORD);
-  }, 30_000);
-
-  it("replaces a password a URL wrote in its user part, in the log and in the error", async () => {
-    const PW: FlowScriptSecret = { name: "URL_PASS", value: "P@ss$word&1" };
-    const ws = workspace();
-    const result = await executor().execute({
-      scriptPath: ws.write(
-        "userinfo.mjs",
-        `const db = new URL(process.env.DATABASE_URL);
+  it.each<{
+    encoder: string;
+    secret: FlowScriptSecret;
+    source: string;
+    log: string;
+    failure?: string;
+    env?: Record<string, string>;
+  }>([
+    {
+      encoder: "console.log as it is",
+      secret: PASSWORD,
+      source: `console.log("login with " + process.env.PASSWORD);`,
+      log: "login with {{secret:PASSWORD}}\n",
+    },
+    {
+      encoder: "JSON.stringify",
+      secret: PASSWORD,
+      source: `console.log(JSON.stringify({ k: process.env.PASSWORD }));`,
+      log: '{"k":"{{secret:PASSWORD}}"}\n',
+    },
+    {
+      encoder: "encodeURIComponent",
+      secret: PASSWORD,
+      source: `console.log("GET https://api.example.com/login?p=" + encodeURIComponent(process.env.PASSWORD));`,
+      log: "GET https://api.example.com/login?p={{secret:PASSWORD}}\n",
+    },
+    {
+      encoder: "URLSearchParams",
+      secret: PASSWORD,
+      source: `console.log("POST /login " + new URLSearchParams({ p: process.env.PASSWORD }));`,
+      log: "POST /login p={{secret:PASSWORD}}\n",
+    },
+    {
+      encoder: "base64",
+      secret: PASSWORD,
+      source: `console.log("b64 " + Buffer.from(process.env.PASSWORD).toString("base64"));`,
+      log: "b64 {{secret:PASSWORD}}\n",
+    },
+    {
+      encoder: "a URL's user part, in the log and in the error,",
+      secret: URL_PASS,
+      source: `const db = new URL(process.env.DATABASE_URL);
          console.log("seeding", db.href);
-         throw new Error(\`could not connect to \${db}\`);`
-      ),
-      projectRoot: ws.dir,
-      env: { DATABASE_URL: `postgres://svc:${PW.value}@db.internal:5432/app` },
-      secrets: [PW],
-    });
-
-    const connect = "postgres://svc:{{secret:URL_PASS}}@db.internal:5432/app";
-    expect(result.log).toBe(`seeding ${connect}\n`);
-    expect(result.failure?.message).toBe(`could not connect to ${connect}`);
-    expectRedacted(`${result.log}${result.failure?.stack ?? ""}`, PW);
-  }, 30_000);
-
-  it("replaces a value a form body escaped ! ' ( ) ~ in, in the log and in the error", async () => {
-    const FORM: FlowScriptSecret = { name: "FORM_PASS", value: "Tr0ub4dor&3!xyz'(~)" };
-    const result = await runScript(
-      "form-escaped.mjs",
-      `const u = new URL("https://auth.example.com/oauth/token");
+         throw new Error(\`could not connect to \${db}\`);`,
+      env: { DATABASE_URL: `postgres://svc:${URL_PASS.value}@db.internal:5432/app` },
+      log: `seeding ${connect}\n`,
+      failure: `could not connect to ${connect}`,
+    },
+    {
+      encoder: "a form body escaping ! ' ( ) ~, in the log and in the error,",
+      secret: FORM,
+      source: `const u = new URL("https://auth.example.com/oauth/token");
        u.searchParams.set("password", process.env.FORM_PASS);
        console.log("body:", new URLSearchParams({ grant_type: "password", password: process.env.FORM_PASS }).toString());
        throw new Error("token request failed: " + u.toString());`,
-      [FORM]
-    );
+      log: "body: grant_type=password&password={{secret:FORM_PASS}}\n",
+      failure:
+        "token request failed: https://auth.example.com/oauth/token?password={{secret:FORM_PASS}}",
+    },
+  ])(
+    "replaces a value $encoder wrote",
+    async ({ secret, source, log, failure, env }) => {
+      const result = await runScript("encoded.mjs", source, [secret], env ? { env } : {});
 
-    expect(result.log).toBe("body: grant_type=password&password={{secret:FORM_PASS}}\n");
-    expect(result.failure?.message).toBe(
-      "token request failed: https://auth.example.com/oauth/token?password={{secret:FORM_PASS}}"
-    );
-    expectRedacted(`${result.log}${result.failure?.stack ?? ""}`, FORM);
-  }, 30_000);
+      expect(result.log).toBe(log);
+      expect(result.failure?.message).toBe(failure);
+      expectRedacted(`${result.log}${result.failure?.stack ?? ""}`, secret);
+    },
+    30_000
+  );
 
   const SIGNING_KEY: FlowScriptSecret = {
     name: "SIGNING_KEY",
@@ -252,17 +244,6 @@ describe("script log redaction - a value an encoder rewrote", () => {
     expect(result.log).toContain("'-----BEGIN PRIVATE KEY-----\\n' +");
     expect(result.log).toContain("'-----END PRIVATE KEY-----'");
     expect(result.log).not.toContain("{{secret:");
-  }, 30_000);
-
-  it("replaces a value printed as base64", async () => {
-    const result = await runScript(
-      "base64.mjs",
-      `console.log("b64 " + Buffer.from(process.env.PASSWORD).toString("base64"));`,
-      [PASSWORD]
-    );
-
-    expect(result.log).toBe("b64 {{secret:PASSWORD}}\n");
-    expectRedacted(result.log, PASSWORD);
   }, 30_000);
 });
 
