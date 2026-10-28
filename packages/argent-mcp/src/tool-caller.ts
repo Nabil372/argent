@@ -28,12 +28,19 @@ export async function fetchWithReconnect(
     const controller = new AbortController();
     const timer =
       fetchTimeoutMs !== null ? setTimeout(() => controller.abort(), fetchTimeoutMs) : undefined;
+    let callerSignal: AbortSignal | null | undefined;
     try {
       const attemptInit = typeof init === "function" ? init() : init;
-      return await fetch(getUrl(), { ...attemptInit, signal: controller.signal });
+      callerSignal = attemptInit?.signal;
+      const signal = callerSignal
+        ? AbortSignal.any([controller.signal, callerSignal])
+        : controller.signal;
+      return await fetch(getUrl(), { ...attemptInit, signal });
     } catch (err) {
       lastError = err;
-      if (attempt === maxRetries) break;
+      // The caller stopped waiting, so a retry would only queue work behind
+      // the abandoned attempt, which the tool-server keeps running.
+      if (callerSignal?.aborted || attempt === maxRetries) break;
       if (attempt === 0) {
         // First failure: trigger reconnect (spawns new server if dead)
         await reconnect();
@@ -65,9 +72,14 @@ interface ToolCallerDeps {
 
 interface ToolCaller {
   fetchTools(): Promise<ToolMeta[]>;
+  /**
+   * `opts.signal` bounds the whole call, the listing it reads first included,
+   * and is never retried once it fires.
+   */
   callTool(
     name: string,
-    args: unknown
+    args: unknown,
+    opts?: { signal?: AbortSignal }
   ): Promise<{ result: unknown; outputHint?: string; note?: string; profiling?: boolean }>;
 }
 
@@ -132,8 +144,8 @@ export function createToolCaller(deps: ToolCallerDeps): ToolCaller {
 
   return {
     fetchTools: client.fetchTools,
-    async callTool(name, args) {
-      const { data, note, outputHint, profiling } = await client.callTool(name, args);
+    async callTool(name, args, opts) {
+      const { data, note, outputHint, profiling } = await client.callTool(name, args, opts);
       return { result: data, outputHint, note, ...(profiling ? { profiling } : {}) };
     },
   };
