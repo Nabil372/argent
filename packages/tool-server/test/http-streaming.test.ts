@@ -241,17 +241,27 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     });
     const registry = stubRegistry(async () => ({ ok: true }));
     const def = registry.getTool("test-tool")!;
-    vi.mocked(registry.getTool).mockReturnValue({ ...def, requires: ["adb"] });
-    handle = createHttpApp(registry);
+    vi.mocked(registry.getTool).mockReturnValue({ ...def, requires: ["adb"], longRunning: true });
+    const releaseInvocation = vi.fn();
+    const recordInvocation = vi.fn(() => releaseInvocation);
+    handle = createHttpApp(registry, { idleTimeoutMs: 60_000, recordInvocation });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     const response = supertest(handle.app)
       .post("/tools/test-tool")
+      .set("x-argent-ai-client", "codex")
       .send({})
       .then((res) => res);
     await entered;
     handle.dispose();
     finish();
-    expect((await response).status).toBe(503);
-    expect(registry.invokeTool).not.toHaveBeenCalled();
+    try {
+      expect((await response).status).toBe(503);
+      expect(registry.invokeTool).not.toHaveBeenCalled();
+      expect(recordInvocation).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a wrapped input rejection identical on buffered and streamed paths", async () => {

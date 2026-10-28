@@ -957,6 +957,13 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
         }
       }
 
+      if (disposed) {
+        res
+          .status(503)
+          .json({ error: "The tool-server is shutting down. Retry after it restarts." });
+        return;
+      }
+
       // Nobody is left to read the result.
       if (callerGone) return;
 
@@ -1000,12 +1007,6 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // gets each `ctx.emitProgress` event as its own line, then a terminal
       // `result` (or in-band `error`) line. The gates above still answer with
       // plain-JSON status codes — streaming is committed to only once they pass.
-      if (disposed) {
-        res
-          .status(503)
-          .json({ error: "The tool-server is shutting down. Retry after it restarts." });
-        return;
-      }
       const wantsStream = Boolean(req.headers.accept?.includes("application/x-ndjson"));
       const writeLine = (payload: unknown): void => {
         res.write(`${JSON.stringify(payload)}\n`);
