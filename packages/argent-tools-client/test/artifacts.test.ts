@@ -1037,6 +1037,38 @@ describe("materializeArtifacts durable destination", () => {
     }
   );
 
+  it.each(["ENOTSUP", "EPERM"])(
+    "keeps a completed download when hard-link publication fails with %s",
+    async (code) => {
+      const linking = vi
+        .spyOn(fs, "link")
+        .mockRejectedValueOnce(Object.assign(new Error("unsupported link"), { code }));
+      try {
+        const { result } = await materializeArtifacts(
+          {
+            video: {
+              ...handle("fallback", "fallback.mp4", "video/mp4"),
+              kind: "screen-recording",
+              size: MP4.length,
+              saveDir: ".argent/recordings",
+            },
+          },
+          {
+            toolsUrl: "http://remote:3001",
+            fetchImpl: vi.fn(async () => new Response(Buffer.from(MP4))),
+          }
+        );
+        const file = (result as { video: string }).video;
+        expect(file).toMatch(/\.argent-download-[^/\\]+[/\\]fallback\.mp4$/);
+        expect(await readFile(file)).toEqual(Buffer.from(MP4));
+        expect(await readdir(join(file, ".."))).toEqual(["fallback.mp4"]);
+        expect(result).not.toHaveProperty("warning");
+      } finally {
+        linking.mockRestore();
+      }
+    }
+  );
+
   it("writes recording chunks to disk before the download finishes", async () => {
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({

@@ -27,6 +27,7 @@ import {
   open,
   readFile,
   realpath,
+  rename,
   rm,
   stat,
   writeFile,
@@ -504,6 +505,7 @@ export async function materializeArtifacts(
             );
           }
           const downloadDir = await mkdtemp(join(saveTarget.dir, ".argent-download-"));
+          let finalPath: string | null = null;
           try {
             const res = await fetchFn(`${ctx.toolsUrl}/artifacts/${value.id}`, {
               headers: authHeaders,
@@ -515,9 +517,13 @@ export async function materializeArtifacts(
             }
             const partial = join(downloadDir, "recording.part");
             await writeCappedResponse(res, partial, value.size);
-            const finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
+            finalPath = await writeDurableUnique(saveTarget.dir, filename, (p) =>
               link(partial, p)
-            );
+            ).catch(async () => {
+              const completed = join(downloadDir, filename);
+              await rename(partial, completed);
+              return completed;
+            });
             if (!finalPath) throw new Error("No unused recording filename was available.");
             if (value.mimeType.startsWith("image/")) {
               images.push({
@@ -528,7 +534,9 @@ export async function materializeArtifacts(
             }
             return finalPath;
           } finally {
-            await rm(downloadDir, { recursive: true, force: true });
+            if (!finalPath || dirname(finalPath) !== downloadDir) {
+              await rm(downloadDir, { recursive: true, force: true });
+            }
           }
         } catch (err) {
           if (value.kind === "screen-recording" && !ctx.signal?.aborted) {
