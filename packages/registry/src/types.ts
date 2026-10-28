@@ -268,7 +268,8 @@ export interface ToolDefinition<TParams = void, TResult = unknown> {
    * Marks invocations that may legitimately run for a long time (e.g.
    * orchestrators replaying many sub-tools): the MCP adapter drops its
    * per-request fetch timeout, and the HTTP layer keeps the idle-shutdown timer
-   * warm for the call's duration.
+   * warm for the call's duration. The client requests NDJSON with keepalives;
+   * a connection lost after response headers arrive is not replayed.
    */
   longRunning?: boolean;
   /**
