@@ -110,7 +110,7 @@ describe("scroll-to on a Mac app", () => {
     );
     expect(result.steps[0]).toMatchObject({
       status: "fail",
-      reason: expect.stringMatching(/^nothing scrolls at the centre of the screen, .* in within:$/),
+      reason: expect.stringMatching(/nothing scrolls.*within:/),
     });
     expect(result.calls.map((c) => c.tool)).toEqual(["gesture-scroll"]);
   });

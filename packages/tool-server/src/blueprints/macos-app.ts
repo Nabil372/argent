@@ -118,11 +118,7 @@ export interface MacosLaunchResult extends MacosLibraryHandshake {
   logPath: string;
   /** The app was already running with the library; nothing was started. */
   alreadyRunning?: true;
-  /**
-   * argent quit a copy that ran without the library, a new process showed no
-   * window in time, the app has no listening socket, or a running app kept the
-   * arguments of its start.
-   */
+  /** Something about the start that the caller should report. */
   note?: string;
 }
 

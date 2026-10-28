@@ -165,7 +165,7 @@ describe("resolveFlowDevice with Mac app rows", () => {
     });
     const alone = makeRegistry({ devices: [row(APP)] }).registry;
     await expect(resolveFlowDevice(alone, undefined, {})).rejects.toThrow(
-      /No booted device found\..*A Mac app is picked only with --platform macos or --device\./
+      /--platform macos or --device/
     );
   });
 

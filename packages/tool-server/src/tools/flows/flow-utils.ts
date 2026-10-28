@@ -644,7 +644,6 @@ export type Launch =
       ios?: AppLaunch;
       android?: string;
       vega?: string;
-      /** A Mac app's bundle id. */
       macos?: AppLaunch;
       chromium?: ChromiumLaunch;
     };

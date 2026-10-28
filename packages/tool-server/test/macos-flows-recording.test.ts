@@ -16,11 +16,7 @@ vi.mock("../src/tools/flows/flow-tree", async (importOriginal) => ({
 
 import { createFlowAddStepTool, directiveCommandHint } from "../src/tools/flows/flow-add-step";
 import { flowStartRecordingTool } from "../src/tools/flows/flow-start-recording";
-import {
-  __resetRecordingsForTesting,
-  appIdForPlatform,
-  parseFlow,
-} from "../src/tools/flows/flow-utils";
+import { __resetRecordingsForTesting, parseFlow } from "../src/tools/flows/flow-utils";
 import { MACOS_DESCRIBE_LIMITS, MACOS_JUDGING_LIMITS } from "../src/tools/describe/platforms/macos";
 import { useMacosAppsFlag } from "./helpers/macos-apps-flag";
 
@@ -118,28 +114,18 @@ describe("a tap recorded on a Mac app", () => {
     expect(await recordedSteps("unlocked")).toEqual([{ kind: "tap", selector: { text: "Save" } }]);
   });
 
-  it("records restart-app as a bare-string launch that resolves on macOS", async () => {
+  it.each([
+    [undefined, BUNDLE],
+    [["-Flag", "1"], { macos: { app: BUNDLE, args: ["-Flag", "1"] } }],
+  ])("records restart-app with the args the restarted app got (%j)", async (args, app) => {
     serve([], "macos-devtools");
     await start("e2e", "");
-
-    await record("e2e", "restart-app", { bundleId: BUNDLE });
-
-    const steps = await recordedSteps("e2e");
-    expect(steps).toEqual([{ kind: "launch", app: BUNDLE }]);
-    expect(appIdForPlatform(BUNDLE, "macos")).toBe(BUNDLE);
-  });
-
-  it("records the arguments the restarted app got, also those of its last start", async () => {
-    serve([], "macos-devtools");
-    await start("args", "");
     const reg = registry();
-    vi.mocked(reg.invokeTool).mockResolvedValueOnce({ restarted: true, args: ["-Flag", "1"] });
+    vi.mocked(reg.invokeTool).mockResolvedValueOnce({ restarted: true, args });
 
-    await record("args", "restart-app", { bundleId: BUNDLE }, reg);
+    await record("e2e", "restart-app", { bundleId: BUNDLE }, reg);
 
-    expect(await recordedSteps("args")).toEqual([
-      { kind: "launch", app: { macos: { app: BUNDLE, args: ["-Flag", "1"] } } },
-    ]);
+    expect(await recordedSteps("e2e")).toEqual([{ kind: "launch", app }]);
   });
 
   it("refuses a tool without macOS support before it runs, as the runner does", async () => {

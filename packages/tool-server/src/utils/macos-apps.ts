@@ -565,7 +565,7 @@ export interface MacosAppInfo {
 // The framework a Chromium browser ships: "Google Chrome Framework", "Microsoft Edge
 // Framework", "Brave Browser Framework", "Chromium Framework" and the like.
 const CHROMIUM_BROWSER_FRAMEWORK =
-  /\b(chrome|chromium|edge|brave|vivaldi|opera)\b.* framework\.framework$/i;
+  /\b(chrome|chromium|edge|brave|vivaldi|opera)\b(?! embedded).* framework\.framework$/i;
 
 function chromiumKind(appPath: string): MacosAppInfo["chromium"] {
   let frameworks: string[];

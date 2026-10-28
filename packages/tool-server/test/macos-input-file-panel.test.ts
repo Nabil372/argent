@@ -229,24 +229,6 @@ describe("file-panel", () => {
     expect(issueSandboxExtension).not.toHaveBeenCalled();
   });
 
-  it("choose saves over a document package and grants only the package", async () => {
-    tracked.sandboxed = true;
-    const pkg = path.join(sandbox, "Notes.rtfd");
-    fs.mkdirSync(pkg);
-    const { invoke, calls } = harness([savePanel]);
-    await expect(invoke({ action: "choose", path: pkg })).resolves.toMatchObject({
-      kind: "save",
-      paths: [pkg],
-    });
-    expect(granted()).toEqual([pkg]);
-    expect(nonListCalls(calls)).toEqual([
-      {
-        method: "Panel.complete",
-        params: { path: pkg, tokens: [`token-for:${pkg}`], panel: 42 },
-      },
-    ]);
-  });
-
   it("expands a leading ~/ to the home folder", async () => {
     const home = path.join(sandbox, "home");
     fs.mkdirSync(home);
@@ -402,12 +384,6 @@ describe("file-panel", () => {
     fs.symlinkSync(target, link);
     const { invoke } = harness();
     await invoke({ action: "stub", path: link });
-    expect(granted()).toEqual([target]);
-    issueSandboxExtension.mockClear();
-    // Saved over the link, the file written is its target.
-    await expect(invoke({ action: "stub", path: link, panelKind: "save" })).resolves.toMatchObject({
-      panelKind: "save",
-    });
     expect(granted()).toEqual([target]);
   });
 

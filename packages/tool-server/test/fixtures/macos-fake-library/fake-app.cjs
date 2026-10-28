@@ -118,18 +118,14 @@ function handle(socket, msg) {
 
 function windows() {
   if (mode === "windowless" || Date.now() - startedAt < 200) return [];
-  if (mode === "panel-only") {
-    return [
-      { number: 1, kind: "panel", isVisible: true, isMiniaturized: false, isReference: false },
-    ];
-  }
+  const panel = mode === "panel-only";
   return [
     {
       number: 1,
-      kind: "window",
+      kind: panel ? "panel" : "window",
       isVisible: true,
       isMiniaturized: mode === "minimized",
-      isReference: true,
+      isReference: !panel,
     },
   ];
 }

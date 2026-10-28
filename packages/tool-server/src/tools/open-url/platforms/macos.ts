@@ -68,7 +68,7 @@ export const macosImpl: PlatformImpl<{ macosApp: MacosAppApi }, OpenUrlParams, O
       );
     }
     const web = scheme === "http" || scheme === "https";
-    if (!web && !(await declaredSchemes(app.appPath)).includes(scheme)) {
+    if (!web && scheme !== "file" && !(await declaredSchemes(app.appPath)).includes(scheme)) {
       throw macosFailure(
         `${bundleId} does not declare the URL scheme '${scheme}' (CFBundleURLTypes in its ` +
           `Info.plist), so macOS does not give it this URL.`,

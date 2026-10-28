@@ -317,16 +317,13 @@ describe("macOS describe and flow trees of one read", () => {
     expect(walk(describe).find(byId("appkit.scroll"))!.scrollHidden).toBe(22);
     expect(walk(describe).find((n) => n.children.some(byId("web-button")))!.scrollHidden).toBe(1);
     expect(assertText(leaf(flow, byId("appkit.table"))!)).toBe(ROWS_1_TO_8);
-    // The library counts the items that the page itself hides.
-    const counted = (await bothTrees({ web: { ...probeWeb(), hidden: 2 } })).describe;
+    // The library counts the rows it left out and the items the page itself hides.
+    const scrolled = probeTree();
+    findWireNode(windowRoot(scrolled), byWireId("appkit.table"))!.scrolledOutRows = 1970;
+    const counted = (await bothTrees({ trees: [scrolled], web: { ...probeWeb(), hidden: 2 } }))
+      .describe;
+    expect(walk(counted).find(byId("appkit.scroll"))!.scrollHidden).toBe(1992);
     expect(walk(counted).find((n) => n.children.some(byId("web-button")))!.scrollHidden).toBe(3);
-  });
-
-  it("counts the rows the library left out as hidden by their scroll area", async () => {
-    const tree = probeTree();
-    findWireNode(windowRoot(tree), byWireId("appkit.table"))!.scrolledOutRows = 1970;
-    const { describe } = await bothTrees({ trees: [tree] });
-    expect(walk(describe).find(byId("appkit.scroll"))!.scrollHidden).toBe(1992);
   });
 
   it("lifts an open combo box list out of the scroll area it was opened in", async () => {
@@ -433,7 +430,7 @@ describe("macOS describe and flow trees of one read", () => {
     expect(JSON.stringify(describe) + JSON.stringify(flow)).not.toMatch(/hunter2|•/);
   });
 
-  const automaticIds = [
+  it.each([
     "_NS:87",
     "_popUpItemAction:",
     "NSTableViewRowViewKey",
@@ -441,24 +438,20 @@ describe("macOS describe and flow trees of one read", () => {
     "SwiftUI.WindowGroup<Probe.ContentView>-1-AppWindow-1, SidebarNavigationSplitView",
     "ListRow",
     "ListCell",
-  ];
-  it.each(automaticIds)(
-    "drops AppKit's automatic identifier %s, keeping the element",
-    async (appkitId) => {
-      const tree = probeTree();
-      findWireNode(windowRoot(tree), byWireId("appkit.button"))!.identifier = appkitId;
-      (tree.extraViews as Json[])[0]!.identifier = appkitId;
-      const { describe, flow } = await bothTrees({ trees: [tree] });
-      for (const t of [describe, flow]) {
-        const [button] = findAll(t, { text: "Tap me" });
-        expect(button).toMatchObject({ role: "AXButton", clickable: true });
-        expect(button!.identifier).toBeUndefined();
-        // An identified view is listed only for its identifier.
-        expect(findAll(t, { text: "Static text" })).toEqual([]);
-        expect(JSON.stringify(t)).not.toContain(appkitId);
-      }
+  ])("drops the automatic identifier %s, keeping the element", async (id) => {
+    const tree = probeTree();
+    findWireNode(windowRoot(tree), byWireId("appkit.button"))!.identifier = id;
+    (tree.extraViews as Json[])[0]!.identifier = id;
+    const { describe, flow } = await bothTrees({ trees: [tree] });
+    for (const t of [describe, flow]) {
+      const [button] = findAll(t, { text: "Tap me" });
+      expect(button).toMatchObject({ role: "AXButton", clickable: true });
+      expect(button!.identifier).toBeUndefined();
+      // An identified view is listed only for its identifier.
+      expect(findAll(t, { text: "Static text" })).toEqual([]);
+      expect(JSON.stringify(t)).not.toContain(id);
     }
-  );
+  });
 
   it("lets an AppKit identifier neither match nor shield, and never makes a sheet a leaf", async () => {
     const tree = probeTree();

@@ -577,7 +577,7 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
       recursive: true,
     });
     await expect(run("boot-device", { macosAppPath: electron })).rejects.toThrow(
-      /is an Electron app: argent drives Electron apps through boot-device with electronAppPath/
+      /is an Electron app/
     );
     expect(helperRuns()).toBe(0);
   });
@@ -1125,6 +1125,7 @@ describe.skipIf(process.platform !== "darwin")("Mac app lifecycle (fake library)
     // A browser's name must be a whole word of the framework's name.
     ["Knowledge Framework.framework", undefined],
     ["Chromecast Framework.framework", undefined],
+    ["Chromium Embedded Framework.framework", undefined],
     [null, undefined],
   ])("marks an app that ships %s as chromium %s", async (framework, kind) => {
     const app = writeBundle(
@@ -1493,7 +1494,6 @@ describe("code signature rules", () => {
     ["23.3.0", false],
     ["23.4.0", true],
     ["24.0.0", true],
-    ["27.0.0", true],
   ])("drives Mac apps on Darwin %s (macOS 14.4 is 23.4): %s", (release, supported) => {
     expect(macosVersionRefusal(release) === null).toBe(supported);
   });

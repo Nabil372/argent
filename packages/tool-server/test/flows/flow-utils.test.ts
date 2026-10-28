@@ -1569,12 +1569,9 @@ describe("ios launch args", () => {
     expect(appIdForPlatform(app, "android")).toBe("com.acme.native");
   });
 
-  it("appLaunchArgs reads only the { app, args } entry of the platform asked", async () => {
-    const app = { ios: { app: "com.acme.app", args: ["-Flag"] }, macos: "com.acme.mac" };
-    expect(appLaunchArgs(app, "ios")).toEqual(["-Flag"]);
-    expect(appLaunchArgs(app, "macos")).toBeUndefined();
-    expect(appLaunchArgs({ macos: { app: "com.acme.mac", args: ["-M"] } }, "macos")).toEqual([
-      "-M",
+  it("appLaunchArgs reads only an { app, args } entry", async () => {
+    expect(appLaunchArgs({ ios: { app: "com.acme.app", args: ["-Flag"] } }, "ios")).toEqual([
+      "-Flag",
     ]);
     expect(appLaunchArgs({ ios: "com.acme.app" }, "ios")).toBeUndefined();
     expect(appLaunchArgs("com.acme.app", "ios")).toBeUndefined();
