@@ -343,7 +343,7 @@ interface HttpAppOptions {
 
 export interface HttpAppHandle {
   app: express.Application;
-  /** Clears the idle timer. Call on server shutdown. */
+  /** Rejects new tool calls and clears timers and uploads. Call on server shutdown. */
   dispose: () => void;
   /** Timestamp of the last tool invocation (ms since epoch). Exposed for testing. */
   getLastActivityAt: () => number;
@@ -435,6 +435,7 @@ function takeToolNote(data: unknown): string | undefined {
 
 export function createHttpApp(registry: Registry, options?: HttpAppOptions): HttpAppHandle {
   const app = express();
+  let disposed = false;
   // 48mb: file-input wrappers may inline base64 file content when the client is
   // remote. Bounds the whole encoded request; the decoded per-file ceiling is
   // enforced in file-inputs.ts.
@@ -725,6 +726,12 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       next();
     },
     async (req: Request, res: Response) => {
+      if (disposed) {
+        res
+          .status(503)
+          .json({ error: "The tool-server is shutting down. Retry after it restarts." });
+        return;
+      }
       const name = req.params.name as string;
       const requestStartedAt = performance.now();
       const aiMeta = extractAiTelemetryMeta(req);
@@ -993,6 +1000,12 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
       // gets each `ctx.emitProgress` event as its own line, then a terminal
       // `result` (or in-band `error`) line. The gates above still answer with
       // plain-JSON status codes — streaming is committed to only once they pass.
+      if (disposed) {
+        res
+          .status(503)
+          .json({ error: "The tool-server is shutting down. Retry after it restarts." });
+        return;
+      }
       const wantsStream = Boolean(req.headers.accept?.includes("application/x-ndjson"));
       const writeLine = (payload: unknown): void => {
         res.write(`${JSON.stringify(payload)}\n`);
@@ -1192,6 +1205,7 @@ export function createHttpApp(registry: Registry, options?: HttpAppOptions): Htt
   return {
     app,
     dispose: () => {
+      disposed = true;
       idleTimer.dispose();
       clearInterval(uploadSweeper);
       for (const entry of uploads.values()) rm(entry.tarPath, { force: true }).catch(() => {});

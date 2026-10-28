@@ -114,7 +114,7 @@ Set `showTouches` in either mode to control touch markers. Debug requires `trimS
 
 Debug saves JPEGs in the server’s temporary directory before encoding. The JPEGs and MP4 need disk space at the same time. The server retains the MP4 after delivery. Remove unneeded server copies to reclaim space. Capture ends early with a warning if writes fail or cannot keep up.
 
-Debug capture is not crash-safe. A hard tool-server kill can lose unencoded frames. An encode already started can finish on the server, but its interrupted stop call cannot deliver the artifact. The start result’s `outputFile` gives the server-side path to check. A server restart loses retrieval state.
+Debug capture is not crash-safe. A hard tool-server kill can lose unencoded frames. An encode already started can finish on the server, but its interrupted stop call cannot deliver the artifact. The start result’s `outputFile` gives the server-side path to check. A server restart loses retrieval state. Stop recordings before shutting down the server. Server shutdown allows a short recording grace and can leave output incomplete.
 
 Debug timestamps mark when the tool-server parses each frame, not device presentation. Other work on the server can delay parsing and distort frame timing. It cannot recover frames omitted by the stream. It encodes at stop, so retrieval can take longer.
 

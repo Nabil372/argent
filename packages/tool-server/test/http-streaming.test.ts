@@ -73,6 +73,15 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     vi.clearAllMocks();
   });
 
+  it("rejects tool calls after shutdown begins", async () => {
+    const registry = stubRegistry(async () => ({ ok: true }));
+    handle = createHttpApp(registry);
+    handle.dispose();
+    const response = await supertest(handle.app).post("/tools/test-tool").send({}).expect(503);
+    expect(response.body.error).toContain("shutting down");
+    expect(registry.invokeTool).not.toHaveBeenCalled();
+  });
+
   it("streams each emitProgress event as a line, then the terminal result", async () => {
     const registry = stubRegistry(async (options) => {
       options?.emitProgress?.({ index: 0, status: "pass" });
