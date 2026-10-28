@@ -1,8 +1,9 @@
 import { basename } from "node:path";
 import { z } from "zod";
-import type { ToolDefinition } from "@argent/registry";
+import type { ToolDefinition, Registry } from "@argent/registry";
 import {
   screenRecordingSessionRef,
+  assertRecordingNotTerminating,
   type ScreenRecordingSessionApi,
 } from "../../blueprints/screen-recording-session";
 import { resolveDevice } from "../../utils/device-info";
@@ -104,3 +105,13 @@ Fails if no recording (running or finished-but-unretrieved) exists for the given
     return result;
   },
 };
+
+export function createScreenRecordingStopTool(registry: Registry): typeof screenRecordingStopTool {
+  return {
+    ...screenRecordingStopTool,
+    services: (params) => {
+      assertRecordingNotTerminating(registry, resolveDevice(params.udid));
+      return screenRecordingStopTool.services(params);
+    },
+  };
+}

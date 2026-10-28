@@ -1,7 +1,8 @@
 import {
   FAILURE_CODES,
   FailureError,
-  ServiceRef,
+  ServiceState,
+  type Registry,
   TypedEventEmitter,
   type DeviceInfo,
   type ServiceBlueprint,
@@ -23,11 +24,27 @@ export const SCREEN_RECORDING_SESSION_NAMESPACE = "ScreenRecordingSession";
 
 type ScreenRecordingSessionFactoryOptions = Record<string, unknown> & { device: DeviceInfo };
 
-export function screenRecordingSessionRef(device: DeviceInfo): ServiceRef {
+export function screenRecordingSessionRef(device: DeviceInfo) {
   return {
     urn: `${SCREEN_RECORDING_SESSION_NAMESPACE}:${device.id}`,
     options: { device },
   };
+}
+
+export function assertRecordingNotTerminating(registry: Registry, device: DeviceInfo): void {
+  const { urn } = screenRecordingSessionRef(device);
+  if (registry.getSnapshot().services.get(urn)?.state !== ServiceState.TERMINATING) return;
+  throw new FailureError(
+    `The screen-recording session for device ${device.id} is being torn down. ` +
+      `Any active capture is being finalized. Wait for teardown to finish, then call ` +
+      `screen-recording-stop for the saved output status.`,
+    {
+      error_code: FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN,
+      failure_stage: "screen_recording_resolve_session",
+      failure_area: "tool_server",
+      error_kind: "unknown",
+    }
+  );
 }
 
 export interface ScreenRecordingSessionApi {

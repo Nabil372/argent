@@ -1,7 +1,10 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import type { Registry } from "@argent/registry";
+import { Registry, TypedEventEmitter, FAILURE_CODES, getFailureSignal } from "@argent/registry";
 import { createScreenRecordingStartTool } from "../src/tools/screen-recording/screen-recording-start";
-import { screenRecordingStopTool } from "../src/tools/screen-recording/screen-recording-stop";
+import {
+  screenRecordingStopTool,
+  createScreenRecordingStopTool,
+} from "../src/tools/screen-recording/screen-recording-stop";
 import { startCapture, stopCapture } from "../src/tools/screen-recording/capture";
 
 vi.mock("../src/tools/screen-recording/capture", () => ({
@@ -139,3 +142,41 @@ it.each([true, false])(
     if (!complete) expect(result.warning).toBe("encoder failed");
   }
 );
+
+it("explains start and stop calls during registry-owned recording teardown", async () => {
+  const registry = new Registry();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const urn = "ScreenRecordingSession:emulator-5554";
+  registry.registerBlueprint({
+    namespace: "ScreenRecordingSession",
+    getURN: () => urn,
+    factory: async () => ({ api: {}, events: new TypedEventEmitter(), dispose: () => pending }),
+  });
+  registry.registerTool(createScreenRecordingStartTool(registry));
+  registry.registerTool(createScreenRecordingStopTool(registry));
+  await registry.resolveService(urn);
+  const disposing = registry.disposeService(urn);
+  try {
+    for (const name of ["screen-recording-start", "screen-recording-stop"]) {
+      const error = await registry
+        .invokeTool(name, { udid: "emulator-5554" })
+        .catch((err: Error) => err);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toContain("being torn down");
+      expect((error as Error).message).toContain("Wait for teardown to finish");
+      expect((error as Error).message).toContain(
+        "screen-recording-stop for the saved output status"
+      );
+      expect(getFailureSignal(error)?.error_code).toBe(
+        FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
+      );
+    }
+  } finally {
+    release();
+    await disposing;
+    await registry.dispose();
+  }
+});

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { FAILURE_CODES, FailureError, type Registry, type ToolDefinition } from "@argent/registry";
 import {
   screenRecordingSessionRef,
+  assertRecordingNotTerminating,
   type ScreenRecordingSessionApi,
 } from "../../blueprints/screen-recording-session";
 import { simulatorServerRef, type SimulatorServerApi } from "../../blueprints/simulator-server";
@@ -98,9 +99,11 @@ Fails if a recording is already running on the device, the device is not booted,
     // Resolved inside execute, not declared eagerly: a tvOS udid classifies as
     // iOS by shape, so an eager service would spawn simulator-server for a
     // device it cannot drive and hang on its ready timeout (as in `screenshot`).
-    services: (params) => ({
-      session: screenRecordingSessionRef(resolveDevice(params.udid)),
-    }),
+    services: (params) => {
+      const device = resolveDevice(params.udid);
+      assertRecordingNotTerminating(registry, device);
+      return { session: screenRecordingSessionRef(device) };
+    },
     async execute(services, params) {
       const api = services.session as ScreenRecordingSessionApi;
       const device = resolveDevice(params.udid);
