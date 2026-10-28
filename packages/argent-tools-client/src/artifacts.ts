@@ -576,7 +576,11 @@ export async function materializeArtifacts(
             const reason = err instanceof Error ? err.message : String(err);
             warn?.(
               `Could not retrieve recording ${value.filename}: ${reason} ` +
-                `The capture already stopped. Check the tool-server at ${value.hostPath ?? `artifact ${value.id}`} for the output.`
+                `The capture already stopped. ` +
+                (value.hostPath
+                  ? `Retry screen-recording-stop with outputFile: ${JSON.stringify(value.hostPath)} before another recording starts or the session ends. `
+                  : "") +
+                `Check the tool-server at ${value.hostPath ?? `artifact ${value.id}`} for the output.`
             );
           }
           return null;

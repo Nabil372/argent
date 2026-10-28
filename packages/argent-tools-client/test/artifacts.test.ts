@@ -1322,7 +1322,7 @@ describe("materializeArtifacts durable destination", () => {
     async (failure) => {
       const fetchImpl = vi.fn(async () =>
         failure === "HTTP"
-          ? new Response(null, { status: 404 })
+          ? new Response('{"error":"Artifact missing not found"}', { status: 404 })
           : new Response(
               new ReadableStream({
                 start(controller) {
@@ -1341,6 +1341,7 @@ describe("materializeArtifacts durable destination", () => {
               video: {
                 ...handle("missing", "missing.mp4", "video/mp4"),
                 kind: "screen-recording",
+                hostPath: "/remote/tmp/recording.mp4",
                 size: 8,
                 saveDir: ".argent/recordings",
               },
@@ -1372,6 +1373,11 @@ describe("materializeArtifacts durable destination", () => {
           },
         ],
       });
+      const warning = (result as typeof report).steps[1]!.result!.warning;
+      if (failure === "HTTP") expect(warning).toContain("Artifact download failed with HTTP 404.");
+      expect(warning).toContain(
+        'Retry screen-recording-stop with outputFile: "/remote/tmp/recording.mp4"'
+      );
     }
   );
 
