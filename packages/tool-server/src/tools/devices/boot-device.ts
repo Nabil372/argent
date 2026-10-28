@@ -181,14 +181,14 @@ const zodSchema = z.object({
     .string()
     .optional()
     .describe(
-      "Native Mac app (AppKit, SwiftUI, react-native-macos; needs the `macos-apps` flag): path to the .app bundle to start with the argent library. The app starts in the background and its device id is `macos-app-<bundle id>`. A Release build with the hardened runtime cannot be driven; a hardened Debug build needs the step the error names. Provide exactly one of `udid`, `avdName`, `vvdImage`, <flag:harmonyos>`harmonyInstance`, </flag:harmonyos>`macosAppPath`, or `electronAppPath`."
+      "Native Mac app (AppKit, SwiftUI, react-native-macos): path to the .app bundle to start with the argent library. The app starts in the background and its device id is `macos-app-<bundle id>`. A Release build with the hardened runtime cannot be driven; a hardened Debug build needs the step the error names. Provide exactly one of `udid`, `avdName`, `vvdImage`, <flag:harmonyos>`harmonyInstance`, </flag:harmonyos>`macosAppPath`, or `electronAppPath`."
     )
     .meta({ [FLAG_META_KEY]: MACOS_APPS_FLAG }),
   macosAppArgs: z
     .array(z.string())
     .optional()
     .describe(
-      "Mac-app-only: extra arguments for the app executable. Omitted, the app starts with none, also when an earlier start had some. restart-app and launch-app start the app again with the arguments of its last start; each result shows them as `args`."
+      "Mac-app-only: extra arguments for the app executable. Omitted, the app starts with none, also when an earlier start had some. launch-app, and restart-app without `launchArgs`, reuse the arguments of the last start; each result shows them as `args`."
     )
     .meta({ [FLAG_META_KEY]: MACOS_APPS_FLAG }),
 });
@@ -2130,7 +2130,7 @@ export function createBootDeviceTool(
 Pick the platform by which argument you pass: 'udid' for an iOS simulator from list-devices, 'avdName' for an Android AVD (a serial is assigned automatically), 'vvdImage' for a Vega VVD (the 'vvdImage' of a vega device from list-devices, e.g. 'tv'), <flag:harmonyos>'harmonyInstance' for a HarmonyOS emulator instance (the 'name' of a harmony device from list-devices), </flag:harmonyos>or 'electronAppPath' for an Electron app (a CDP remote-debugging port is picked automatically, or pass 'electronPort' to fix one).
 Use at the start of a session once you have picked a target.
 Returns a tagged payload: { platform: 'ios', udid, booted } or { platform: 'android', serial, avdName, booted, note? } or { platform: 'vega', serial, vvdImage, booted } or <flag:harmonyos>{ platform: 'harmony', udid, instanceName, booted, note? } or </flag:harmonyos>{ platform: 'chromium', id, port, pid, booted } (an Electron app boots as a Chromium/CDP device).<flag:macos-apps>
-'macosAppPath' starts a native Mac app (.app bundle) in the background with the argent library and returns { platform: 'macos', id, bundleId, pid, appPath, booted }; it fails for a Release build with the hardened runtime, and a hardened Debug build needs the step the error names.</flag:macos-apps>
+'macosAppPath' starts a native Mac app (.app bundle) with the argent library and returns its device id as 'id', plus a 'note' to follow when there is one; it fails for a Release build with the hardened runtime, and a hardened Debug build needs the step the error names.</flag:macos-apps>
 Android boots take 2–10 minutes depending on machine and cold/warm state; the tool transparently hot-boots from the AVD's default_boot snapshot when usable and falls back to cold boot otherwise. Vega starts the single SDK-managed VVD via the vega CLI (~10s) and returns once it reports running. If an Android/Electron boot stage fails, the tool terminates the device it spawned so the next retry starts clean.<flag:harmonyos>
 HarmonyOS hands the instance to DevEco Studio's Emulator manager, then waits for it to register with 'hdc' and returns its connect key as 'udid', the id the interaction tools drive. The manager itself reports no readiness signal and never names a port, so an instance that is already running is left alone unless you pass 'force: true'; when the key could not be resolved the payload names the instance instead, and a 'note' is present whenever the boot left something unproven: no key and why, or a key that is not yet answering or could not be checked against the instance. Huawei serves the emulator images only within mainland China, so a host outside it usually has no instance to start; one that already has an image is started like any other.</flag:harmonyos>`,
     alwaysLoad: true,

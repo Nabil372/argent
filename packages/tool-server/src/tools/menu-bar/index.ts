@@ -140,7 +140,7 @@ export const menuBarTool: ToolDefinition<Params, Result> = {
     failedMsg: ({ params, failureSignal }) =>
       `Failed to ${params.action === "list" ? "read" : "choose from"} the menu bar: ${failureSignal.error_code}`,
   },
-  description: `Read and choose the menu bar commands of a Mac app (File > Export..., Edit > Select All) from inside the app, with the app in the background and the pointer untouched. The menu bar is outside the app window: describe does not show it, and gesture-tap cannot reach it.
+  description: `Read and choose the menu bar commands of a Mac app (File > Export..., Edit > Select All). The menu bar is outside the app window: describe does not show it, and gesture-tap cannot reach it.
 Use when a command lives in the app's menus. Use keyboard instead for a shortcut you already know, and file-panel for the open or save panel that a command shows.
 list returns { menuBar }, one line per item indented under its menu: the title (a menu ends with " >"), [disabled] or [checked], the shortcut in keyboard syntax, and id="..." when the item has one. choose takes path (the titles from the menu bar down, e.g. ["File", "Export..."]) or identifier, and returns { chosen } with the path; the command runs right after the reply.
 Fails if no item matches (the error lists the titles at that level), if the item is disabled or is a menu, if a menu of the app is open, or if the device is not a Mac app.`,

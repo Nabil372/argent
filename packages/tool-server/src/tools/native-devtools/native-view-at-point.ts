@@ -8,12 +8,12 @@ const zodSchema = z.object({
   x: z
     .number()
     .describe(
-      "Raw X coordinate in points, on the portrait axes of the screen (the axes of native-describe-screen frames)<flag:macos-apps>; on a Mac app, points of the app window</flag:macos-apps>. NOT normalized [0,1] tap space."
+      "Raw X coordinate in points, on the portrait axes of the screen (the axes of native-describe-screen frames)<flag:macos-apps>; on a Mac app, points from the top-left of the area describe reports</flag:macos-apps>. NOT normalized [0,1] tap space."
     ),
   y: z
     .number()
     .describe(
-      "Raw Y coordinate in points, on the portrait axes of the screen (the axes of native-describe-screen frames)<flag:macos-apps>; on a Mac app, points of the app window</flag:macos-apps>. NOT normalized [0,1] tap space."
+      "Raw Y coordinate in points, on the portrait axes of the screen (the axes of native-describe-screen frames)<flag:macos-apps>; on a Mac app, points from the top-left of the area describe reports</flag:macos-apps>. NOT normalized [0,1] tap space."
     ),
   includeAncestors: z
     .boolean()
@@ -81,7 +81,7 @@ IMPORTANT: x and y are raw points on the portrait axes of the screen, NOT
 normalized [0,1] simulator tap coordinates. To get them from a describe frame,
 multiply the normalized values by the screen size in points. Do this also when
 the UI is landscape.
-<flag:macos-apps>Mac app: x and y are points from the window's top-left; returns the deepest NSView drawn there.
+<flag:macos-apps>Mac app: x and y are points from the top-left of the area describe reports; returns the deepest NSView drawn there.
 </flag:macos-apps>
 If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help. Restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If the same status comes back after that restart, stop restarting: follow the message, which names the terminal fallback. If status is connect_pending: the app is injected and still connecting. Do not restart it, wait a few seconds and retry. If status is init_failed: the simulator's native-devtools environment could not be initialised. Follow the message (re-boot the simulator) rather than retrying this tool.
 A not-connected or not-running app comes back as one of those statuses rather than a failure. Failures are separate: an Apple system app is rejected outright (terminal: never retry it), and the point query itself can error or time out.`,

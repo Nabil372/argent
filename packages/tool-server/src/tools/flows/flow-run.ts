@@ -2087,8 +2087,8 @@ function chromiumBootSpec(
 
 /**
  * The Mac app device id (`macos-app-<bundle id>`) for a run whose leading
- * launch is unambiguously a macOS one — `--platform macos`, or a single-key
- * `{ macos: ... }` map — or null. The bundle id is read as the launch step
+ * launch is unambiguously a macOS one - `--platform macos`, or a single-key
+ * `{ macos: ... }` map - or null. The bundle id is read as the launch step
  * reads it ({@link appIdForPlatform}: the `macos` key, else `native`, else the
  * bare string). A launch that declares no macOS app is left to the device
  * list, and the launch step then reports the missing entry.

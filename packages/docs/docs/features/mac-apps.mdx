@@ -23,7 +23,7 @@ Argent drives sandboxed builds and builds without the App Sandbox.
 
 Argent starts the app with the Argent library inside the app process. Thus Argent drives only an app that Argent started. The pointer does not move, and the app stays in the background. A screenshot shows the app window, also when other windows cover it. The agent can drive the app while its window is on another Space. When you hide the app, the next action of the agent shows it again without bringing it to the front.
 
-Argent starts the app in the folder `/`, with the environment of an app that you open in the Finder. The app does not get the environment variables of the Argent tool-server.
+Argent starts the app in the folder `/`. The app gets only the basic variables of a login session, for example `HOME`, `USER`, `PATH` and `LANG`. The app does not get the other environment variables of the Argent tool-server.
 
 When the tool-server disconnects from the app, for example when the tool-server stops, the app works as without Argent. The app can come to the front again. Argent releases a mouse button that the agent held, and Argent removes a prepared answer for the next file panel.
 
@@ -81,7 +81,7 @@ A Debug build of a react-native-macos app loads its JavaScript from Metro. Start
 
 ## E2E tests on a Mac
 
-An e2e test for a Mac app starts with a `launch` step that names the bundle id. The launch step quits the app and starts it again with the Argent library. The launch step starts the build that Argent started last for this bundle id. The app gets the arguments of the launch step, and no arguments when the launch step has none. An e2e test run selects a running Mac app only for `--platform macos` or for the device id of the app. If Argent did not start the app before, the launch step starts the newest build that Spotlight finds. Thus on a new Mac, ask the agent to start your build once before the first e2e test. The `macos-apps` flag must be on for an e2e test run too. The [E2E YAML reference](/docs/reference/e2e-yaml) contains the launch, selector and snapshot rules for a Mac app.
+An e2e test for a Mac app starts with a `launch` step that names the bundle id. The launch step quits the app and starts it again with the Argent library. The launch step starts the build that Argent started last for this bundle id. The app gets the arguments of the launch step, and no arguments when the launch step has none. An e2e test run selects a Mac app only for `--platform macos`, for the device id of the app, or for a `launch` step with only the `macos` key. If Argent did not start the app before, the launch step starts the newest build that Spotlight finds. Thus on a new Mac, ask the agent to start your build once before the first e2e test. The `macos-apps` flag must be on for an e2e test run too. The [E2E YAML reference](/docs/reference/e2e-yaml) contains the launch, selector and snapshot rules for a Mac app.
 
 ## The hardened runtime
 
@@ -139,15 +139,15 @@ Argent does not start an Electron app or a Chromium browser as a Mac app. Argent
 Each tool that does not support a Mac app fails with a `not supported on macos app` message. The limits on a Mac app:
 
 - Argent does not drive Apple apps.
-- Argent cannot reconnect to a sandboxed app when its bundle id and the path of your home folder together have more than 59 characters. For example, with the home folder `/Users/anna`, the limit is 48 characters. Argent then reaches the app only through the connection of its start. After a restart of the Argent tool-server, quit the app, or start it again with `force`.
+- Argent cannot reconnect to a sandboxed app with a long bundle id. Argent then reaches the app only through the connection of its start. When this connection closes, for example at the end of a session or after a restart of the tool-server, quit the app, or start it again with `force`.
 - Only one menu can be open on a Mac at a time. A click somewhere else, by you or by another agent, can close a menu that the agent opened before the agent chooses an item.
 - Hover is not available. Mouse moves do not show tooltips or hover states.
 - A drag and drop works only inside the app. The agent cannot drag to another app, such as Finder, or drop from one.
 - Trackpad gestures are not available. The agent uses the zoom and rotate controls of the app instead of pinch and rotate.
 - Key events use the key codes of the US keyboard layout. An app that reads key codes sees the US key, also when the Mac uses a different layout.
 - The agent cannot reach a dialog that a different process draws. Examples are the permission prompts of macOS, the content of the share sheet, and the file list of an open or save panel.
-- The tree, the screenshot and the coordinates cover the app window with its sheets, popovers, alerts and open menus. Another window of the app is outside them.
-- Argent drives an app through a standard window. The start fails for a menu bar app, and for an app that shows only panels or borderless windows.
+- The tree, the screenshot and the coordinates cover the area of the app window with its sheets, popovers, alerts and open menus. The screenshot does not show the other windows of the app.
+- Argent drives an app through a standard window. The start fails for a menu bar app that shows no standard window, and for an app that shows only panels or borderless windows.
 - The tree does not show web content in a closed shadow root or in an iframe from a different origin.
 - Screenshots, and `snapshot` steps in e2e tests, can fail while the Mac is locked. The tree, clicks and typing still work, but the tree does not show an open context menu, and a `hidden` check does not pass.
 - Screen recording, profiling, the JavaScript debugger tools, hardware buttons, rotate, shake, `reinstall-app` and `settings-permissions` are not available.

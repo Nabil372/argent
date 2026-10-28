@@ -7,8 +7,8 @@ import { assertMacosAppsEnabled, isMacosAppsEnabled } from "./macos-apps";
 import { scaleDecodedPng } from "./png-scale";
 
 // Requests to the in-app library of a Mac app, and the click and typing
-// sequences the tools compose from them. Coordinates are fractions of the app
-// window, title bar included.
+// sequences the tools compose from them. Coordinates are fractions of the area
+// describe reports.
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

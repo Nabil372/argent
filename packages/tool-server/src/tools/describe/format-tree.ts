@@ -176,7 +176,7 @@ export function formatDescribeTree(root: DescribeNode, opts: FormatDescribeOptio
   header.push(`Mode: ${mode}`);
   header.push(
     isMacos
-      ? "Coordinates are normalized [0,1] fractions of the app window, title bar included (x, y, width, height), not pixels."
+      ? "Coordinates are normalized [0,1] fractions of the app window, title bar included, grown to hold sheets, alerts and menus past it (x, y, width, height), not pixels."
       : "Coordinates are normalized [0,1] fractions of the screen (x, y, width, height), not pixels."
   );
   if (isVega) {

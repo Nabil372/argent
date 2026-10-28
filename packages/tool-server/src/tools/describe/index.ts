@@ -181,9 +181,9 @@ two windows. A suspended display still dumps its last-composited windows, indist
 tree from a live screen, so the result carries a \`hint\` saying the panel is off; taps land nowhere
 until you wake it with \`button\` (power). An empty dump is hinted the same way, as an app that may
 still be starting.</flag:harmonyos><flag:macos-apps>
-On a Mac app, reads the app's accessibility tree from inside the app, with web view content and
-React Native testIDs merged in; the tree is nested, roles are AppKit accessibility roles, and frames
-are fractions of the app window.</flag:macos-apps>
+On a Mac app, reads the app's accessibility tree, with web view content and React Native testIDs
+merged in; the tree is nested, roles are AppKit accessibility roles, and frames are fractions of the
+app window, grown to hold sheets, alerts and menus past it.</flag:macos-apps>
 
 When a system dialog is visible, describe returns the dialog's interactive elements (buttons, text)
 with tap coordinates. When no dialog is present, it returns the foreground app's accessible elements.

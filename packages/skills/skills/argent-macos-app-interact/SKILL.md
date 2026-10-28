@@ -18,19 +18,19 @@ Read this for a Mac app. `argent-device-interact` still applies for everything n
 - A start result with a `note` that the app showed no window: taps and screenshots need one. Tell the user, and read the log file it names.
 - On a hardened-runtime refusal, report it to the user. Never sign files or change code signing yourself.
 - `launch-app` and `restart-app` take only the device's own bundle id. A different bundle id fails: use that app's device id.
-- Coordinates are fractions of the app window, title bar included. Take them from `describe` or from the tree appended after each action, never from a screenshot.
+- Coordinates are fractions of the area `describe` reports: the app window, grown to hold sheets, alerts and menus past it. Take them from `describe` or from the tree appended after each action, never from a screenshot.
 - Never activate the app or drive it with `osascript`, `open` or other system tools.
 - At the end: `stop-all-simulator-servers {devices: ["macos-app-<bundle id>"]}` closes argent's connection; the app keeps running.
 
 ## Per-tool notes
 
-- Swipe or drag: `gesture-drag`. Long press: `gesture-drag` with the same start and end point. Scroll: `gesture-scroll` (positive `deltaY` scrolls down; it fails when nothing under the point scrolls). Double-click: `gesture-tap` with `clickCount: 2`. Zoom or rotate: the app's own controls or shortcuts.
+- Swipe or drag: `gesture-drag`; a drop lands only inside the app's own windows. Long press: `gesture-drag` with the same start and end point. Scroll: `gesture-scroll` (positive `deltaY` scrolls down; it fails when nothing under the point scrolls). Double-click: `gesture-tap` with `clickCount: 2`. Zoom or rotate: the app's own controls or shortcuts.
 - Context menu: `gesture-tap` with `button: "right"` on the element. The returned tree lists the menu items; a plain `gesture-tap` on one chooses it (the menu can stay in the tree for a moment while it closes). `keyboard` `escape` closes the menu without a choice; `enter` chooses nothing after a right-click, so tap the item.
 - No hover: a tooltip is out of reach.
 - `keyboard`: `text` types any character, accents and emoji included. `key` also takes `delete`, `home`, `end`, `page-up`, `page-down`, and shortcuts with modifiers joined by `+`: `command+a`, `command+s`, `shift+tab`, `command+shift+z`. Click the field first.
 - `paste` inserts the text at the focused field. `does not accept text` means nothing editable has focus: `gesture-tap` the field, then retry.
-- `open-url`: the URL needs a scheme and goes to the running app.
-- `native-*` tools: pass the device's bundle id as `bundleId`; `x`, `y` are points from the window's top-left corner, not fractions.
+- `open-url`: the URL goes to the running app. A custom scheme must be one the app declares; `http` and `https` go to the app, not the browser; a `file:` URL opens that document in the app.
+- `native-*` tools: pass the device's bundle id as `bundleId`; `x`, `y` are points from the top-left of that area, not fractions.
 - `native-network-logs` (the app's `NSURLSession` requests, also react-native-macos `fetch`): the first call starts the capture and returns nothing older. Call it once, repeat the action, then call it again; for launch requests, `restart-app` after the first call. Each app start has its own log.
 - `menu-bar`: for any menu command; the menu bar is not in `describe`. An item listed `[disabled]` cannot be chosen right now: an edit command (Copy, Select All) needs the text field clicked first; while an alert is open only its own commands work, so answer the alert first. On `A menu is open`, send `keyboard {key: "escape"}`, then choose again.
 

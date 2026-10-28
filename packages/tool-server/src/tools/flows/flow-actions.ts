@@ -930,7 +930,7 @@ export async function runDirective(env: ActionEnv, step: DirectiveStep): Promise
     };
   }
   // The pointer desktops refuse both two-finger gestures, before the auto-wait
-  // and before any input. Not "no backend" — CDP can dispatch two-finger touch,
+  // and before any input. Not "no backend" - CDP can dispatch two-finger touch,
   // but a mouse-driven desktop app has no uniform pinch-zoom mapping (and no
   // rotate-gesture idiom at all) for it to hit.
   if ((step.kind === "pinch" || step.kind === "rotate") && isPointerDesktop(env.device)) {
@@ -1187,7 +1187,7 @@ const DEFAULT_LONG_PRESS_MS = 800;
  * duration) so the hold length is exact. On a physical iOS device the train
  * maps to the runner longPress. The pointer desktops (Chromium, macOS) have no
  * touch, so the closest honest mapping is a mouse press-hold-release
- * (`gesture-drag` with from == to) — apps implementing pointer-based long-press
+ * (`gesture-drag` with from == to) - apps implementing pointer-based long-press
  * respond, anything else sees a slow click. A desktop context menu is a
  * *right*-click, deliberately not aliased here.
  */

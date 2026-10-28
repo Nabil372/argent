@@ -126,7 +126,7 @@ For live captures, set exactly one of captureBaseline or captureCurrent; use bas
 Physical iPhones: live captures are device-wide and need no registered app. Keep baselines per device model; different aspect ratios fail as a dimension mismatch.
 <flag:macos-apps>Mac apps: a live capture is the app window at one pixel per point, so a resized window fails as a dimension mismatch; save the baseline with screenshot at scale 1.0.
 </flag:macos-apps>Returns { summary, diffPath, contextDiffPath }. The summary uses normalized [0,1] screen locations matching describe coordinates; diffPath is the full-size diff image and contextDiffPath is a downscaled image for MCP/agent display.
-Ignores the fixed top status-bar band for both pixel and OCR text comparisons<flag:macos-apps>, except on a Mac app, where the top band is the window's own title bar and toolbar</flag:macos-apps>.
+Ignores the fixed top status-bar band for both pixel and OCR text comparisons<flag:macos-apps>; on a Mac app it ignores nothing</flag:macos-apps>.
 Fails if the input sources are invalid, PNG files cannot be read, outputDir cannot be written, or the simulator-server / emulator backend<flag:harmonyos>, or \`hdc\` on HarmonyOS,</flag:harmonyos> is not reachable.`,
   searchHint:
     "compare screenshots png diff visual UI changes UI regression visual regression screenshot diff changed regions text ocr live capture<flag:harmonyos> harmony harmonyos</flag:harmonyos>",
@@ -302,8 +302,8 @@ async function resolveInputPaths(
         name,
       });
     }
-    // The window at one pixel per point, the `screenshot` tool's default, so a
-    // baseline saved there matches in size. Rotation does not apply to a window.
+    // The window at one pixel per point, which matches screenshot at scale 1.0, so
+    // a baseline saved that way matches in size. Rotation does not apply to a window.
     if (device.platform === "macos") {
       const app = requireMacosApp(services, "screenshot-diff", device);
       return writeLivePng(outputDir, name, await macosScreenshotPng(app));

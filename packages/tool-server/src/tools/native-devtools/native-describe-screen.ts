@@ -58,11 +58,11 @@ Use when you are evaluating or debugging the lower-level native data behind the 
 describe tool, or when you need its raw point-space geometry rather than describe's
 normalized contract.
 
-<flag:macos-apps>On a Mac app the in-app library reads the app's own accessibility tree, plus the views with an
-identifier that the tree does not contain: the same result shape, with
-frames in points of the app window (origin at its top-left), screenFrame the window, and normalized
-values as fractions of the window, the space gesture-tap uses there. skipClasses and skipClassPrefixes
-are refused there. The statuses below are iOS only; on a Mac app that is not running the call fails.
+<flag:macos-apps>On a Mac app it reads the app's own accessibility tree, plus the views with an
+identifier that the tree does not contain: the same result shape, with frames in points from the
+top-left of the area describe reports (the app window, grown to hold sheets, alerts and menus past
+it), screenFrame that area, and normalized values as fractions of it, the space gesture-tap uses
+there. skipClasses and skipClassPrefixes are refused there. The statuses below are iOS only; on a Mac app that is not running the call fails.
 
 </flag:macos-apps>If status is restart_required: follow the message (usually restart-app), then retry. If status is service_stale: the app is already injected, so restarting it cannot help. Restart the tool-server (\`argent server stop && argent server start --detach\`) and retry. If the same status comes back after that restart, stop restarting: follow the message, which names the terminal fallback. If status is connect_pending: the app is injected and still connecting. Do not restart it, wait a few seconds and retry. If status is init_failed: the simulator's native-devtools environment could not be initialised. Follow the message (re-boot the simulator) rather than retrying this tool.
 A not-connected or not-running app comes back as one of those statuses rather than a failure. Failures are separate: an Apple system app is rejected outright (terminal: never retry it), and the screen query itself can error or time out.`,

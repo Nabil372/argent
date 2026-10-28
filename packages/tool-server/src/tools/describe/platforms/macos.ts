@@ -416,7 +416,7 @@ function webNode(item: WireWebItem): MacosNode {
       checkable: CHECKABLE_ROLES.has(role),
       checked: item.checked,
       disabled: item.disabled,
-      // Set only while the web view is its window's first responder.
+      // Set only while the web view has keyboard focus.
       focused: item.focused,
     },
     item.normalizedFrame
@@ -593,8 +593,8 @@ export async function readMacosTree(
     if (!isRecord(entry) || !isRecord(entry.root)) continue;
     const root = axNode(entry.root, build);
     if (!root) continue;
-    // A context menu and the menu bar come as roots of kind "menu": they float
-    // like an open popup menu.
+    // An open context menu comes as a root of kind "menu": it floats like an
+    // open popup menu.
     if (entry.kind === "menu" || root.d.role === "AXMenu") {
       build.menus.push(root);
       continue;

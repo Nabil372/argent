@@ -182,7 +182,7 @@ The result is `{ platform: "macos", id, bundleId, pid, appPath, sandboxed, logPa
 - A copy of a different build of the app runs without the Argent library, for example the build of another git worktree. This also fails with `force`. The error names the bundle path and the process id of the copy.
 - The app runs already with the Argent library from a different bundle path, and `force` is not `true`. Argent does not return that copy and does not replace it, because the copy can belong to another agent.
 - The Argent library does not connect within 20 seconds. Argent stops the app again, and the error shows the last lines of the app log.
-- The app shows no window that Argent can drive: a menu bar app, or an app that shows only panels or borderless windows. Argent stops the app again.
+- The app shows no window that Argent can drive: a menu bar app without a standard window, or an app that shows only panels or borderless windows. Argent stops the app again.
 
 `force` quits a copy of the same build that runs without the Argent library, for example a copy that Xcode Run started. The unsaved changes of that copy are lost. When a forced start fails because of the bundle or because a different build runs, the app that Argent runs continues to run.
 
@@ -192,13 +192,17 @@ The other app tools on a Mac app:
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `launch-app`                                          | Starts the app when it does not run, with the arguments of its last start. Leaves a running app as it is. `bundleId` must be the bundle id of the device. Fails while a copy of the app runs without the Argent library, and names `boot-device` with `force: true`                                                          |
 | `restart-app`                                         | Quits the app and starts the same bundle again, with `launchArgs`, or else with the arguments of its last start. `bundleId` must be the bundle id of the device. Also quits a copy of the same build without the Argent library, as `force` does. Fails while a copy of a different build runs, and the app continues to run |
-| `open-url`                                            | Gives the URL to the running app of the device. The app stays in the background. The URL needs a scheme that the app declares in `CFBundleURLTypes`. A web URL (`http`, `https`) goes to the app, not to the browser                                                                                                         |
+| `open-url`                                            | Gives the URL to the running app of the device, and fails when the app does not run. The app stays in the background. The schemes `http`, `https` and `file` need no declaration. Each other scheme must be in `CFBundleURLTypes` of the app. A web URL goes to the app, not to the browser                                  |
 | `reinstall-app`                                       | Refused. Argent starts a Mac app from the location of the build. Build the app again, then use `restart-app`                                                                                                                                                                                                                 |
 | `stop-simulator-server`, `stop-all-simulator-servers` | Close the connection to the Argent library. The app continues to run                                                                                                                                                                                                                                                         |
 
 One tool-server at a time drives a Mac app. While one tool-server is connected, each call of a second tool-server fails with `MACOS_APP_IN_USE`. This also applies to `boot-device` with `force`, to `restart-app`, to `open-url` and to a `launch` step of an e2e test. The second tool-server does not quit the app. When the first tool-server stops, the next tool-server connects.
 
-A sandboxed app with a long bundle id has no listening socket. See the limits in [Mac apps](/docs/features/mac-apps#limits). Argent then reaches the app only through the connection of its start. Another tool-server, or the same tool-server after a restart, cannot reach the app. There, each call fails with `MACOS_APP_NOT_CONNECTED`, also `restart-app` and a `launch` step, and the app continues to run. `boot-device` with `force` quits the app and starts it again.
+A sandboxed app has no listening socket when its bundle id and the path of your home folder together have more than 59 characters. For example, with the home folder `/Users/anna`, the limit is 48 characters. Argent then reaches the app only through the connection of its start. Another tool-server cannot reach the app. When the connection closes, for example after `stop-simulator-server`, `stop-all-simulator-servers` or a restart of the tool-server, no tool-server can reach the app. Then:
+
+- `launch-app`, and `boot-device` without `force`, fail with `MACOS_APP_ALREADY_RUNNING`.
+- Each other call fails with `MACOS_APP_NOT_CONNECTED`, also `restart-app` and a `launch` step. The app continues to run.
+- `boot-device` with `force` quits the app and starts it again.
 
 ### Inspection and input
 
@@ -211,21 +215,21 @@ Coordinates are fractions of the app window, title bar included, with the origin
 | `screenshot`                            | Captures the space of the coordinates: the app window with its sheets, popovers, alerts and open menus. Without `scale`, a window larger than 768 points on its long side is downscaled to 768 pixels, but to no less than 0.6 pixels per point. A smaller window is one pixel per point. `ARGENT_SCREENSHOT_SCALE` does not apply. The lowest `scale` is `0.1`. `rotation` does not apply |
 | `screenshot-diff`                       | A live capture is the app window at scale `1.0`. Save the baseline with `screenshot` at scale `1.0`. Argent masks no top band, because the top of a window is its title bar                                                                                                                                                                                                                |
 | `gesture-tap`                           | A left click. `button: "right"` is a right-click, which opens a context menu. The tree then shows the items of the menu. `clickCount: 2` is a double-click. The tool waits 150 ms after the click                                                                                                                                                                                          |
-| `gesture-drag`                          | A drag with the left button. The same start and end point is a long press. Its `durationMs` default is 800 ms                                                                                                                                                                                                                                                                              |
+| `gesture-drag`                          | A drag with the left button. The same start and end point is a long press. The `durationMs` default is 300 ms for a drag and 800 ms for a long press                                                                                                                                                                                                                                       |
 | `gesture-scroll`                        | Scrolls the full delta in one step, as a wheel does: the nearest scroll view or web element under the point that can move that way, or a view that scrolls itself, such as a map. `durationMs` has no effect. Fails when nothing there scrolls                                                                                                                                             |
 | `keyboard`                              | `text` types each character. `key` also takes `delete`, `home`, `end`, `page-up`, `page-down`, and a key or one character after modifiers joined with `+`: `command`, `shift`, `option`, `control`. Examples: `command+a`, `shift+tab`                                                                                                                                                     |
 | `paste`                                 | Inserts the text at the focused element as typed text: the paste handling of the app does not run, and the clipboard does not change. Fails when the focused element does not accept text, for example read-only text or a page with no field focused                                                                                                                                      |
 | `run-sequence`                          | Runs `gesture-tap`, `gesture-scroll`, `gesture-drag`, `keyboard`, `paste` and `await-ui-element` steps                                                                                                                                                                                                                                                                                     |
-| `native-*` view tools                   | `bundleId` must be the bundle id of the device. `x` and `y` are points from the top-left corner of the window                                                                                                                                                                                                                                                                              |
+| `native-*` view tools                   | `bundleId` must be the bundle id of the device. `x` and `y` are points from the top-left corner of the coordinate space                                                                                                                                                                                                                                                                    |
 | `native-network-logs`                   | The requests that the app sends through `NSURLSession`. The first call starts the capture, which stays on when the app restarts. Each start of the app begins a new record. `bundleId` must be the bundle id of the device                                                                                                                                                                 |
 
 These tools do not support a Mac app and fail with a `not supported on macos app` message:
 
 - `gesture-swipe`, `gesture-custom`, `gesture-pinch` and `gesture-rotate`
-- `button`, `rotate`, `shake` and `fold`
+- `button`, `rotate`, `shake`, `fold` and `tv-remote`
 - `settings-permissions`
 - The screen recording tools
-- The JavaScript debugger tools and the network tools
+- The JavaScript debugger tools, `view-network-logs` and `view-network-request-details`
 - The profiler tools
 - `native-devtools-status`
 - The Chromium tools
@@ -239,7 +243,7 @@ Use `gesture-drag` to drag and `gesture-scroll` to scroll.
 - Roles are the AppKit accessibility roles as macOS reports them, for example `AXButton`, `AXTextField`, `AXStaticText`, `AXCheckBox` and `AXScrollArea`. `[clickable]` marks the roles that a click acts on.
 - Web content appears under its web view with AX roles, so one `role` selector matches native and web elements. The id of a web element is its `data-testid` attribute, else its `id` attribute. The web content includes open shadow roots and same-origin iframes.
 - A React Native `Text` or `View` that has a `testID` but is not an accessibility element appears as `AXStaticText`. Its identifier is the `testID`, and its label is its text.
-- A scroll area or a web view clips its content, and so does each scrolling element of a web page. The tree leaves out each element that it has scrolled out of view, and the scroll area or the web view shows the count of these elements as `scrollHidden=<n>`. Use `gesture-scroll` to bring them into view.
+- A scroll area or a web view clips its content, and so does each element of a web page with an `overflow` other than `visible`. The tree leaves out each element that it has scrolled out of view, and the scroll area or the web view shows the count of these elements as `scrollHidden=<n>`. Use `gesture-scroll` to bring them into view.
 - The tree leaves out each element outside the app window and its sheets, popovers, alerts and menus, and the hint gives the count.
 - The tree leaves out each element that does not show: an element that another window of the app covers, a view with an opacity of 0 or that a transform moves out of the window, and a panel that hides while the app is in the background.
 - The value of a date picker is its date in ISO 8601 format, in the time zone of the Mac.
@@ -279,12 +283,12 @@ A system service draws the file list of a file panel. Thus `describe` cannot rea
 | `panelKind` | For `stub` with `stubMode` `answer`: `open` or `save`, the kind of the next panel. When it is absent, see the rules below                                                           |
 | `timeoutMs` | For `choose` and `cancel`: how long to wait for the panel after the click that opens it. Default `5000`, maximum `30000`                                                            |
 
-| Action   | Result                                                                                                          |
-| -------- | --------------------------------------------------------------------------------------------------------------- |
-| `list`   | `{ panels }`. Each panel has its `number`, its `kind` (`open` or `save`), its title, its folder and its options |
-| `choose` | `{ chosen, panel, kind, paths }`. The panel closes, and the app receives the paths                              |
-| `cancel` | `{ cancelled, panel }`                                                                                          |
-| `stub`   | `{ armed, mode, panelKind }`. The next panel that the app opens gets the prepared answer and does not appear    |
+| Action   | Result                                                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `list`   | `{ panels }`. Each panel has its `number`, its `kind` (`open` or `save`), its title, its folder and its options                                                     |
+| `choose` | `{ chosen, panel, kind, paths }`. The panel closes, and the app receives the paths                                                                                  |
+| `cancel` | `{ cancelled, panel }`                                                                                                                                              |
+| `stub`   | `{ armed, mode, panelKind }`, without `panelKind` for `stubMode` `cancel` and `off`. The next panel that the app opens gets the prepared answer and does not appear |
 
 A prepared answer stays until the next panel opens, until a `stub` with `stubMode` `off`, or until the tool-server disconnects from the app.
 
@@ -307,7 +311,8 @@ Argent does not check a path against the file types that the panel allows (`allo
 - A path for an open panel does not exist.
 - The folder for a save panel does not exist.
 - The path for a save panel is a folder without an extension. Argent accepts a document package, such as `Notes.rtfd`.
-- The panel cannot take the path: a folder for a panel that takes only files, or a file for a panel that takes only folders. A document package counts as a file.
+- More than one path for a save panel, or, with `choose`, for an open panel that takes one item.
+- With `choose`, the panel cannot take the path: a folder for a panel that takes only files, or a file for a panel that takes only folders. A document package counts as a file.
 
 ### `menu-bar`
 
