@@ -171,6 +171,8 @@ export interface MacosNode {
    * the window. `describe` counts these.
    */
   offscreen?: "scroll" | "window";
+  /** Rows of a table or an outline that the library did not read: scrolled out of view. */
+  scrolledOutRows?: number;
   /**
    * The text the library collected below a web item or an identified view,
    * whose descendants are not nodes here. Never set on a password.
@@ -462,6 +464,7 @@ function axNode(
     asRect(r.normalizedFrame)
   );
   if (inScrollBar) node.leafEligible = false;
+  node.scrolledOutRows = finite(r.scrolledOutRows);
   // A web page scrolls inside its web view, and its items keep their frames
   // when scrolled out of it.
   node.clips = node.scrolls = role === "AXScrollArea" || webView !== undefined;
@@ -473,10 +476,15 @@ function axNode(
     const converted = isRecord(child)
       ? axNode(child, build, inScrollBar || role === "AXScrollBar")
       : null;
-    // An open menu is a child of the button that opened it, but it floats over
-    // the window: lifted to the top, so no scroll area it sits in clips it.
-    if (converted?.d.role === "AXMenu") build.menus.push(converted);
-    else if (converted) node.children.push(converted);
+    // An open menu is a child of the button that opened it, and an open combo
+    // box list a child of its combo box, but they float over the window: lifted
+    // to the top, so no scroll area they sit in clips them.
+    if (
+      converted?.d.role === "AXMenu" ||
+      (role === "AXComboBox" && converted?.d.role === "AXScrollArea")
+    ) {
+      build.menus.push(converted);
+    } else if (converted) node.children.push(converted);
   }
   return node;
 }
@@ -661,6 +669,7 @@ function toDescribe(
   if (n.offscreen === "scroll") hidden.count++;
   else if (n.offscreen === "window") outsideWindow.count++;
   const inner = n.scrolls ? { count: 0 } : hidden;
+  inner.count += n.scrolledOutRows ?? 0;
   const children = n.children.flatMap((c) => toDescribe(c, outsideWindow, inner));
   if (!n.visible && children.length === 0) {
     if (n.scrolls) hidden.count += inner.count;

@@ -114,7 +114,7 @@ With the `macos-apps` flag on, `list-devices` shows each native Mac app that Arg
 
 On a Mac app, these tools read the app through the Argent library:
 
-- `native-describe-screen` reads the accessibility tree of the app.
+- `native-describe-screen` reads the accessibility tree of the app, plus the views with an identifier that the tree does not contain. It does not take `skipClasses` or `skipClassPrefixes`.
 - `native-full-hierarchy`, `native-find-views`, `native-view-at-point` and `native-user-interactable-view-at-point` read the AppKit views of the app.
 - `native-network-logs` reads the requests that the app sends through `NSURLSession`.
 
@@ -231,6 +231,8 @@ Use `gesture-drag` to drag and `gesture-scroll` to scroll.
 - A React Native `Text` or `View` that has a `testID` but is not an accessibility element appears as `AXStaticText`. Its identifier is the `testID`, and its label is its text.
 - A scroll area or a web view clips its content. The tree leaves out each element that it has scrolled out of view, and the scroll area shows the count of these elements as `scrollHidden=<n>`. Use `gesture-scroll` to bring them into view.
 - The tree leaves out each element outside the app window, and the hint gives the count.
+- The tree leaves out each element that does not show: an element that another window of the app covers, a view with an opacity of 0 or that a transform moves out of the window, and a panel that hides while the app is in the background.
+- The value of a date picker is its date in ISO 8601 format, in the time zone of the Mac.
 - The tree does not show the menu bar of the app. Use [`menu-bar`](#menu-bar).
 - A password field has the `password` flag and no value.
 - A text field without a label has its placeholder as its label.

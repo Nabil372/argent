@@ -319,6 +319,32 @@ describe("macOS describe and flow trees of one read", () => {
     expect(assertText(leaf(flow, byId("appkit.table"))!)).toBe(ROWS_1_TO_8);
   });
 
+  it("counts the rows the library left out as hidden by their scroll area", async () => {
+    const tree = probeTree();
+    findWireNode(windowRoot(tree), byWireId("appkit.table"))!.scrolledOutRows = 1970;
+    const { describe } = await bothTrees({ trees: [tree] });
+    expect(walk(describe).find(byId("appkit.scroll"))!.scrollHidden).toBe(1992);
+  });
+
+  it("lifts an open combo box list out of the scroll area it was opened in", async () => {
+    const tree = probeTree();
+    const items = ["Apple", "Banana", "Cherry"].map((value, i) =>
+      axNode("AXTextField", rect(0.511, 0.3228 + i * 0.0348, 0.167, 0.0348), { value })
+    );
+    const list = axNode("AXScrollArea", rect(0.511, 0.3228, 0.167, 0.1044), {}, [
+      axNode("AXList", rect(0.511, 0.3228, 0.167, 0.1044), {}, items),
+    ]);
+    const combo = axNode("AXComboBox", rect(0.511, 0.285, 0.133, 0.038), {}, [list]);
+    (findWireNode(windowRoot(tree), byWireId("settings.scroll"))!.children as Json[]).push(combo);
+    const { describe, flow } = await bothTrees({ trees: [tree] });
+    // "Cherry" lies below the settings scroll view, still inside the window.
+    expect(walk(describe).find(byText("Cherry"))).toBeDefined();
+    expect(
+      walk(walk(describe).find(byId("settings.scroll"))!).find(byText("Cherry"))
+    ).toBeUndefined();
+    expect(leaf(flow, byText("Cherry"))).toMatchObject({ role: "AXTextField" });
+  });
+
   it("lifts an open menu out of the scroll area it was opened in", async () => {
     const { describe, flow } = await bothTrees();
     // "Purple" lies below the settings scroll view, still inside the window.
