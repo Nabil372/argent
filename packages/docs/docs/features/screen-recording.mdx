@@ -16,7 +16,7 @@ Use the default recording for compact bug reports and pull request videos. Use a
 
 Debug recordings keep every delivered frame, including still periods, without a watermark. Touch markers are off by default but remain available. Debug recordings produce larger files and can take longer to finish.
 
-Debug uses host arrival times, not device presentation times. It cannot recover frames omitted by the device stream.
+Debug timestamps reflect frame parsing, not device presentation. Server load can distort this timing. It cannot recover frames omitted by the device stream. The final image repeats the last frame to preserve the final still period. It does not show a device update.
 
 ## How a recording works
 
@@ -40,7 +40,7 @@ By default, Argent stamps a small Argent watermark into the corner of the video.
 
 ## Where the video lands
 
-Argent saves each video in the `.argent/recordings/` directory of the project. The file name contains the device and the time of the recording. Argent does not overwrite an existing file. You can change the directory in the Argent configuration.
+Argent saves each video in the `.argent/recordings/` directory of the project. The file name contains the device and the time of the recording. Argent does not overwrite an existing file. You can change the directory in the Argent configuration. Some filesystems use a unique subdirectory for each recording.
 
 The files stay in the working tree. Add the directory to `.gitignore` when you do not want to commit the videos.
 
