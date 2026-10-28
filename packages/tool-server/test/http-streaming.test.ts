@@ -195,9 +195,16 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
       .send({})
       .then((res) => res);
     await entered;
-    handle.dispose();
-    finish();
-    expect((await response).body).toEqual({ data: { video: "saved.mp4" } });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      handle.dispose();
+      await vi.advanceTimersByTimeAsync(200);
+      finish();
+      expect((await response).body).toEqual({ data: { video: "saved.mp4" } });
+    } finally {
+      finish();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps admission recovery paths after recording teardown clears reminders", async () => {
@@ -305,6 +312,51 @@ describe("HTTP NDJSON streaming (Accept: application/x-ndjson)", () => {
     expect(completed).toBe(false);
     finish();
     await vi.waitFor(() => expect(completed).toBe(true));
+  });
+
+  it("waits the full shutdown grace and aborts unfinished non-recording calls", async () => {
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    handle = createHttpApp(
+      stubRegistry(async (options) => {
+        signal = options?.signal;
+        enter();
+        await pending;
+        return { ok: true };
+      })
+    );
+    let delivered = false;
+    const response = supertest(handle.app)
+      .post("/tools/test-tool")
+      .send({})
+      .then((res) => {
+        delivered = true;
+        return res;
+      });
+    await entered;
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      handle.dispose();
+      await vi.advanceTimersByTimeAsync(1499);
+      expect(delivered).toBe(false);
+      expect(signal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const result = await response;
+      expect(result.status).toBe(503);
+      expect(result.body.error).toContain("The tool may have run");
+      expect(result.body.error).not.toContain("This call was not started");
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      finish();
+      vi.useRealTimers();
+    }
   });
 
   it("streams each emitProgress event as a line, then the terminal result", async () => {

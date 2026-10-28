@@ -627,7 +627,9 @@ describe("screen recording capture", () => {
     expect((args as string[]).at(-1)).toBe(result.outputFile);
     expect(api.recordingActive).toBe(true);
     expect(api.captureProcess).toBe(child as unknown as ChildProcess);
-    expect(getActiveScreenRecordings()).toHaveLength(1);
+    expect(getActiveScreenRecordings()).toMatchObject([
+      { deviceId: IOS_UDID, outputFile: result.outputFile },
+    ]);
   });
 
   it("stamps the watermark in the same pass when the flag is on", async () => {
