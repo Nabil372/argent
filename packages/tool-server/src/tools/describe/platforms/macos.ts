@@ -163,6 +163,8 @@ export interface MacosNode {
   clips: boolean;
   /** A scroll area or a web view: what it clips is scrolled out of view, not cut off. */
   scrolls: boolean;
+  /** A web view: the items its page hides in an inner scroller or out of its viewport. */
+  hiddenItems?: number;
   /** May become a flow leaf, and its text may hoist. False for windows and scroll bars. */
   leafEligible: boolean;
   /**
@@ -411,7 +413,7 @@ function webNode(item: WireWebItem): MacosNode {
       value: field && !password ? cap(item.value ?? undefined) : undefined,
       password,
       clickable: MACOS_CLICKABLE_ROLES.has(role),
-      checkable: item.type === "checkbox" || item.type === "radio",
+      checkable: CHECKABLE_ROLES.has(role),
       checked: item.checked,
       disabled: item.disabled,
       // Set only while the web view is its window's first responder.
@@ -610,7 +612,7 @@ export async function readMacosTree(
   let webTruncated = false;
   for (const [index, webViews] of [...build.webViews].sort(([a], [b]) => a - b)) {
     try {
-      const result = await api.call<{ items?: unknown; truncated?: unknown }>(
+      const result = await api.call<{ items?: unknown; truncated?: unknown; hidden?: unknown }>(
         "Web.tree",
         { webView: index, maxItems: limits.maxItems },
         { timeoutMs: WEB_TREE_CALL_TIMEOUT_MS }
@@ -619,7 +621,10 @@ export async function readMacosTree(
       const items = (Array.isArray(result?.items) ? result.items : [])
         .map(asWebItem)
         .filter((i): i is WireWebItem => i !== null);
-      for (const node of webViews) node.children = items.map(webNode);
+      for (const node of webViews) {
+        node.children = items.map(webNode);
+        node.hiddenItems = finite(result?.hidden);
+      }
     } catch (err) {
       webErrors.push(`web view ${index}: ${errMsg(err)}`);
     }
@@ -668,7 +673,7 @@ function toDescribe(
 ): DescribeNode[] {
   if (n.offscreen === "scroll") hidden.count++;
   else if (n.offscreen === "window") outsideWindow.count++;
-  const inner = n.scrolls ? { count: 0 } : hidden;
+  const inner = n.scrolls ? { count: n.hiddenItems ?? 0 } : hidden;
   inner.count += n.scrolledOutRows ?? 0;
   const children = n.children.flatMap((c) => toDescribe(c, outsideWindow, inner));
   if (!n.visible && children.length === 0) {

@@ -139,6 +139,7 @@ Each tool that does not support a Mac app fails with a `not supported on macos a
 - Key events use the key codes of the US keyboard layout. An app that reads key codes sees the US key, also when the Mac uses a different layout.
 - The agent cannot reach a dialog that a different process draws. Examples are the permission prompts of macOS, the content of the share sheet, and the file list of an open or save panel.
 - The tree does not show an element outside the app window, for example a menu that extends past the edge of the window.
+- The tree does not show web content in a closed shadow root or in an iframe from a different origin.
 - Screenshots, and `snapshot` steps in e2e tests, can fail while the Mac is locked. The tree, clicks and typing still work, but the tree does not show an open context menu, and a `hidden` check does not pass.
 - Screen recording, profiling, the JavaScript debugger tools, hardware buttons, rotate, shake, `reinstall-app` and `settings-permissions` are not available.
 

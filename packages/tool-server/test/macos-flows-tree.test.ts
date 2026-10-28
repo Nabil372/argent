@@ -317,6 +317,9 @@ describe("macOS describe and flow trees of one read", () => {
     expect(walk(describe).find(byId("appkit.scroll"))!.scrollHidden).toBe(22);
     expect(walk(describe).find((n) => n.children.some(byId("web-button")))!.scrollHidden).toBe(1);
     expect(assertText(leaf(flow, byId("appkit.table"))!)).toBe(ROWS_1_TO_8);
+    // The library counts the items that the page itself hides.
+    const counted = (await bothTrees({ web: { ...probeWeb(), hidden: 2 } })).describe;
+    expect(walk(counted).find((n) => n.children.some(byId("web-button")))!.scrollHidden).toBe(3);
   });
 
   it("counts the rows the library left out as hidden by their scroll area", async () => {
