@@ -102,7 +102,9 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
   }
   if (api.stopping) {
     throw new FailureError(
-      `A screen-recording-stop is already in progress on device ${api.deviceId}; wait for it to return.`,
+      `A screen-recording-stop is already in progress on device ${api.deviceId}. ` +
+        `Wait for finalization, then retry stop if the original connection was lost. ` +
+        `The expected output is ${api.outputFile}.`,
       {
         error_code: FAILURE_CODES.SCREEN_RECORDING_STOP_IN_PROGRESS,
         failure_stage: stage,
@@ -111,7 +113,8 @@ export function assertStoppableSession(api: ScreenRecordingSessionApi, stage: st
       }
     );
   }
-  const recoverable = api.pendingRetrieval && api.outputFile !== null;
+  const recoverable =
+    (api.pendingRetrieval && api.outputFile !== null) || api.finishedRecording !== null;
   if (!api.recordingActive && !recoverable) {
     // A teardown reaps this device's session and the registry nulls the
     // instance, so the session resolved above never heard of the capture that

@@ -2132,6 +2132,36 @@ describe("debug finalization safeguards", () => {
     await stopping;
   });
 
+  it("rejects overlapping stop and retries its completed result without re-encoding", async () => {
+    const api = await makeSession(iosDevice);
+    fakeStream();
+    const child = fakeChild();
+    await startAndSettle(api, { mode: "debug" });
+    const file = api.outputFile!;
+    await fs.writeFile(file, Buffer.alloc(64, 1));
+    const stopping = stopCapture(api);
+    const pending = api.stopping;
+    const error = await stopCapture(api).catch((err: Error) => err);
+    expect(getFailureSignal(error)?.error_code).toBe(
+      FAILURE_CODES.SCREEN_RECORDING_STOP_IN_PROGRESS
+    );
+    expect((error as Error).message).toContain(file);
+    expect((error as Error).message).toContain("retry stop");
+    expect(api.stopping).toBe(pending);
+    await api.debugCapture!.finish();
+    child.exit(0);
+    const result = await stopping;
+    expect(await stopCapture(api)).toBe(result);
+    expect(child.stdin.end).toHaveBeenCalledOnce();
+    fakeStream();
+    const next = fakeChild();
+    next.exitOnStdinEnd();
+    await startAndSettle(api, { mode: "debug" });
+    expect(api.finishedRecording).toBeNull();
+    await fs.writeFile(api.outputFile!, Buffer.alloc(64, 1));
+    expect((await stopCapture(api)).outputFile).not.toBe(result.outputFile);
+  });
+
   it("waits for queued JPEG writes before starting the encoding stall watchdog", async () => {
     const api = await makeSession(iosDevice);
     fakeStream();

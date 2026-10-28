@@ -36,8 +36,8 @@ export function assertRecordingNotTerminating(registry: Registry, device: Device
   if (registry.getSnapshot().services.get(urn)?.state !== ServiceState.TERMINATING) return;
   throw new FailureError(
     `The screen-recording session for device ${device.id} is being torn down. ` +
-      `Any active capture is being finalized. Wait for teardown to finish, then call ` +
-      `screen-recording-stop for the saved output status.`,
+      `Wait for any in-flight stop or teardown call to finish. If its connection was lost, ` +
+      `check the outputFile returned by start on the tool-server. A server restart loses retrieval state.`,
     {
       error_code: FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN,
       failure_stage: "screen_recording_resolve_session",
@@ -60,6 +60,7 @@ export interface ScreenRecordingSessionApi {
   startPending: boolean;
   /** The in-flight stop, awaited by disposal before it clears shared capture state. */
   stopping: Promise<StopRecordingFile> | null;
+  finishedRecording: StopRecordingFile | null;
   /**
    * Set the moment dispose() begins — process shutdown, or a
    * `stop-all-simulator-servers` reaping this device (scoped or machine-wide).
@@ -155,6 +156,7 @@ function clearLiveState(state: ScreenRecordingSessionApi): void {
   state.recordingActive = false;
   state.startPending = false;
   state.stopping = null;
+  state.finishedRecording = null;
   state.pendingRetrieval = false;
   state.captureProcess = null;
   state.pendingChild = null;
@@ -217,6 +219,7 @@ export const screenRecordingSessionBlueprint: ServiceBlueprint<
       recordingActive: false,
       startPending: false,
       stopping: null,
+      finishedRecording: null,
       disposed: false,
       pendingRetrieval: false,
       captureProcess: null,

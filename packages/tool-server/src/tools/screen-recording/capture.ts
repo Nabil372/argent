@@ -571,6 +571,7 @@ async function startCaptureLocked(
   api.lastExitInfo = null;
   api.lastFrameStreamError = null;
   api.outputFile = outputFile;
+  api.finishedRecording = null;
   api.logoFile = logoFile;
   api.watermarkSkipped = watermarkSkipped;
   api.trimStatic = params.trimStatic;
@@ -740,9 +741,12 @@ function waitForEncoderReady(
 
 export async function stopCapture(api: ScreenRecordingSessionApi): Promise<StopRecordingFile> {
   assertStoppableSession(api, "screen_recording_stop");
+  if (api.finishedRecording) return api.finishedRecording;
   api.stopping = stopCaptureLocked(api);
   try {
-    return await api.stopping;
+    const result = await api.stopping;
+    api.finishedRecording = result;
+    return result;
   } finally {
     api.stopping = null;
   }
@@ -934,8 +938,8 @@ async function stopCaptureLocked(api: ScreenRecordingSessionApi): Promise<StopRe
     throw err;
   } finally {
     // Always return the session to a startable state — a failed stat must not
-    // wedge the next start behind "already active". The video is host-side, so
-    // there is nothing a retried stop could recover.
+    // wedge the next start behind "already active". Successful stop results
+    // remain available for retries until the next recording starts.
     stopPump(api);
     await disablePointer(api);
     await debugCapture?.cleanup().catch((err: unknown) => {

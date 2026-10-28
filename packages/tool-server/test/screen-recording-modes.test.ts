@@ -166,10 +166,10 @@ it("explains start and stop calls during registry-owned recording teardown", asy
         .catch((err: Error) => err);
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).toContain("being torn down");
-      expect((error as Error).message).toContain("Wait for teardown to finish");
       expect((error as Error).message).toContain(
-        "screen-recording-stop for the saved output status"
+        "Wait for any in-flight stop or teardown call to finish"
       );
+      expect((error as Error).message).toContain("check the outputFile returned by start");
       expect(getFailureSignal(error)?.error_code).toBe(
         FAILURE_CODES.SCREEN_RECORDING_SERVER_SHUTTING_DOWN
       );
