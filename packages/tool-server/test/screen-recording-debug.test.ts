@@ -458,3 +458,47 @@ it.skipIf(!hasEncoder || process.platform === "win32")(
   },
   15_000
 );
+
+it.skipIf(!hasEncoder || process.platform === "win32").each(["it's dir", "ci\\runner"])(
+  "encodes from a POSIX spool named %s",
+  async (name) => {
+    const directory = path.join(scratch, name);
+    await fs.mkdir(directory);
+    const output = path.join(scratch, "quoted.mp4");
+    const child = spawn(
+      "ffmpeg",
+      ffmpegArgs({
+        outputFile: output,
+        logoFile: null,
+        graph: null,
+        canvas: { width: 33, height: 31 },
+        mode: "debug",
+      })
+    );
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    const closed = new Promise<number | null>((resolve) => child.once("close", resolve));
+    const capture = startDebugCapture(child.stdin, directory, vi.fn());
+    capture.attach(source(jpeg([0, 0, 255])).stream);
+    await capture.finish();
+    expect(await closed, stderr).toBe(0);
+    const probe = spawnSync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-count_frames",
+        "-show_entries",
+        "stream=nb_read_frames",
+        "-of",
+        "json",
+        output,
+      ],
+      { encoding: "utf8" }
+    );
+    expect(probe.status, probe.stderr).toBe(0);
+    expect(JSON.parse(probe.stdout).streams[0].nb_read_frames).toBe("2");
+  }
+);

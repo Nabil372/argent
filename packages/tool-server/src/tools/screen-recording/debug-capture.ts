@@ -84,7 +84,8 @@ export function startDebugCapture(
           const durationUs =
             i + 1 < files.length ? capture.frameTimesUs[i + 1] - capture.frameTimesUs[i] : 1;
           // Concat's lexer uses shell-style quoting, even on Windows.
-          const quoted = file.replace(/\\/g, "/").replace(/'/g, "'\\''");
+          const normalized = process.platform === "win32" ? file.replace(/\\/g, "/") : file;
+          const quoted = normalized.replace(/'/g, "'\\''");
           return `file 'file:${quoted}'\noption framerate 1000000\nduration ${(durationUs / 1_000_000).toFixed(6)}\n`;
         });
         if (stdin.writable) stdin.end(`ffconcat version 1.0\n${entries.join("")}`);
