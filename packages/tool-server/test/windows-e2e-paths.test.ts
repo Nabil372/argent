@@ -3,20 +3,10 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * The `paths:` filter of the Windows job, held to the rule its own comment
- * states: "editing one changes what this job runs without touching any file
- * listed above it".
- *
- * Named files rot. The filter was written file by file and left 18 of the 33
- * files in the three listed test files' import graph out of the list — including
- * `configuration-core/src/paths.ts`, which holds the `USERPROFILE` branch one
- * of those tests asserts the global config path against, and
- * `registry/src/file-inputs.ts`, where `SCRIPT_FILE_NAME_PATTERN` gained `sh`.
- * A pull request touching either ran no Windows job at all.
- *
- * Imports are resolved to the source a change is made in: `@argent/<pkg>` to
- * that package's `src` (the workspace loads its `dist`, which the job builds
- * from `src` before testing), a relative `./x.js` to the `./x.ts` beside it.
+ * The `paths:` filter of the Windows job must name every file the `.sh` tests
+ * it runs import, so a change to any of them runs the job. Imports resolve to
+ * the source a change is made in: `@argent/<pkg>` to that package's `src`, and
+ * a relative `./x.js` to the `./x.ts` beside it.
  */
 const WORKSPACE_ROOT = path.resolve(__dirname, "../../..");
 
@@ -75,11 +65,6 @@ function importGraph(seeds: readonly string[]): string[] {
 /**
  * A GitHub `paths:` entry as a pattern: `*` matches inside one segment, `**`
  * across them, and everything else but `?` is a literal.
- *
- * Split rather than substituted. A sentinel character stood in for `**` here
- * once, and the one chosen was invisible: it read as a space and was a NUL, so
- * the file carried a control character into a regular expression that eslint
- * refuses.
  */
 function entryMatcher(entry: string): (file: string) => boolean {
   if (!entry.includes("*")) return (file) => file === entry;
@@ -103,10 +88,7 @@ describe("the Windows job's path filter", () => {
   const covers = (file: string): boolean => matchers.some((matches) => matches(file));
 
   it("names every file the .sh tests it runs import", () => {
-    // The `.sh` cases the job's own `vitest run` line names, read from that
-    // line so the two lists cannot drift apart. The seven other files that
-    // line names reach far more of the tool server than this filter lists, and
-    // covering those is not this rule's job — the filter never claimed them.
+    // Read from the job's own `vitest run` line, so the two cannot drift apart.
     const seeds = [...workflow.matchAll(/^ {10}(test\/flows\/script\/[^\s]+\.test\.ts)$/gm)].map(
       (match) => `packages/tool-server/${match[1]!}`
     );
@@ -121,10 +103,8 @@ describe("the Windows job's path filter", () => {
   });
 
   it("names the three files that carry the Windows tree kill", () => {
-    // `taskkill /t` is the whole of what reaches bash and its descendants where
-    // there is no process group. Besides the executor, which aims it at the
-    // runner from outside, these three carry it: the deadline watchdog holds it,
-    // and the other two import it from there.
+    // `taskkill /t` is what reaches bash's tree where there is no process
+    // group: the deadline watchdog holds it and the other two import it.
     const dir = "packages/tool-server/src/tools/flows/script";
     const read = (name: string) => fs.readFileSync(path.join(WORKSPACE_ROOT, dir, name), "utf8");
     expect(read("flow-script-watchdog-deadline.mjs")).toContain("taskkill");

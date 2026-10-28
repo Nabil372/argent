@@ -116,39 +116,28 @@ describe("remembered agent (lens config)", () => {
   });
 });
 
-// `readConfigObject` answers an empty document for a file that is absent, one
-// that cannot be read, and one that does not parse — which is right for a key
-// with a default and silent for one without. `scripts.bash` names the program a
-// `.sh` step runs, and the step went to the PATH bash with nothing saying the
-// configuration had been lost.
+// `readConfigObject` reads an absent, unreadable and unparseable file alike as
+// an empty document, which is silent for a key with no default.
 describe("configDocumentProblem", () => {
-  it("says nothing for a host that has no document", () => {
+  it("says nothing for a host with no document or one that reads and parses", () => {
     expect(configDocumentProblem()).toBeUndefined();
-  });
-
-  it("says nothing for a document that reads and parses", () => {
     updateConfig((config) => ({ ...config, telemetry: { enabled: false } }));
-
     expect(configDocumentProblem()).toBeUndefined();
   });
 
-  it("names the file and the parse error for half-written JSON", () => {
+  it.each([
+    ["half-written JSON", '{"scripts":{"bash":"/bin/ba', "is not valid JSON"],
+    ["a document that is not a JSON object", "[1,2,3]", "does not hold a JSON object"],
+  ])("names the file and the problem for %s", (_label, document, says) => {
     fs.mkdirSync(path.dirname(configFilePath()), { recursive: true });
-    fs.writeFileSync(configFilePath(), '{"scripts":{"bash":"/bin/ba');
+    fs.writeFileSync(configFilePath(), document);
 
     const problem = configDocumentProblem();
 
     expect(problem).toContain(configFilePath());
-    expect(problem).toContain("is not valid JSON");
+    expect(problem).toContain(says);
     // The read itself is unchanged: still an empty document, still no throw.
     expect(readConfigObject()).toEqual({});
-  });
-
-  it("refuses a document that is not a JSON object", () => {
-    fs.mkdirSync(path.dirname(configFilePath()), { recursive: true });
-    fs.writeFileSync(configFilePath(), "[1,2,3]");
-
-    expect(configDocumentProblem()).toContain("does not hold a JSON object");
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(

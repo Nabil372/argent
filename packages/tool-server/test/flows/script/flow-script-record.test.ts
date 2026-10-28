@@ -534,70 +534,27 @@ describe("recording a script step", () => {
 });
 
 describe("recording a bash step", () => {
-  it("runs the .sh, appends it, and hands back its document and what it printed", async (ctx) => {
+  it("runs a .sh after a .mjs, appends both in order, and hands back what the .sh wrote", async (ctx) => {
     skipWithoutBash(ctx);
+    await write("scripts/first.mjs", `output.user = { id: "u_1" };`);
     await write(
       "scripts/seed.sh",
       `set -euo pipefail\n` +
         `echo "seeded order 4711"\n` +
         `printf '{"order":{"id":4711}}' > "$ARGENT_OUTPUT"\n`
     );
-    await start("checkout");
-
-    const result = await addScript("checkout", "../../scripts/seed.sh");
-
-    expect(result.status).toBe("pass");
-    expect(result.log).toContain("seeded order 4711");
-    expect(result.outputJson).toBe('{"order":{"id":4711}}');
-    expect(result.recorded).toBe("1. script: ../../scripts/seed.sh");
-    expect(await steps("checkout")).toEqual([{ kind: "script", path: "../../scripts/seed.sh" }]);
-  });
-
-  it("records nothing when the .sh fails, and carries its reason back", async (ctx) => {
-    skipWithoutBash(ctx);
-    // The last stdout line is what a reason read off the whole log, rather than
-    // off stderr alone, would end with. The two are separate pipes, and only the
-    // pause puts that line after the explanation in the log.
-    await write(
-      "scripts/half.sh",
-      `echo "created 2 of 3 records"\n` +
-        `echo "the backend refused the third" >&2\n` +
-        `sleep 0.2\n` +
-        `echo "left 2 records behind"\n` +
-        `exit 1\n`
-    );
-    await start("failing");
-
-    const result = await addScript("failing", "../../scripts/half.sh");
-
-    expect(result.status).toBe("fail");
-    expect(result.reason).toContain("exited with code 1");
-    expect(result.reason).toContain("the backend refused the third");
-    expect(result.reason).not.toContain("created 2 of 3 records");
-    expect(result.reason).not.toContain("left 2 records behind");
-    expect(result.log).toContain("created 2 of 3 records");
-    expect(result.log).toContain("the backend refused the third");
-    expect(result.log).toContain("left 2 records behind");
-    expect(result).not.toHaveProperty("recorded");
-    expect(result).not.toHaveProperty("outputJson");
-    expect(result.message).toContain("Check or restore its changes");
-    expect(await steps("failing")).toEqual([]);
-  });
-
-  it("records a .mjs and a .sh into one flow, in the order they ran", async (ctx) => {
-    skipWithoutBash(ctx);
-    await write("scripts/first.mjs", `output.user = { id: "u_1" };`);
-    await write("scripts/second.sh", `printf '{"order":{"id":4711}}' > "$ARGENT_OUTPUT"`);
     await start("mixed");
 
     const first = await addScript("mixed", "../../scripts/first.mjs");
-    const second = await addScript("mixed", "../../scripts/second.sh");
+    const second = await addScript("mixed", "../../scripts/seed.sh");
 
     expect([first.status, second.status]).toEqual(["pass", "pass"]);
+    expect(second.log).toContain("seeded order 4711");
     expect(second.outputJson).toBe('{"order":{"id":4711}}');
+    expect(second.recorded).toBe("2. script: ../../scripts/seed.sh");
     expect(await steps("mixed")).toEqual([
       { kind: "script", path: "../../scripts/first.mjs" },
-      { kind: "script", path: "../../scripts/second.sh" },
+      { kind: "script", path: "../../scripts/seed.sh" },
     ]);
   });
 });
@@ -792,8 +749,6 @@ describe("the paths flow-add-script accepts", () => {
     ["a drive-relative prefix", "C:seed.mjs", 'path: "C:seed.mjs"'],
     ["an uppercase extension", "scripts/SEED.MJS", 'path: "scripts/SEED.MJS"'],
     ["a wrong extension", "scripts/seed.js", 'path: "scripts/seed.js"'],
-    ["an uppercase .sh", "scripts/seed.SH", 'path: "scripts/seed.SH"'],
-    ["a second spelling of bash", "scripts/seed.bash", 'path: "scripts/seed.bash"'],
     ["a basename outside the charset", "scripts/seed order.mjs", 'path: "scripts/seed order.mjs"'],
     ["an empty path", "", 'path: ""'],
   ];

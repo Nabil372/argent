@@ -56,9 +56,8 @@ describe("commandOnPath", () => {
     expect(execFileMock).toHaveBeenCalledWith("where", ["adb"]);
   });
 
-  // `command -v` answers once, so a rejected answer is a miss — where `where`
-  // lists every match and a rejected first hit still finds a later one. Only
-  // the Windows half of `accept` was covered.
+  // `command -v` answers once, so a rejected answer is a miss, where `where`
+  // lists every match and a rejected first hit still finds a later one.
   it("takes the POSIX answer away when `accept` rejects it, rather than looking again", async () => {
     setPlatform("darwin");
     execFileMock.mockReturnValue({ stdout: "/usr/bin/bash\n", stderr: "" });

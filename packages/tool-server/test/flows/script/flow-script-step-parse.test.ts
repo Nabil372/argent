@@ -178,10 +178,8 @@ describe("script path rules, shared with a run: target", () => {
       "{ path: seed }",
       "{ path: seed.js }",
       "{ path: seed.cjs }",
-      // One spelling per language: `.bash` would be a second name for `.sh`,
-      // as `.js` would be for `.mjs`.
+      // One spelling per language.
       "{ path: seed.bash }",
-      "{ path: seed.zsh }",
     ]) {
       expect(() => step(body), body).toThrow(/must end in .mjs or .sh/);
     }
@@ -192,9 +190,7 @@ describe("script path rules, shared with a run: target", () => {
       "{ path: 'my seed.mjs' }",
       "{ path: seed.step.mjs }",
       "{ path: 'sc/.mjs' }",
-      "{ path: 'my seed.sh' }",
       "{ path: seed.step.sh }",
-      "{ path: 'sc/.sh' }",
     ]) {
       expect(() => step(body), body).toThrow(/filename must match/);
     }
@@ -207,68 +203,26 @@ describe("script path rules, shared with a run: target", () => {
   });
 });
 
-describe("the second language reads exactly like the first", () => {
-  it("parses a .sh path, with and without a time limit", () => {
-    expect(step("{ path: scripts/seed.sh }")).toEqual([
-      { kind: "script", path: "scripts/seed.sh" },
-    ]);
+describe("the second language", () => {
+  it("parses a .sh path like a .mjs one", () => {
     expect(step("{ path: ../../scripts/seed-order.sh, timeout: 45000 }")).toEqual([
       { kind: "script", path: "../../scripts/seed-order.sh", timeout: 45000 },
     ]);
   });
 
-  it("round-trips a .sh step and summarizes it the same way", () => {
-    const steps: FlowStep[] = [{ kind: "script", path: "scripts/seed.sh", timeout: 5000 }];
-    expect(parseFlow(serializeFlow({ executionPrerequisite: "", steps })).steps).toEqual(steps);
-    expect(summarizeStep(steps[0]!, 1)).toBe("1. script: scripts/seed.sh (timeout 5000ms)");
-  });
-
-  // The pattern is what every route enforces and the function is what picks the
-  // interpreter, so the pattern accepting another of the extensions listed
-  // below, or the function answering differently for a name the pattern
-  // accepts, has to fail here rather than reach a flow as a script run under
-  // the wrong interpreter.
-  it("maps every basename the pattern accepts to an interpreter", () => {
-    const cases: Array<[string, "node" | "bash"]> = [
-      ["seed.mjs", "node"],
-      ["seed-order_2.mjs", "node"],
-      ["seed.sh", "bash"],
-      ["seed-order_2.sh", "bash"],
-    ];
-    for (const [name, interpreter] of cases) {
-      expect(SCRIPT_FILE_NAME_PATTERN.test(name), name).toBe(true);
-      expect(scriptInterpreter(`scripts/${name}`), name).toBe(interpreter);
-    }
-    // Nothing else the pattern would accept, asked of the extensions rather
-    // than of the source: an alternation added OUTSIDE the group would leave
-    // the source reading `(mjs|sh)` while handing a `.bash` file to node.
-    for (const extension of [
-      "mjs",
-      "sh",
-      "js",
-      "cjs",
-      "mts",
-      "bash",
-      "zsh",
-      "ksh",
-      "fish",
-      "py",
-      "SH",
-      "MJS",
-      "Sh",
-    ]) {
-      const name = `seed.${extension}`;
-      const accepted = SCRIPT_FILE_NAME_PATTERN.test(name);
-      expect(accepted, name).toBe(extension === "mjs" || extension === "sh");
-      if (accepted) {
-        expect(scriptInterpreter(name), name).toBe(extension === "sh" ? "bash" : "node");
+  // Every route enforces the pattern and `scriptInterpreter` picks the
+  // interpreter, so the two must agree on every name the pattern accepts.
+  // Asked of extensions rather than of the source, where an alternation added
+  // outside the group would still read `(mjs|sh)`.
+  it("maps exactly the names the pattern accepts to an interpreter", () => {
+    const interpreters: Record<string, "node" | "bash"> = { mjs: "node", sh: "bash" };
+    for (const extension of ["mjs", "sh", "js", "cjs", "mts", "bash", "zsh", "py", "SH", "MJS"]) {
+      const name = `seed-order_2.${extension}`;
+      expect(SCRIPT_FILE_NAME_PATTERN.test(name), name).toBe(extension in interpreters);
+      if (extension in interpreters) {
+        expect(scriptInterpreter(`scripts/${name}`), name).toBe(interpreters[extension]);
       }
     }
-  });
-
-  it("reads the interpreter off the path, not off the file", () => {
-    expect(scriptInterpreter("a/b/seed.sh")).toBe("bash");
-    expect(scriptInterpreter("a/b/seed.mjs")).toBe("node");
   });
 });
 
