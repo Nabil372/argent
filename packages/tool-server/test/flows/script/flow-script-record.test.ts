@@ -24,6 +24,7 @@ import {
 import { SCRIPT_STEP_LOG_LIMIT_BYTES } from "../../../src/tools/flows/script/flow-script-executor";
 import { resolveHostBash } from "../../helpers/host-bash";
 
+/** Real child processes, so the budgets are generous. */
 vi.setConfig({ testTimeout: 30_000 });
 
 let root: string;
@@ -54,7 +55,7 @@ function deepFindMarker(value: unknown): string | null {
 }
 
 function flowPath(name: string, projectRoot = root): string {
-  return path.join(projectRoot, ".argent", "flows", `${name}.yaml`);
+  return path.join(projectRoot, ".argent", "e2e", `${name}.yaml`);
 }
 
 async function steps(name: string, projectRoot = root): Promise<FlowStep[]> {
@@ -157,10 +158,15 @@ describe("recording a script step", () => {
     const result = await addScript("checkout", "../../scripts/seed.mjs");
 
     expect(result.outputJson).toBe('{"user":{"id":"u_1"}}');
-    expect(result.message).toBe('Added script step to "checkout" flow.');
+    expect(result.message).toBe('Added script step to "checkout" e2e test.');
   });
 
   it("hands the document over as text, so nothing in it is read as a directive", async () => {
+    // The client deep-walks every result for `__argentClientFile` (writes a
+    // file on the agent's machine) and `__argentArtifact` (fetches one),
+    // matching on shape alone — and a script relaying what a backend answered
+    // is the one part of a result this server does not author. As JSON text
+    // there is no object for either walk to match.
     await write(
       "scripts/relay.mjs",
       `output.body = JSON.parse('{"orderId":"ord_1","meta":{"__argentClientFile":true,` +
@@ -196,11 +202,14 @@ describe("recording a script step", () => {
     expect(result.outputTruncated).toBe(true);
     expect(result.outputJson).toMatch(/^\{"blob":"y+$/);
     expect(result.stepCount).toBe(1);
-    expect(result.message).toBe('Added script step to "big" flow.');
+    expect(result.message).toBe('Added script step to "big" e2e test.');
     expect(() => JSON.parse(result.outputJson!)).toThrow();
   });
 
   it("keeps a document of exactly the render limit whole", async () => {
+    // The limit is inclusive, and nothing else in the suite sits ON it: the
+    // cases either side are 1000 bytes and ~90 KB, so `<=` could become `<`
+    // and only a document of exactly this size would notice.
     const limit = 64 * 1024;
     const filler = limit - Buffer.byteLength('{"blob":""}', "utf8");
     await write("scripts/exact.mjs", `output.blob = "y".repeat(${filler});`);
@@ -228,6 +237,10 @@ describe("recording a script step", () => {
   });
 
   it("records the timeout the caller asked for, even when the run clamped it", async () => {
+    // Above the executor's absolute ceiling (Node's largest timer), so the
+    // clamp holds whatever `scripts.maxTimeoutMs` the host running this
+    // configures. The recorder writes what was asked for either way: the YAML
+    // is the request, and the clamp is the host's answer to it.
     const asked = 2_147_483_648;
     await write("scripts/quick.mjs", `output.ok = true;`);
     await start("clamped");
@@ -255,6 +268,8 @@ describe("recording a script step", () => {
     const call = addScript("cancelled", "../../scripts/slow.mjs", {}, {
       signal: controller.signal,
     } as unknown as ToolContext);
+    // Cancel only once the child is provably running, so the case is a stopped
+    // script rather than one that never left the queue.
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
       if (
@@ -335,7 +350,7 @@ describe("recording a script step", () => {
     expect(err).toBeInstanceOf(Error);
     expect(err.message).toContain("was NOT run");
     expect(err.message).toContain("is gone");
-    expect(err.message).toContain("Start the recording again with flow-start-recording");
+    expect(err.message).toContain("Start the recording again with e2e-start-recording");
     await expect(fs.access(marker)).rejects.toThrow();
   });
 
@@ -359,6 +374,7 @@ describe("recording a script step", () => {
     expect(err.message).toContain("not in this script");
     expect(err.message).toContain(flowPath("handedited"));
     expect(err.message).toContain("Step 1 (`echo`): `echo` holds a malformed output reference");
+    // The refusal keeps its own signal; only the framing around it changed.
     expect(getFailureSignal(err)?.error_code).toBe(FAILURE_CODES.FLOW_ENTRY_UNRECOGNIZED);
   });
 
@@ -431,10 +447,14 @@ describe("recording a script step", () => {
 
     expect(result.outputJson).toBe(JSON.stringify({ blob: "y".repeat(1000) }));
     expect(result).not.toHaveProperty("outputTruncated");
-    expect(result.message).toBe('Added script step to "small" flow.');
+    expect(result.message).toBe('Added script step to "small" e2e test.');
   });
 
   it("never cuts a multi-byte character in half", async () => {
+    // The cut lands on the encoded bytes, so a 3-byte character straddling the
+    // ceiling has to be dropped whole — otherwise the field carries a lone
+    // replacement character the script never wrote. 30000 of them encode to
+    // 90 KB: over this ceiling, under the executor's own.
     await write("scripts/wide.mjs", `output.blob = "\u3042".repeat(30000);`);
     await start("wide");
 
@@ -557,11 +577,17 @@ describe("recording a script step", () => {
     expect(result.status).toBe("pass");
     expect(result.logTruncated).toBe(true);
     expect(result.log!.length).toBeLessThanOrEqual(SCRIPT_STEP_LOG_LIMIT_BYTES);
+    // The cut leaves nothing in the text, which is why the flag is the only
+    // signal.
     expect(result.log).not.toContain("truncated");
     expect(await steps("chatty")).toHaveLength(1);
   });
 
   it("flags a log the frame collapser cut, far inside the step limit", async () => {
+    // The cap is not the only thing that raises the flag: the executor also
+    // raises it when its collapser drops a fatal error's frame dump, which
+    // reaches no limit at all. A description naming only the cap would send the
+    // author looking for a log too long to keep.
     await write(
       "scripts/framey.mjs",
       `console.error("FATAL ERROR: build step failed");\n` +
@@ -679,10 +705,10 @@ describe("a script that did not pass records nothing", () => {
     const base = { message: "", stepCount: 1 } as const;
 
     expect(completedMsg({ params, result: { ...base, status: "pass" } })).toBe(
-      "Added script step to flow checkout"
+      "Added script step to e2e test checkout"
     );
     expect(completedMsg({ params, result: { ...base, status: "fail" } })).toBe(
-      "Script for flow checkout failed; nothing recorded"
+      "Script for e2e test checkout failed; nothing recorded"
     );
   });
 
@@ -713,6 +739,10 @@ describe("a script that did not pass records nothing", () => {
     expect(passed.stepCount).toBe(3);
   });
 
+  // With the file unreadable the only count left is the session's, which is the
+  // steps as of the last append - a third number again. An author comparing it
+  // with what the next append renumbers to has to know which one they are
+  // holding, so it is qualified here as the sibling recorder qualifies it.
   it("says when the step count could not come off the file", async () => {
     await start("counted");
     await flowInsertEchoTool.execute(
@@ -729,6 +759,7 @@ describe("a script that did not pass records nothing", () => {
     const failed = await addScript("counted", "../../scripts/break-then-fail.mjs");
 
     expect(failed.status).toBe("fail");
+    // The in-memory snapshot, while the file itself holds two steps.
     expect(failed.stepCount).toBe(1);
     expect(failed.message).toContain("Could not verify stepCount from");
   });
@@ -755,6 +786,10 @@ describe("a script that did not pass records nothing", () => {
     expect(result.message).toContain("Fix the reason before you retry");
   });
 
+  // A cancellation reaches this tool from both sides of the fork under one
+  // failure kind, so the kind alone cannot answer it. Driven through the real
+  // executor: the file the script would have written is the proof that the
+  // answer matches what happened, not what the kind suggests.
   it("does not send an author cleaning up after a cancellation that never forked", async () => {
     const marker = path.join(root, "seeded.txt");
     await write(
@@ -784,6 +819,9 @@ describe("a script that did not pass records nothing", () => {
 
     expect(result.status).toBe("fail");
     expect(result.reason).toContain('Script "../../scripts/gone.mjs" does not exist');
+    // Anchored at the flow file that named the step, with its `..` segments
+    // intact: only the kernel may collapse one, since a lexical collapse past a
+    // symlinked component names another file.
     const flowsDir = path.dirname(await fs.realpath(flowPath("gone")));
     expect(result.reason).toContain(`Resolved path: ${flowsDir}${path.sep}../../scripts/gone.mjs`);
     expect(result).not.toHaveProperty("durationMs");
@@ -804,6 +842,12 @@ describe("a script that did not pass records nothing", () => {
   });
 
   it("refuses a mis-cased path, quoting the spelling on disk", async () => {
+    // The one authoring error a local run cannot find: a mis-cased path
+    // recorded here is committed and replayed on a case-sensitive checkout,
+    // where it fails with ENOENT.
+    //
+    // Ungated, because the verdict is not the filesystem's: classifyOnDiskSpelling
+    // compares the supplied basename against readdir's own entries, lowercased.
     await write("scripts/createUser.mjs", `output.ok = true;`);
     await start("cased");
 
@@ -864,6 +908,9 @@ describe("the paths flow-add-script accepts", () => {
     expect(await steps("paths")).toEqual([]);
   });
 
+  // The floor is the parser's second timeout rejection, and it admits values
+  // the non-positive check lets through — so parity has to be pinned on one of
+  // those too, or the recorder could keep running a limit `parseFlow` refuses.
   it("rejects a timeout under the floor exactly as the YAML parser does", async () => {
     const ran = path.join(root, "ran.txt");
     await write(
@@ -880,6 +927,8 @@ describe("the paths flow-add-script accepts", () => {
     expect(message).toBe(parseError('path: "../../scripts/seed.mjs", timeout: 50'));
     expect(message).toMatch(/script.timeout is in milliseconds and needs at least 100/);
     expect(await steps("paths")).toEqual([]);
+    // Refused at parse, so the run never started — the recorder must not have
+    // spent the script's side effects on a step it then refuses to record.
     await expect(fs.access(ran)).rejects.toThrow();
   });
 });
@@ -916,8 +965,10 @@ describe("a recording this server cannot reach", () => {
 
     expect(signal?.error_code).toBe(FAILURE_CODES.FLOW_FILE_INVALID);
     expect(signal?.failure_stage).toBe("flow_add_script_client_mode");
-    expect(message).toContain('Cannot access the script for flow "remote"');
-    expect(message).toContain("add the `script:` step to the YAML");
+    expect(message).toContain(
+      'Cannot add a script step to e2e test "remote": the recording is over a link'
+    );
+    expect(message).toContain("Nothing ran and no step was recorded.");
     await expect(fs.stat(marker)).rejects.toThrow();
     await expect(fs.stat(CLIENT_ROOT)).rejects.toThrow();
     expect((await getRecordingSession(CLIENT_ROOT, "remote"))?.flow.steps).toEqual([]);

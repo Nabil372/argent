@@ -30,7 +30,7 @@ const UNSAFE_NOTE =
   "been rounded; write an identifier as a string.";
 
 const PLACEHOLDER_NOTE =
-  "A secret placeholder must be written in the flow file whole; a script cannot produce one";
+  "A secret placeholder must be written in the e2e test file whole; a script cannot produce one";
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -882,7 +882,7 @@ describe("resolveOutputField — a value is copied literally", () => {
 describe("resolveOutputField — secret placeholders", () => {
   const spelled = (field: string, placeholder = "{{secret:API_KEY}}") =>
     `${JSON.stringify(field)} would spell the secret placeholder ${placeholder} with text from ` +
-    "the output document. A secret placeholder must be written in the flow file whole";
+    "the output document. A secret placeholder must be written in the e2e test file whole";
 
   describe.each(GUARDED_KINDS)("in a %s field", (kind) => {
     it("rejects a placeholder two values spell between them", () => {

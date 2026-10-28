@@ -52,7 +52,7 @@ async function write(relative: string, contents: string): Promise<string> {
 }
 
 function flow(name: string, yaml: string): Promise<string> {
-  return write(path.join(".argent", "flows", `${name}.yaml`), yaml);
+  return write(path.join(".argent", "e2e", `${name}.yaml`), yaml);
 }
 
 function markPath(mark: string): string {
@@ -464,7 +464,7 @@ describe("environment shape rules", () => {
   it("refuses a {{output:...}} reference in the env maps resolved before any script runs", async () => {
     await flow("out-file", 'env: { X: "{{output:user.id}}" }\nsteps:\n  - echo: hi\n');
     await expect(runFlow("out-file")).rejects.toThrow(
-      "The flow's `env.X` uses unsupported template syntax: this map holds defaults for every " +
+      "The e2e test's `env.X` uses unsupported template syntax: this map holds defaults for every " +
         "script in the run, and Argent resolves it before the first script has written any " +
         "output. A `script` step's own `env` can read output."
     );
@@ -543,7 +543,7 @@ describe("environment shape rules", () => {
     );
     expect(added.status).toBe("pass");
     expect(seen("probe")).toEqual({ X: "u_42" });
-    const recorded = await fs.readFile(path.join(root, ".argent/flows/out-rec.yaml"), "utf8");
+    const recorded = await fs.readFile(path.join(root, ".argent/e2e/out-rec.yaml"), "utf8");
     expect(parseFlow(recorded).steps).toEqual([
       { kind: "script", path: "../../scripts/seed.mjs" },
       { ...probeStep, env: { X: "{{output:user.id}}" } },
@@ -612,7 +612,7 @@ describe("serialization", () => {
 
   it("keeps `env` through a real recorder append", async () => {
     await flowStartRecordingTool.execute({}, { name: "append", project_root: root });
-    const filePath = path.join(root, ".argent/flows/append.yaml");
+    const filePath = path.join(root, ".argent/e2e/append.yaml");
     await fs.writeFile(
       filePath,
       "env: { API_URL: https://example.com }\n" +
@@ -639,7 +639,7 @@ describe("serialization", () => {
   it("says an echo went unrecorded when the FILE's env is what refused it", async () => {
     await flowStartRecordingTool.execute({}, { name: "echorefuse", project_root: root });
     await fs.writeFile(
-      path.join(root, ".argent/flows/echorefuse.yaml"),
+      path.join(root, ".argent/e2e/echorefuse.yaml"),
       'env:\n  TOKEN: "{{output:1.token}}"\nsteps: []\n',
       "utf8"
     );
@@ -660,7 +660,7 @@ describe("serialization", () => {
       ["parse-number", "env:\n  RETRIES: 5\nsteps: []\n"],
     ] as const) {
       await flowStartRecordingTool.execute({}, { name, project_root: root });
-      await write(`.argent/flows/${name}.yaml`, header);
+      await write(`.argent/e2e/${name}.yaml`, header);
 
       await expect(
         flowInsertEchoTool.execute({}, { name, project_root: root, message: "note" })
@@ -674,7 +674,7 @@ describe("serialization", () => {
           command: "gesture-tap",
           args: JSON.stringify({ udid: DEVICE, x: 0.5, y: 0.5 }),
         } as never)
-      ).rejects.toThrow(/call ran, but something already in the flow file failed validation/);
+      ).rejects.toThrow(/call ran, but something already in the e2e test file failed validation/);
     }
   });
 
@@ -721,7 +721,7 @@ describe("serialization", () => {
         path: "../../scripts/slow.mjs",
       } as never);
       await new Promise((resolve) => setTimeout(resolve, 400));
-      await write(`.argent/flows/${name}.yaml`, header);
+      await write(`.argent/e2e/${name}.yaml`, header);
 
       await expect(rejection).rejects.toThrow(/passed, but the step was not recorded/);
       await expect(rejection).rejects.toThrow(/already in the file, not in this script/);
@@ -731,7 +731,7 @@ describe("serialization", () => {
 
   it("truncates a checked-in `env:` with the rest of the file", async () => {
     await write(
-      ".argent/flows/header.yaml",
+      ".argent/e2e/header.yaml",
       'env:\n  API_URL: https://example.com\n  BUILD: "42"\n' + "steps:\n  - echo: hello\n"
     );
 
@@ -746,7 +746,7 @@ describe("serialization", () => {
 
   it("keeps `env` through a flow-add-step append", async () => {
     await flowStartRecordingTool.execute({}, { name: "addstep", project_root: root });
-    const filePath = path.join(root, ".argent/flows/addstep.yaml");
+    const filePath = path.join(root, ".argent/e2e/addstep.yaml");
     await fs.writeFile(
       filePath,
       "env: { API_URL: https://example.com }\n" +
@@ -780,7 +780,7 @@ describe("serialization", () => {
         "steps:\n" +
         "  - script: { path: seed.mjs, env: { USER_TYPE: premium } }\n"
     );
-    const parsed = parseFlow(await fs.readFile(path.join(root, ".argent/flows/kept.yaml"), "utf8"));
+    const parsed = parseFlow(await fs.readFile(path.join(root, ".argent/e2e/kept.yaml"), "utf8"));
     parsed.steps.push({ kind: "echo", message: "appended" });
 
     const round = parseFlow(serializeFlow(parsed));
@@ -1630,10 +1630,10 @@ describe("recording a script step with env", () => {
     )) as { message: string; flowFile: string };
 
     expect(started.flowFile).toBe("steps: []\n");
-    expect(started.message).toBe('Started recording "qa" flow');
+    expect(started.message).toBe('Started recording "qa" e2e test');
 
     await fs.writeFile(
-      path.join(root, ".argent/flows/qa.yaml"),
+      path.join(root, ".argent/e2e/qa.yaml"),
       "env:\n  PLAIN: checked-in-default\nsteps: []\n",
       "utf8"
     );
@@ -1650,7 +1650,7 @@ describe("recording a script step with env", () => {
   it("tells a gone, an unreadable and a malformed flow file apart", async () => {
     await write("scripts/dump.mjs", reporter("branches", ["A"]));
     await flowStartRecordingTool.execute({}, { name: "gone", project_root: root });
-    const gonePath = path.join(root, ".argent/flows/gone.yaml");
+    const gonePath = path.join(root, ".argent/e2e/gone.yaml");
     await fs.rm(gonePath);
 
     await expect(
@@ -1661,7 +1661,7 @@ describe("recording a script step with env", () => {
     ).rejects.toThrow(/is gone\..*Start the recording again/s);
 
     await flowStartRecordingTool.execute({}, { name: "broken", project_root: root });
-    const brokenPath = path.join(root, ".argent/flows/broken.yaml");
+    const brokenPath = path.join(root, ".argent/e2e/broken.yaml");
     await fs.writeFile(brokenPath, "steps:\n  - script: { path: x.mjs, env: { A: 3 } }\n", "utf8");
 
     await expect(
@@ -1669,7 +1669,7 @@ describe("recording a script step with env", () => {
         {},
         { name: "broken", project_root: root, path: "../../scripts/dump.mjs" }
       )
-    ).rejects.toThrow(/is not a flow argent can use as it stands/);
+    ).rejects.toThrow(/is not an e2e test argent can use as it stands/);
   });
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
@@ -1677,7 +1677,7 @@ describe("recording a script step with env", () => {
     async () => {
       await write("scripts/dump.mjs", reporter("locked", ["A"]));
       await flowStartRecordingTool.execute({}, { name: "locked", project_root: root });
-      const lockedPath = path.join(root, ".argent/flows/locked.yaml");
+      const lockedPath = path.join(root, ".argent/e2e/locked.yaml");
       await fs.chmod(lockedPath, 0o000);
       try {
         await expect(
@@ -1703,7 +1703,7 @@ describe("recording a script step with env", () => {
       reporter("recorded", ["API_URL", "USER_TYPE", "API_KEY"]) + "\noutput.ok = true;"
     );
     await flowStartRecordingTool.execute({}, { name: "rec", project_root: root });
-    const filePath = path.join(root, ".argent/flows/rec.yaml");
+    const filePath = path.join(root, ".argent/e2e/rec.yaml");
     await fs.writeFile(
       filePath,
       "env:\n  API_URL: https://api.example.com\n  USER_TYPE: from-file\nsteps: []\n",
@@ -1721,7 +1721,7 @@ describe("recording a script step with env", () => {
     )) as { status: string; message: string };
 
     expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "rec" flow.');
+    expect(added.message).toBe('Added script step to "rec" e2e test.');
     expect(seen("recorded")).toEqual({
       API_URL: "https://api.example.com",
       USER_TYPE: "premium",
@@ -1745,7 +1745,7 @@ describe("recording a script step with env", () => {
     );
     await flowStartRecordingTool.execute({}, { name: "recfail", project_root: root });
     await fs.writeFile(
-      path.join(root, ".argent/flows/recfail.yaml"),
+      path.join(root, ".argent/e2e/recfail.yaml"),
       "env: { API_URL: https://api.example.com }\nsteps: []\n",
       "utf8"
     );
@@ -1767,7 +1767,7 @@ describe("recording a script step with env", () => {
   });
 
   it("withdraws the layering promise when the file's env changed during the run", async () => {
-    const filePath = path.join(root, ".argent/flows/drift.yaml");
+    const filePath = path.join(root, ".argent/e2e/drift.yaml");
     await write(
       "scripts/edit.mjs",
       `import fs from "node:fs";\n` +
@@ -1783,7 +1783,7 @@ describe("recording a script step with env", () => {
     )) as { status: string; message: string };
 
     expect(added.status).toBe("pass");
-    expect(added.message).toContain("the flow file's own `env` changed while the script");
+    expect(added.message).toContain("the e2e test file's own `env` changed while the script");
     expect(added.message).toContain("it ran with env EARLY");
     expect(added.message).toContain("will replay with env LATER");
     expect(added.message).toContain("would append a SECOND one");
@@ -1816,7 +1816,7 @@ describe("recording a script step with env", () => {
   });
 
   it("reads a case-only rename as drift on POSIX and as no change on Windows", async () => {
-    const filePath = path.join(root, ".argent/flows/casedrift.yaml");
+    const filePath = path.join(root, ".argent/e2e/casedrift.yaml");
     await write(
       "scripts/recase.mjs",
       `import fs from "node:fs";\n` +
@@ -1846,7 +1846,7 @@ describe("recording a script step with env", () => {
   });
 
   it("says which way the drift went when the names did not change", async () => {
-    const filePath = path.join(root, ".argent/flows/valuedrift.yaml");
+    const filePath = path.join(root, ".argent/e2e/valuedrift.yaml");
     await write(
       "scripts/edit.mjs",
       `import fs from "node:fs";\n` +
@@ -1867,7 +1867,7 @@ describe("recording a script step with env", () => {
   });
 
   it("treats an empty env map and no env key as the same environment", async () => {
-    const filePath = path.join(root, ".argent/flows/emptyenv.yaml");
+    const filePath = path.join(root, ".argent/e2e/emptyenv.yaml");
     await write(
       "scripts/edit.mjs",
       `import fs from "node:fs";\n` +
@@ -1883,11 +1883,11 @@ describe("recording a script step with env", () => {
     )) as { status: string; message: string };
 
     expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "emptyenv" flow.');
+    expect(added.message).toBe('Added script step to "emptyenv" e2e test.');
   });
 
   it("stays quiet when a concurrent edit touched everything but env", async () => {
-    const filePath = path.join(root, ".argent/flows/otheredit.yaml");
+    const filePath = path.join(root, ".argent/e2e/otheredit.yaml");
     await write(
       "scripts/edit.mjs",
       `import fs from "node:fs";\n` +
@@ -1903,11 +1903,11 @@ describe("recording a script step with env", () => {
     )) as { status: string; message: string };
 
     expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "otheredit" flow.');
+    expect(added.message).toBe('Added script step to "otheredit" e2e test.');
   });
 
   it("stays quiet when the step's own env provably shadows the change", async () => {
-    const filePath = path.join(root, ".argent/flows/shadow.yaml");
+    const filePath = path.join(root, ".argent/e2e/shadow.yaml");
     await write(
       "scripts/edit.mjs",
       `import fs from "node:fs";\n` +
@@ -1928,14 +1928,14 @@ describe("recording a script step with env", () => {
     )) as { status: string; message: string };
 
     expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "shadow" flow.');
+    expect(added.message).toBe('Added script step to "shadow" e2e test.');
   });
 
   it("replays a recorded step under a run-time env, over the file's own default", async () => {
     await write("scripts/probe.mjs", reporter("replayed", ["FROM_FILE", "FROM_STEP"]));
     await flowStartRecordingTool.execute({}, { name: "roundtrip", project_root: root });
     await fs.writeFile(
-      path.join(root, ".argent/flows/roundtrip.yaml"),
+      path.join(root, ".argent/e2e/roundtrip.yaml"),
       "env: { FROM_FILE: file-default }\nsteps: []\n",
       "utf8"
     );
@@ -1976,7 +1976,7 @@ describe("recording a script step with env", () => {
     )) as { status: string; message: string };
 
     expect(added.status).toBe("pass");
-    expect(added.message).toBe('Added script step to "recplain" flow.');
+    expect(added.message).toBe('Added script step to "recplain" e2e test.');
     expect(seen("recplain")).toEqual({ API_URL: "https://api.example.com" });
 
     const finished = (await flowFinishRecordingTool.execute(

@@ -213,7 +213,7 @@ function parseOperand(cursor: Cursor, first: boolean): Operand {
     throw new ReferenceStop(
       at,
       "object and array literals are not supported; a reference reads one value, and a " +
-        "script builds any structure the flow needs"
+        "script builds any structure the e2e test needs"
     );
   }
   if (ch === "(") {
@@ -360,15 +360,7 @@ export type OutputDocument = Readonly<Record<string, unknown>>;
  * again. `static` is a field that must never hold a reference.
  */
 export type OutputFieldKind =
-  | "echo"
-  | "text"
-  | "identifier"
-  | "role"
-  | "expected"
-  | "typed"
-  | "arg"
-  | "env"
-  | "static";
+  "echo" | "text" | "identifier" | "role" | "expected" | "typed" | "arg" | "env" | "static";
 
 export interface ResolvedOutputReference {
   source: string;
@@ -436,7 +428,7 @@ export function resolveOutputField(
         reason:
           `${spell(only.reference)} gave ${describeJsonType(value)} holding the secret ` +
           `placeholder ${placed.placeholder}${placed.path ? ` at \`${placed.path}\`` : ""}. A ` +
-          "secret placeholder must be written in the flow file whole; a script cannot produce one",
+          "secret placeholder must be written in the e2e test file whole; a script cannot produce one",
       };
     }
     return {
@@ -487,7 +479,7 @@ export function resolveOutputField(
         reason:
           `${JSON.stringify(renderedValue(text))} would spell the secret placeholder ` +
           `${match[0]} with text from the output document. A secret placeholder must be ` +
-          "written in the flow file whole",
+          "written in the e2e test file whole",
       };
     }
   }

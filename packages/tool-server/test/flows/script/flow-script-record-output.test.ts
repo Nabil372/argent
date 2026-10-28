@@ -54,7 +54,7 @@ async function write(relative: string, contents: string): Promise<string> {
 }
 
 function flowPath(name: string): string {
-  return path.join(root, ".argent", "flows", `${name}.yaml`);
+  return path.join(root, ".argent", "e2e", `${name}.yaml`);
 }
 
 async function onDisk(name: string): Promise<string> {
@@ -287,7 +287,7 @@ describe("a recorded env reference", () => {
     });
 
     expect(order.status).toBe("pass");
-    expect(order.message).toBe('Added script step to "checkout" flow.');
+    expect(order.message).toBe('Added script step to "checkout" e2e test.');
     expect(readMark("order")).toBe(recordedToken);
 
     const expectedSteps = [
@@ -387,9 +387,9 @@ describe("two calls on one recording at the same time", () => {
     const { a, b } = await race("race", "a", "b");
 
     expect([a.status, b.status]).toEqual(["pass", "pass"]);
-    expect(a.message).toBe('Added script step to "race" flow.');
+    expect(a.message).toBe('Added script step to "race" e2e test.');
     expect(b.message).toBe(
-      `Added script step to "race" flow, but another call merged its script's output into this ` +
+      `Added script step to "race" e2e test, but another call merged its script's output into this ` +
         `recording while the script was running, so the script ran with an older output document ` +
         `than the one its step receives at replay. The step IS in the file — calling this again ` +
         `would append a SECOND one and run the script's side effect twice. Remove it first if you ` +
@@ -462,10 +462,10 @@ describe("two calls on one recording at the same time", () => {
     );
 
     expect(script.status).toBe("pass");
-    expect(script.message).toBe('Added script step to "typing" flow.');
+    expect(script.message).toBe('Added script step to "typing" e2e test.');
     expect(invokeTool).toHaveBeenCalledWith("keyboard", { text: "111" });
     expect(step.message).toBe(
-      `Step added to "typing" flow — another call merged a script's output into this recording ` +
+      `Step added to "typing" e2e test — another call merged a script's output into this recording ` +
         `while this call was running, so its references resolved against an older output ` +
         `document than the one the step reads at replay. The step IS in the file — calling this ` +
         `again would append a second one`
@@ -484,7 +484,7 @@ describe("two calls on one recording at the same time", () => {
     const { step, invokeTool } = await stepDuringMerge("plain", '{"text":"hi"}');
 
     expect(invokeTool).toHaveBeenCalledWith("keyboard", { text: "hi" });
-    expect(step.message).toBe('Step added to "plain" flow');
+    expect(step.message).toBe('Step added to "plain" e2e test');
     expect((await session("plain")).outputRevision).toBe(2);
   });
 });
@@ -559,7 +559,7 @@ describe("a script handed the whole document while another call merged into it",
       addScript(name, `../../scripts/${name}-slow.${slowIs}`),
     ]);
     expect([fastCall.status, slowCall.status]).toEqual(["pass", "pass"]);
-    expect(fastCall.message).toBe(`Added script step to "${name}" flow.`);
+    expect(fastCall.message).toBe(`Added script step to "${name}" e2e test.`);
     expect(slowCall.message).toContain(DRIFT);
     expect(await steps(name)).toEqual([
       { kind: "script", path: `../../scripts/${name}-seed.mjs` },
@@ -571,7 +571,7 @@ describe("a script handed the whole document while another call merged into it",
 
   async function echoThenFinish(name: string, message: string) {
     const echo = await flowInsertEchoTool.execute({}, { name, project_root: root, message });
-    expect(echo.message).toBe(`Echo added to "${name}" flow`);
+    expect(echo.message).toBe(`Echo added to "${name}" e2e test`);
     await flowFinishRecordingTool.execute({}, { name, project_root: root } as never);
   }
 
@@ -688,7 +688,7 @@ describe("a script handed the whole document while another call merged into it",
     const first = await addScript("sequential", "../../scripts/first.mjs");
     const second = await addScript("sequential", "../../scripts/second.mjs");
 
-    expect(second.message).toBe('Added script step to "sequential" flow.');
+    expect(second.message).toBe('Added script step to "sequential" e2e test.');
     // Handed back whole: the keys it left alone and the one it added.
     expect(second.outputJson).toBe('{"a":1,"user":{"id":"u_1"},"c":3}');
     const live = await session("sequential");
@@ -754,8 +754,8 @@ describe("a passing script whose step is not recorded", () => {
 
     expect(err.message).toBe(
       `Script "../../scripts/big-b.mjs" passed, but the step was not recorded. Check the ` +
-        `script's changes before you retry. After this step the flow output is 1.2 MiB encoded; ` +
-        `the limit is 1.0 MiB. A script cannot remove a key, so set one the flow no longer reads ` +
+        `script's changes before you retry. After this step the e2e test output is 1.2 MiB encoded; ` +
+        `the limit is 1.0 MiB. A script cannot remove a key, so set one the e2e test no longer reads ` +
         `to null.`
     );
     expect(getFailureSignal(err)).toMatchObject({
@@ -782,7 +782,7 @@ describe("flow-add-echo against the recording's document", () => {
     );
     expect(misspelled.stepCount).toBe(2);
     expect(misspelled.message).toBe(
-      `Echo added to "echoes" flow — but its message does not resolve against the recording's ` +
+      `Echo added to "echoes" e2e test — but its message does not resolve against the recording's ` +
         "output document: `echo`: {{output:usr.id}} did not resolve: `output` has no `usr` " +
         "(its keys: user). At replay the echo errors and stops the run unless a script writes " +
         "that path first"
@@ -793,7 +793,7 @@ describe("flow-add-echo against the recording's document", () => {
       { name: "echoes", project_root: root, message: "Created {{output:user.id}}" }
     );
     expect(correct.stepCount).toBe(3);
-    expect(correct.message).toBe('Echo added to "echoes" flow');
+    expect(correct.message).toBe('Echo added to "echoes" e2e test');
 
     const malformed = await rejection(
       flowInsertEchoTool.execute(
@@ -833,7 +833,7 @@ describe("flow-add-step against the recording's document", () => {
     );
 
     expect(invokeTool).toHaveBeenCalledWith("keyboard", { text: "Code 4711" });
-    expect(added.message).toBe('Step added to "args" flow');
+    expect(added.message).toBe('Step added to "args" e2e test');
     expect((await steps("args"))[1]).toEqual({
       kind: "tool",
       name: "keyboard",
@@ -907,11 +907,11 @@ describe("flow-add-step against the recording's document", () => {
 
   it("warns that a flow-execute recorded as run: ran its scripts and references with an empty document", async () => {
     await write(
-      ".argent/flows/seeded.yaml",
+      ".argent/e2e/seeded.yaml",
       "steps:\n  - script: { path: ../../scripts/seed.mjs }\n"
     );
-    await write(".argent/flows/greets.yaml", 'steps:\n  - echo: "Hello {{output:user.name}}"\n');
-    await write(".argent/flows/plain.yaml", "steps:\n  - echo: hi\n");
+    await write(".argent/e2e/greets.yaml", 'steps:\n  - echo: "Hello {{output:user.name}}"\n');
+    await write(".argent/e2e/plain.yaml", "steps:\n  - echo: hi\n");
     await start("composed");
     const { registry } = mockRegistry(() => ({ ok: true, steps: [] }));
     const tool = createFlowAddStepTool(registry);
@@ -926,18 +926,18 @@ describe("flow-add-step against the recording's document", () => {
         }
       );
     const warning = (fragment: string) =>
-      `the live flow-execute ran ${fragment}.yaml as a run of its own, which started with an ` +
+      `the live e2e-execute ran ${fragment}.yaml as a run of its own, which started with an ` +
       `empty output document, and argent kept none of the output its scripts wrote; at replay ` +
-      `the run: step shares this flow's output document, so its scripts and references can see ` +
+      `the run: step shares this e2e test's output document, so its scripts and references can see ` +
       `different values than they did now`;
 
     const seeded = await record("seeded");
     const greets = await record("greets");
     const plain = await record("plain");
 
-    expect(seeded.message).toBe(`Step added to "composed" flow — ${warning("seeded")}`);
-    expect(greets.message).toBe(`Step added to "composed" flow — ${warning("greets")}`);
-    expect(plain.message).toBe('Step added to "composed" flow');
+    expect(seeded.message).toBe(`Step added to "composed" e2e test — ${warning("seeded")}`);
+    expect(greets.message).toBe(`Step added to "composed" e2e test — ${warning("greets")}`);
+    expect(plain.message).toBe('Step added to "composed" e2e test');
     expect(await steps("composed")).toEqual([
       { kind: "run", flow: "seeded.yaml" },
       { kind: "run", flow: "greets.yaml" },
@@ -1008,11 +1008,11 @@ describe("what a recorded script's document carries", () => {
 
     expect(order.status).toBe("pass");
     expect(order.message).toBe(
-      'Added script step to "bigint" flow. Warning: output.order.id is 12345678901234567000, ' +
+      'Added script step to "bigint" e2e test. Warning: output.order.id is 12345678901234567000, ' +
         "past the largest integer a JSON number holds exactly (9007199254740991), so it may " +
         "have been rounded; write an identifier as a string."
     );
-    expect(tag.message).toBe('Added script step to "bigint" flow.');
+    expect(tag.message).toBe('Added script step to "bigint" e2e test.');
     expect((await session("bigint")).output).toEqual({
       order: { id: Number("12345678901234567891") },
       tag: "t",

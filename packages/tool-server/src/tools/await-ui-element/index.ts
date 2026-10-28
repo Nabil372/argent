@@ -8,7 +8,7 @@ import type {
   ToolDefinition,
 } from "@argent/registry";
 import { chromiumCdpRef, type ChromiumCdpApi } from "../../blueprints/chromium-cdp";
-import { resolveDevice } from "../../utils/device-info";
+import { resolveDevice, harmonyConnectKey } from "../../utils/device-info";
 import { isTvOsSimulator } from "../../utils/ios-devices";
 import { isAndroidTv } from "../../utils/adb";
 import { assertSupported } from "../../utils/capability";
@@ -21,6 +21,7 @@ import { describeIosDevice } from "../describe/platforms/ios-device";
 import { describeAndroid, androidRequires } from "../describe/platforms/android";
 import { describeChromium } from "../describe/platforms/chromium";
 import { describeVega, vegaRequires } from "../describe/platforms/vega";
+import { pollHarmonyTree, harmonyRequires } from "../describe/platforms/harmony";
 import {
   selectorSchema,
   nodeText,
@@ -97,7 +98,9 @@ const zodSchema = z
     udid: z
       .string()
       .min(1)
-      .describe("Target device id from `list-devices` (iOS UDID, Android serial, or Chromium id)."),
+      .describe(
+        "Target device id from `list-devices` (iOS UDID, Android serial, <flag:harmonyos>HarmonyOS id, </flag:harmonyos>or Chromium id)."
+      ),
     condition: z
       .enum(["exists", "visible", "hidden", "text"])
       .describe(
@@ -105,7 +108,7 @@ const zodSchema = z
           "`visible`: selector is present with a non-zero on-screen frame. `hidden`: selector is absent " +
           "or zero-area. `text`: the first visible match in reading order (topmost), falling back to the first match overall if none is visible, " +
           "contains (or, with textMatch `equals`, exactly matches) " +
-          "expectedText — if a loose selector hits several elements, only that one is checked, so narrow it to target the intended element."
+          "expectedText. If a loose selector hits several elements, only that one is checked, so narrow it to target the intended element."
       ),
     selector: selectorSchema.describe("Element to match (text / identifier / role)."),
     expectedText: z
@@ -113,7 +116,7 @@ const zodSchema = z
       .min(1)
       .optional()
       .describe(
-        "For condition `text`: the string the first visible matched element (topmost in reading order; the first match overall if none is visible) must contain (default) or equal — see `textMatch`. Case-insensitive."
+        "For condition `text`: the string the first visible matched element (topmost in reading order; the first match overall if none is visible) must contain (default) or equal (see `textMatch`). Case-insensitive."
       ),
     textMatch: z
       .enum(["contains", "equals"])
@@ -125,8 +128,8 @@ const zodSchema = z
       .string()
       .optional()
       .describe(
-        "Optional iOS app bundle id, passed to the describe fallback (see `describe`). Ignored on Android / Chromium, " +
-          "and on physical iOS."
+        "Optional iOS app bundle id, passed to the describe fallback (see `describe`). Ignored on every other platform, " +
+          "including physical iOS."
       ),
     timeoutMs: z
       .number()
@@ -145,6 +148,7 @@ const zodSchema = z
       .optional()
       .describe(`How often to re-check the tree (default ${DEFAULT_POLL_INTERVAL_MS}).`),
   })
+  .strict()
   .refine((p) => p.condition !== "text" || p.expectedText !== undefined, {
     message: "condition `text` requires expectedText",
     path: ["expectedText"],
@@ -204,7 +208,7 @@ const DARK_TAIL_TOLERANCE_MAX_MS = 2000;
  *
  * - `trusted` — it settled, returned a tree, and the tree could be judged on.
  * - `untrusted` — it settled, and what came back cannot be judged: the fetch
- *   threw, or the tree was blind.
+ *   threw, or the tree was blind or stale.
  * - `unsettled` — it never came back. The newest data is then the read BEFORE
  *   it, whose age is the only evidence there is.
  */
@@ -252,6 +256,7 @@ const capability: ToolCapability = {
   android: { emulator: true, device: true, unknown: true },
   chromium: { app: true },
   vega: { vvd: true },
+  harmony: { device: true },
 };
 
 // The matching engine lives in utils/ui-tree-match so the flow directives and
@@ -322,7 +327,8 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     params: Params,
     services: Record<string, unknown>,
     isTvOs: boolean,
-    androidIsTv: boolean
+    androidIsTv: boolean,
+    budgetMs: number
   ): Promise<DescribeTreeData> {
     // ios-remote reads the same AX tree through describeIos: the ax-service
     // blueprint routes it over the sim-remote tunnel, so only the preflight dep
@@ -340,6 +346,9 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     if (device.platform === "vega") {
       return describeVega(device.id);
     }
+    if (device.platform === "harmony") {
+      return pollHarmonyTree(harmonyConnectKey(device.id), budgetMs);
+    }
     return describeChromium(services.chromium as ChromiumCdpApi);
   }
 
@@ -355,13 +364,13 @@ export function createAwaitUiElementTool(registry: Registry): ToolDefinition<Par
     description: `Block until a UI element reaches an expected state or a timeout elapses, so you don't have to poll screenshot/describe yourself.
 
 Conditions:
-  exists   — the selector matches an element anywhere in the tree.
-  visible  — the selector matches an element with a non-zero on-screen frame.
-  hidden   — the selector matches nothing, or only a zero-area element (e.g. a spinner that disappeared).
-  text     — the first VISIBLE match in reading order (topmost, then leftmost; falling back to the first match
+  exists:    the selector matches an element anywhere in the tree.
+  visible:   the selector matches an element with a non-zero on-screen frame.
+  hidden:    the selector matches nothing, or only a zero-area element (e.g. a spinner that disappeared).
+  text:      the first VISIBLE match in reading order (topmost, then leftmost; falling back to the first match
              overall if none is visible) contains expectedText (case-insensitive substring), or exactly matches
              it when textMatch is \`equals\`. A loose selector can match several elements; only that one is
-             inspected, so if a different match is the one holding the text the wait still reports failure —
+             inspected, so if a different match is the one holding the text the wait still reports failure;
              narrow the selector to target it.
 
 The selector is { text?, identifier?, role? }; every provided field must match. text and role match as
@@ -369,18 +378,20 @@ case-insensitive substrings of the element's label/value and role; identifier ma
 also accepting the unqualified Android resource-id name ('submit' matches 'com.example.app:id/submit').
 It polls the same accessibility / DOM tree as \`describe\`
 (iOS simulator AXRuntime, physical-iOS runner snapshot, Android uiautomator, Chromium CDP,
-Vega automation toolkit) every pollIntervalMs
+Vega automation toolkit<flag:harmonyos>, HarmonyOS \`uitest dumpLayout\`</flag:harmonyos>) every pollIntervalMs
 (default ${DEFAULT_POLL_INTERVAL_MS}ms) until timeoutMs (default ${DEFAULT_TIMEOUT_MS}ms).
 
-Returns { success: boolean, elapsed: number, note?, cause? } — success=false means the wait ended without the
-condition holding, which is not always a verdict on the condition: \`cause\` says which it was — \`unmet\` (the tree
+Returns { success: boolean, elapsed: number, note?, cause? }. success=false means the wait ended without the
+condition holding, which is not always a verdict on the condition: \`cause\` says which it was: \`unmet\` (the tree
 was read and the condition was false there), \`unreadable\` (no trustworthy read, so nothing was judged) or
-\`cancelled\` — and \`note\` describes what was seen. Only \`unmet\` licenses rewriting the check. Use this after a
-tap/navigation to wait for the next screen, or before tapping an element that appears asynchronously.`,
+\`cancelled\`. \`note\` describes what was seen. Only \`unmet\` licenses rewriting the check. <flag:harmonyos>A \`note\` on
+success=true can also say the tree was read off a suspended HarmonyOS panel, which is not the live screen. </flag:harmonyos>Use this
+after a tap/navigation to wait for the next screen, or before tapping an element that appears asynchronously.`,
     alwaysLoad: true,
     searchHint:
       "wait await poll until visible hidden exists text appears disappears timeout element condition settle",
     longRunning: true,
+    readOnly: true,
     zodSchema,
     capability,
     services: (params): Record<string, ServiceRef> => {
@@ -399,6 +410,7 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       else if (device.platform === "ios-remote") await ensureDeps(["sim-remote"]);
       else if (device.platform === "android") await ensureDeps(androidRequires);
       else if (device.platform === "vega") await ensureDeps(vegaRequires);
+      else if (device.platform === "harmony") await ensureDeps(harmonyRequires);
 
       // Resolve tvOS / Android-TV once. Physical devices skip the tvOS probe. They are never tvOS simulators.
       const isTvOs =
@@ -426,7 +438,7 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       let lastTrustedReadAt: number | undefined;
 
       const poll = await pollDescribeTree<WaitResult>({
-        fetchTree: () => fetchTree(device, params, services, isTvOs, androidIsTv),
+        fetchTree: (budgetMs) => fetchTree(device, params, services, isTvOs, androidIsTv, budgetMs),
         timeoutMs,
         pollIntervalMs,
         signal,
@@ -434,14 +446,18 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
           const matches = findAll(data.tree, selector);
           if (matches.length > 0) everMatched = true;
           const blind = isBlindRead(data, everMatched);
-          if (!blind) lastTrustedReadAt = nowMs;
+          if (!blind && !data.stale) lastTrustedReadAt = nowMs;
           if (!blind && evaluateMatches(params, matches)) {
             const result: WaitResult = { success: true, elapsed: Date.now() - start };
-            if (params.condition === "hidden" && !everMatched) {
-              result.note =
-                "condition met immediately — the selector never matched any element, " +
-                "so it may have already been hidden before the wait, or the selector is wrong";
-            }
+            // Both notes: a suspended panel can satisfy `hidden` on sight.
+            const notes = [
+              params.condition === "hidden" && !everMatched
+                ? "condition met immediately — the selector never matched any element, " +
+                  "so it may have already been hidden before the wait, or the selector is wrong"
+                : null,
+              data.stale && data.hint ? data.hint : null,
+            ].filter((n): n is string => n !== null);
+            if (notes.length > 0) result.note = notes.join(" ");
             return { done: true, result };
           }
           return { done: false };
@@ -451,17 +467,20 @@ tap/navigation to wait for the next screen, or before tapping an element that ap
       if (poll.aborted) return cancelled();
       if (poll.result) return poll.result;
 
-      // The final attempt is trusted only if it settled and came back with a
-      // tree the condition could be judged on. `lastError` alone cannot say:
-      // the loop leaves it unset for an attempt it abandoned at the deadline,
-      // so that the note can still be built from an older tree.
-      const finalRead: FinalRead = !poll.lastAttemptSettled
-        ? "unsettled"
-        : poll.lastError === undefined &&
-            poll.lastData !== null &&
-            !isBlindRead(poll.lastData, everMatched)
-          ? "trusted"
-          : "untrusted";
+      // The final attempt is trusted only if it came back with a tree the
+      // condition could be judged on. `lastError` cannot stand in for that: the
+      // loop leaves it unset both for an attempt it abandoned at the deadline
+      // and for one that failed with no budget left, so that the note can still
+      // be built from an older tree.
+      const finalRead: FinalRead =
+        poll.lastAttempt === "unsettled"
+          ? "unsettled"
+          : poll.lastAttempt === "tree" &&
+              poll.lastData !== null &&
+              !poll.lastData.stale &&
+              !isBlindRead(poll.lastData, everMatched)
+            ? "trusted"
+            : "untrusted";
       return {
         success: false,
         elapsed: Date.now() - start,

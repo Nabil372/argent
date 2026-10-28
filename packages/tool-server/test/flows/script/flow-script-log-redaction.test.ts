@@ -65,12 +65,17 @@ async function runScript(
 const RUN = 6;
 
 function spellingsOf(value: string): string[] {
+  const url = new URL("http://host");
+  url.password = value;
   return [
     value,
     JSON.stringify(value).slice(1, -1),
     encodeURIComponent(value),
     new URLSearchParams([["", value]]).toString().slice(1),
     Buffer.from(value, "utf8").toString("base64"),
+    url.password,
+    value.replaceAll("'", "'\\''"),
+    value.replace(/[\\"$`]/g, "\\$&"),
   ];
 }
 
@@ -155,6 +160,98 @@ describe("script log redaction - a value an encoder rewrote", () => {
 
     expect(result.log).toBe("POST /login p={{secret:PASSWORD}}\n");
     expectRedacted(result.log, PASSWORD);
+  }, 30_000);
+
+  it("replaces a password a URL wrote in its user part, in the log and in the error", async () => {
+    const PW: FlowScriptSecret = { name: "URL_PASS", value: "P@ss$word&1" };
+    const ws = workspace();
+    const result = await executor().execute({
+      scriptPath: ws.write(
+        "userinfo.mjs",
+        `const db = new URL(process.env.DATABASE_URL);
+         console.log("seeding", db.href);
+         throw new Error(\`could not connect to \${db}\`);`
+      ),
+      projectRoot: ws.dir,
+      env: { DATABASE_URL: `postgres://svc:${PW.value}@db.internal:5432/app` },
+      secrets: [PW],
+    });
+
+    const connect = "postgres://svc:{{secret:URL_PASS}}@db.internal:5432/app";
+    expect(result.log).toBe(`seeding ${connect}\n`);
+    expect(result.failure?.message).toBe(`could not connect to ${connect}`);
+    expectRedacted(`${result.log}${result.failure?.stack ?? ""}`, PW);
+  }, 30_000);
+
+  it("replaces a value a form body escaped ! ' ( ) ~ in, in the log and in the error", async () => {
+    const FORM: FlowScriptSecret = { name: "FORM_PASS", value: "Tr0ub4dor&3!xyz'(~)" };
+    const result = await runScript(
+      "form-escaped.mjs",
+      `const u = new URL("https://auth.example.com/oauth/token");
+       u.searchParams.set("password", process.env.FORM_PASS);
+       console.log("body:", new URLSearchParams({ grant_type: "password", password: process.env.FORM_PASS }).toString());
+       throw new Error("token request failed: " + u.toString());`,
+      [FORM]
+    );
+
+    expect(result.log).toBe("body: grant_type=password&password={{secret:FORM_PASS}}\n");
+    expect(result.failure?.message).toBe(
+      "token request failed: https://auth.example.com/oauth/token?password={{secret:FORM_PASS}}"
+    );
+    expectRedacted(`${result.log}${result.failure?.stack ?? ""}`, FORM);
+  }, 30_000);
+
+  const SIGNING_KEY: FlowScriptSecret = {
+    name: "SIGNING_KEY",
+    value:
+      "-----BEGIN PRIVATE KEY-----\n" +
+      "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n" +
+      "VJTUt9Us8cKjMzEfYyjiWA4R4/M2bS1GB4t7NXp98C3SC6dVMvDu\n" +
+      "-----END PRIVATE KEY-----",
+  };
+
+  it("replaces a multi-line value console.log printed inside an object", async () => {
+    const QUOTED: FlowScriptSecret = {
+      name: "QUOTED_KEY",
+      value: `line-one 'single' "double"\nline-two`,
+    };
+    const CHAIN: FlowScriptSecret = {
+      name: "CHAIN",
+      value: Buffer.from("chain-".repeat(1500))
+        .toString("base64")
+        .match(/.{1,64}/g)!
+        .join("\n"),
+    };
+    const result = await runScript(
+      "inspect.mjs",
+      `console.log("config:", { key: process.env.SIGNING_KEY });
+       console.log("short:", { q: process.env.QUOTED_KEY });
+       console.dir({ a: { b: { c: { d: { key: process.env.SIGNING_KEY } } } } }, { depth: null });
+       console.log({ chain: process.env.CHAIN });
+       console.dir({ whole: process.env.CHAIN }, { maxStringLength: Infinity });`,
+      [SIGNING_KEY, QUOTED, CHAIN]
+    );
+
+    expect(result.log).toMatch(
+      /^config: \{\n {2}key: '\{\{secret:SIGNING_KEY}}'\n}\nshort: \{ q: `\{\{secret:QUOTED_KEY}}` }\n/
+    );
+    expect(result.log).toContain("\n          key: '{{secret:SIGNING_KEY}}'\n");
+    expect(result.log).toMatch(/chain: '\{\{secret:CHAIN}}'\.\.\. \d+ more characters\n/);
+    expect(result.log).toContain("whole: '{{secret:CHAIN}}'\n");
+    for (const secret of [SIGNING_KEY, QUOTED, CHAIN]) expectNoRun(result.log, secret);
+  }, 30_000);
+
+  it("leaves another key alone that shares lines with a multi-line value", async () => {
+    const other = SIGNING_KEY.value.replace(/\n[^-][^\n]*/g, `\n${"A".repeat(52)}`);
+    const result = await runScript(
+      "other-key.mjs",
+      `console.log({ other: ${JSON.stringify(other)} });`,
+      [SIGNING_KEY]
+    );
+
+    expect(result.log).toContain("'-----BEGIN PRIVATE KEY-----\\n' +");
+    expect(result.log).toContain("'-----END PRIVATE KEY-----'");
+    expect(result.log).not.toContain("{{secret:");
   }, 30_000);
 
   it("replaces a value printed as base64", async () => {
@@ -273,6 +370,17 @@ describe("script log redaction - what must stay", () => {
     expect(result.logTruncated).toBe(false);
   }, 30_000);
 
+  it("leaves an encoded spelling of a value under six characters alone", async () => {
+    const PIN: FlowScriptSecret = { name: "PIN", value: "P@ss1" };
+    const result = await runScript(
+      "short-value.mjs",
+      `console.log(process.env.PIN, new URL("http://u:" + process.env.PIN + "@host").password);`,
+      [PIN]
+    );
+
+    expect(result.log).toBe("{{secret:PIN}} P%40ss1\n");
+  }, 30_000);
+
   it("leaves the end of a log nothing cut, where it opens a value", async () => {
     const result = await runScript(
       "open-end.mjs",
@@ -303,6 +411,48 @@ describe("script log redaction - a bash step's xtrace", () => {
     expectRedacted(result.log, PASS);
     expect(message.endsWith(traced)).toBe(true);
     expectRedacted(message, PASS);
+  }, 30_000);
+
+  it("replaces a secret the xtrace line quoted and declare -p escaped", async (ctx) => {
+    skipWithoutBash(ctx);
+    const QUOTED: FlowScriptSecret = { name: "QUOTED_PASS", value: "Tr0ub'4dor$x`yz9\"" };
+    const KEY: FlowScriptSecret = { name: "KEY", value: "line-one-9d3f\nli'ne\\twö\tend" };
+    const result = await runScript(
+      "quoted.sh",
+      `declare -p QUOTED_PASS KEY
+       set -euxo pipefail
+       test "$QUOTED_PASS" = "expected-password"`,
+      [QUOTED, KEY],
+      { env: { QUOTED_PASS: QUOTED.value, KEY: KEY.value, LC_ALL: "C.UTF-8" } }
+    );
+
+    const message = result.failure?.message ?? "";
+    expect(result.failure?.kind).toBe("exit");
+    expect(message).toMatch(/\. \+ test '\{\{secret:QUOTED_PASS}}' = expected-password$/);
+    expect(result.log).toContain('declare -x QUOTED_PASS="{{secret:QUOTED_PASS}}"\n');
+    // bash 5.2 writes $'…' for a value with a control character, earlier bash "…".
+    expect(result.log).toMatch(/declare -x KEY=\$?(["'])\{\{secret:KEY}}\1\n/);
+    for (const secret of [QUOTED, KEY]) expectNoRun(`${result.log}\n${message}`, secret);
+  }, 30_000);
+
+  it("replaces a secret bash wrote as octal bytes without a UTF-8 locale", async (ctx) => {
+    skipWithoutBash(ctx);
+    const PASS: FlowScriptSecret = { name: "PASS", value: "pässword-99" };
+    const result = await runScript(
+      "c-locale.sh",
+      `declare -p PASS
+       set -x
+       test "$PASS" = expected`,
+      [PASS],
+      { env: { PASS: PASS.value, LC_ALL: "C" } }
+    );
+
+    const message = result.failure?.message ?? "";
+    expect(message).toMatch(/\. \+ test \$'\{\{secret:PASS}}' = expected$/);
+    // bash 5.2 writes $'…' here too, earlier bash "…".
+    expect(result.log).toMatch(/declare -x PASS=\$?(["'])\{\{secret:PASS}}\1\n/);
+    expect(result.log).not.toContain("\\303\\244");
+    expectNoRun(`${result.log}\n${message}`, PASS);
   }, 30_000);
 });
 

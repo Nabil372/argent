@@ -2,9 +2,9 @@
  * Runs one trusted local script file — JavaScript or bash — in a fresh child
  * process. The CALLER names the interpreter and nothing here reads an
  * extension: `flow-script-step.ts` decides, and a request that omits
- * `interpreter` runs the file under Node whatever it is called. Node runs the
- * script itself; bash runs the runner, and the runner starts the bash
- * {@link resolveBashInterpreter} found.
+ * `interpreter` runs the file under Node whatever it is called. Under Node the
+ * forked process runs the script itself; under bash it runs the runner, and the
+ * runner starts the bash {@link resolveBashInterpreter} found.
  *
  * The time limit, the concurrency slot and the output ceiling apply to both.
  * The heap limit does not: it is a flag on the child NODE process, so under
@@ -16,12 +16,13 @@
  * loop, a heap exhaustion or a `process.exit` cannot take the server down.
  */
 
-import { fork, spawn, type ChildProcess, type ForkOptions } from "node:child_process";
+import { execFile, fork, spawn, type ChildProcess, type ForkOptions } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
+import { inspect, promisify, stripVTControlCharacters } from "node:util";
 import {
   configFilePath,
   getAtPath,
@@ -37,7 +38,7 @@ import {
   SCRIPT_ENV_NAME_PATTERN,
   type ConfigDefinition,
 } from "@argent/configuration-core";
-import { makeSensitiveBank } from "@zapier/secret-scrubber/lib/utils";
+import { isLongEnoughToBeSecret, makeSensitiveBank } from "@zapier/secret-scrubber/lib/utils";
 import { isElectronHostedEnv } from "../../../utils/electron-env";
 import { formatErrorForAgent } from "../../../utils/format-error";
 import {
@@ -60,7 +61,26 @@ import {
 const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
 export const SCRIPT_STEP_LOG_LIMIT_BYTES = 64 * 1024;
 const SCRIPT_RUN_LOG_LIMIT_BYTES = 256 * 1024;
+/**
+ * How much of a stderr line a bash step's reason carries. The log under
+ * the reason has the whole line and the rest of stderr beside it; the reason is
+ * what a reader sees first, on the step's own line, so it stays short.
+ */
 const STDERR_REASON_LINE_CHARS = 1_000;
+/**
+ * How many of the newest stderr lines the reason can look back over, a run of
+ * blank lines counted once: room for an uncaught Node error with its frames, a
+ * `[cause]` and its properties, or npm's usage text, which runs to 98 lines.
+ */
+const STDERR_RECENT_LINES = 256;
+const STACK_FRAME_RE = /^\s+at\s+\S/;
+const SOURCE_CARET_RE = /^\s*\^+\s*$/;
+/** Node's line between the two frame runs of an unhandled `'error'` event. */
+const EMITTED_AT_RE = /^Emitted '.+' event on .+ instance at:$/;
+const RUNTIME_TRAILER_RE = /^(?:Node\.js|Bun) v\d+\.\d+\.\d+\S*(?: \([^)]*\))?$/;
+const NPM_LINE_RE = /^npm (?:error|ERR!)(?:\s|$)/;
+const NPM_LOG_HINT_RE = /^npm (?:error|ERR!) A complete log of this run can be found in:/;
+const NPM_DETAIL_RE = /^npm (?:error|ERR!)(?:\s+(?:(?:code|errno|syscall|path)\s.*|\d{3}))?$/;
 const SETTLE_TIMEOUT_MS = 500;
 /**
  * How long after the child exits the settle keeps waiting for a process that
@@ -97,6 +117,11 @@ const HEAP_FATAL_WINDOW_CHARS = 256;
 
 const RUNNER_FILE = "flow-script-runner.mjs";
 
+/**
+ * One private directory per bash step, under `os.tmpdir()` — 0700 on POSIX
+ * through `mkdtemp`, the per-user `%TEMP%` on Windows. The prefix is what the
+ * sweep below recognises as the executor's own.
+ */
 const EXCHANGE_DIR_PREFIX = "argent-flow-script-";
 
 /**
@@ -177,6 +202,8 @@ const ALLOWED_ENV_NAMES: readonly string[] = [
   "NODE_EXTRA_CA_CERTS",
   "SSL_CERT_FILE",
   "SSL_CERT_DIR",
+  // Without these, a host using fnm, asdf, mise or volta runs against a
+  // different Node than the developer's shell, or against none at all.
   "NODE_PATH",
   "NVM_DIR",
   "NVM_BIN",
@@ -263,6 +290,14 @@ export interface FlowScriptFailure {
   kind: FlowScriptFailureKind;
   message: string;
   stack?: string;
+  /**
+   * Set when this failure was raised with no child process in existence, so no
+   * line of the author's script can have run. Most kinds answer that on their
+   * own — a `queue` never left the queue, a `spawn` never started — but
+   * `cancelled` reaches a caller from both sides of the fork, and a caller
+   * telling its author there is nothing to clean up needs the answer proved
+   * rather than guessed.
+   */
   beforeFork?: true;
 }
 
@@ -284,13 +319,19 @@ export interface FlowScriptExecutorOptions {
   queueWaitMs?: number;
   /**
    * Where a step's private exchange directory is made, and the root the
-   * first-use sweep reads. `os.tmpdir()` unless a caller says otherwise — one
-   * directory shared with every other argent on the machine, which is why the
-   * sweep has to read each directory's own bound rather than apply its own.
+   * stale-directory sweep reads. `os.tmpdir()` unless a caller says otherwise —
+   * one directory shared with every other argent on the machine, which is why
+   * the sweep has to read each directory's own bound rather than apply its own.
    * A test passes a root of its own so that what it counts there is its own
    * steps and not the machine's.
    */
   exchangeRoot?: string;
+  /**
+   * How long a process waits before it re-reads {@link exchangeRoot} for
+   * directories nobody owns any more. Defaults to
+   * {@link EXCHANGE_SWEEP_INTERVAL_MS}; a test shortens it so a second step can
+   * collect what the first one still had to leave alone.
+   */
   exchangeSweepIntervalMs?: number;
 }
 
@@ -550,6 +591,19 @@ export class FlowScriptExecutor {
     let interpreterPath: string | undefined;
     let exchange: ExchangeFiles | undefined;
     if (interpreter === "bash") {
+      // The step's own environment, so the check and the step ask the same
+      // question of the same candidate: `BASH_ENV` is outside the allowlist, so
+      // a probe that inherited it refused a bash the step would have run under,
+      // and an arbitrary executable named `bash` was handed the tool server's
+      // token, port and secrets on the way.
+      // The step's own directory too: a version-manager shim picks its bash
+      // from the directory it starts in, so a shim probed anywhere else was
+      // refused while the step would have run it as the bash the project pins.
+      // The request's abort too, because this lookup is the one place a `.sh`
+      // step waits before it has a process to time out: each candidate costs up
+      // to the probe's own timeout plus its force grace, the step's declared
+      // limit bounds none of it, and a flow of N bash steps was un-cancellable
+      // for about six seconds each.
       const lookupStartedAt = Date.now();
       const found = await resolveBashInterpreter(env, request.signal, cwd);
       noteInterpreterLookup(Date.now() - lookupStartedAt, timeoutMs, notes);
@@ -608,6 +662,11 @@ export class FlowScriptExecutor {
       capture,
     };
     try {
+      // The signal again, because the bash block above is the only place this
+      // path suspends: the interpreter lookup spawns processes of its own, and a
+      // cancellation raised across them found the next check only AFTER the
+      // fork — so the script's first lines had already run. A `.mjs` step has
+      // no such gap, and this closes the one bash mode opened.
       if (request.signal?.aborted) {
         return emptyResult(
           { kind: "cancelled", message: "The run was cancelled before the script started." },
@@ -620,7 +679,15 @@ export class FlowScriptExecutor {
           : { ...common, interpreter: "node" }
       );
     } finally {
+      // Every path — pass, fail, timeout, cancellation, a `fork` that threw —
+      // after the process tree is stopped and the pipes are destroyed. A
+      // removal that fails (Windows answers EBUSY while a surviving descendant
+      // holds a file) is a note, never a throw: `execute` owes its caller a
+      // verdict.
       if (exchange) await removeExchange(exchange, notes, request.secrets ?? []);
+      // The sweep in flight, whether this step started it or one beside it
+      // did, which ran beside the step rather than in front of it. Waiting for it here costs nothing a step of ordinary length can
+      // measure, and it keeps the root readable the moment `execute` resolves.
       if (pendingSweep) await pendingSweep;
     }
   }
@@ -668,6 +735,10 @@ export class FlowScriptExecutor {
         // Index 4 is the lifeline: a pipe the parent holds open and never uses.
         // Its closing is how a runner learns its parent is gone.
         stdio: ["ignore", "pipe", "pipe", "ignore", "pipe", "ipc"],
+        // On POSIX the runner leads its own process group so a group stop
+        // aimed at the tool server does not also stop it, and so a group stop
+        // aimed at the runner reaches its descendants. Windows has no such
+        // group; `taskkill /T` covers the tree there instead.
         detached: process.platform !== "win32",
         windowsHide: process.platform === "win32",
       };
@@ -689,15 +760,13 @@ export class FlowScriptExecutor {
     // Unref'd because the lifeline end holds a reference on the tool server's
     // event loop, which would keep the server alive past its idle shutdown.
     // Never read from or write to it — the runner only watches for its close.
-    const lifeline = child.stdio[4] as
-      | { unref?: () => void; destroy?: () => void }
-      | null
-      | undefined;
+    const lifeline = child.stdio?.[4] as
+      { unref?: () => void; destroy?: () => void } | null | undefined;
     lifeline?.unref?.();
 
     let startedSeen = false;
     let terminal: ScriptTerminalResponse | null = null;
-    let stderrLineAtVerdict: string | undefined;
+    let stderrLineAtVerdict: StderrLine | undefined;
     let protocolProblem: string | null = null;
     let spawnProblem: string | null = null;
     let interrupted: "timeout" | "cancelled" | null = null;
@@ -736,6 +805,8 @@ export class FlowScriptExecutor {
       });
     };
 
+    // When the tree last wrote, which the settle below reads to tell a process
+    // still working through its output from one that only holds the streams.
     let lastOutputAt = 0;
     let lastStderrAt = 0;
     child.stdout?.on("data", (chunk: Buffer) => {
@@ -762,10 +833,10 @@ export class FlowScriptExecutor {
       if (interruptionSealed) return;
       terminal = message;
       // Where stderr stood when the runner answered, which in bash mode is when
-      // bash exited: the reason falls back to it when a job the script left
-      // running is still writing when the settle below gives up. Read on the
-      // next turn, so that what bash wrote before it exited, already in the
-      // pipe, is read first.
+      // bash exited: the reason takes it when a job the script left running
+      // still holds the streams as the settle below ends. Read on the next
+      // turn, so that what bash wrote before it exited, already in the pipe,
+      // is read first.
       setImmediate(() => (stderrLineAtVerdict = capture.stderrLineSoFar));
     });
 
@@ -835,12 +906,14 @@ export class FlowScriptExecutor {
     // waited for as any other is.
     //
     // Beside it, the line stderr stood on when it first went quiet for a settle
-    // after the script's process exited, which the reason takes: see below.
+    // after the script's process exited, which the reason can take: see below.
     const exitedAt = Date.now();
     const stderrQuietFor = () => Date.now() - Math.max(exitedAt, lastStderrAt);
-    let stderrLineAtQuiet: string | undefined;
+    let stderrLineAtQuiet: StderrLine | undefined;
     let stderrQuietTimer: NodeJS.Timeout | undefined;
     let watchingStderr = true;
+    // Judged a turn after the timer, for the reason the settle gives: a line
+    // that arrived while the loop was blocked is read before it is missed.
     const watchStderr = () => {
       if (!watchingStderr) return;
       const quietFor = stderrQuietFor();
@@ -857,12 +930,6 @@ export class FlowScriptExecutor {
     const settled = await settleStreams(closed, () => lastOutputAt, settleSignal);
     watchingStderr = false;
     clearTimeout(stderrQuietTimer);
-    if (
-      stderrLineAtQuiet === undefined &&
-      (settleSignal?.aborted === true || stderrQuietFor() >= SETTLE_TIMEOUT_MS)
-    ) {
-      stderrLineAtQuiet = capture.stderrLineSoFar;
-    }
     await stop();
     capture.end();
     if (settled === "cut") {
@@ -893,26 +960,25 @@ export class FlowScriptExecutor {
       heapFatalSeen: capture.heapFatalSeen,
       heapLimitMb: bounds.heapLimitMb,
     });
-    // After bash exits, stderr carries two kinds of line: the script's own,
-    // late - a consumer in front of stderr still working through its backlog -
-    // and those of a job the script left running. The first come as one run
-    // from the moment bash exits; a job writes whenever it writes. So the line
+    // After bash exits, stderr carries the script's own lines late - a consumer
+    // in front of stderr still working through its backlog - and the lines of a
+    // job the script left running, and nothing in the stream tells them apart.
+    // Streams that closed mean every such process finished, and then the line
     // is the one stderr stood on when it first went quiet for a settle after
-    // bash exited: that run counts, a later line does not, and neither does a
-    // job's answer to the stop. Streams that closed while stderr was still
-    // running on count in full. Stderr that never went quiet is a job still
-    // writing, and then the line is the one bash exited on.
-    let stderrLine = stderrLineAtQuiet;
-    if (stderrLine === undefined) {
-      stderrLine =
-        settled === "closed"
-          ? capture.lastStderrLine
-          : (stderrLineAtVerdict ?? capture.lastStderrLine);
-    }
-    const verdict = redactSecrets(
-      run.interpreter === "bash" ? withStderrLine(outcome, stderrLine) : outcome,
-      request.secrets ?? []
-    );
+    // bash exited, or its last one. Streams still held mean a job is running
+    // and may have written at any moment since, so the line is the one bash
+    // exited on.
+    const stderrLine =
+      settled === "closed"
+        ? (stderrLineAtQuiet ?? capture.lastStderrLine)
+        : (stderrLineAtVerdict ?? capture.lastStderrLine);
+    // The line is redacted on its own, before it is trimmed, and joins the
+    // message after the message is redacted.
+    const redacted = redactSecrets(outcome, request.secrets ?? []);
+    const verdict =
+      run.interpreter === "bash"
+        ? withStderrLine(redacted, stderrLine, request.secrets ?? [])
+        : redacted;
 
     if (!startedSeen && !interrupted && environmentBytes(env) >= LARGE_ENVIRONMENT_BYTES) {
       notes.push(
@@ -935,6 +1001,14 @@ export class FlowScriptExecutor {
   }
 }
 
+/**
+ * Waits for the streams of a child that has exited: `closed` when every process
+ * holding them let go, `quiet` when what holds them wrote nothing for
+ * {@link SETTLE_TIMEOUT_MS}, and `cut` when it was still writing at
+ * {@link SETTLE_WRITING_LIMIT_MS}, so the log ends while it had more to say.
+ * An abort of `signal` ends the wait once {@link SETTLE_TIMEOUT_MS} has passed:
+ * `cut` when output was still arriving, `quiet` when it was not.
+ */
 async function settleStreams(
   closed: Promise<void>,
   lastOutputAt: () => number,
@@ -943,6 +1017,10 @@ async function settleStreams(
   const startedAt = Date.now();
   const limitAt = startedAt + SETTLE_WRITING_LIMIT_MS;
   const isClosed = closed.then(() => true);
+  // A cancelled run has no use for the rest of the wait: the script's process
+  // has already exited, and what is left is only what it left running. But
+  // never short of the settle every step had before the wait could stretch: a
+  // stderr consumer still delivering the script's last lines gets that long.
   const abortFrom = startedAt + SETTLE_TIMEOUT_MS;
   let onAbort = (): void => {};
   const aborted = new Promise<false>((resolve) => {
@@ -958,6 +1036,7 @@ async function settleStreams(
       }
       const wait = Math.min(quietAt, limitAt, cancelled ? abortFrom : Infinity) - Date.now();
       if (wait <= 0) return quietAt <= limitAt ? "quiet" : "cut";
+      // The abort only until it fires: once settled it would win every race.
       const racers: Promise<boolean>[] = [isClosed, sleep(wait).then(() => false)];
       if (!cancelled) racers.push(aborted);
       if (await Promise.race(racers)) return "closed";
@@ -1084,16 +1163,25 @@ function redactSecrets(
   };
 }
 
+/**
+ * A bash step that exited non-zero says why on stderr, as every command it runs
+ * does, so the stderr line `runChild` picks ends the reason (see
+ * {@link reasonLine}). Only on `exit`: a
+ * signal, a time limit or a document the runner could not read already carries
+ * the runner's own account, and the log has every line either way.
+ */
 function withStderrLine(
   verdict: Pick<FlowScriptResult, "ok" | "output" | "failure">,
-  line: string
+  line: StderrLine,
+  secrets: readonly FlowScriptSecret[]
 ): Pick<FlowScriptResult, "ok" | "output" | "failure"> {
-  if (!line || verdict.failure?.kind !== "exit") return verdict;
+  if (!line.raw || verdict.failure?.kind !== "exit") return verdict;
+  const shown = redactedStderrLine(line, secrets);
   return {
     ...verdict,
     failure: {
       ...verdict.failure,
-      message: clampText(`${verdict.failure.message} ${line}`, SCRIPT_MAX_FAILURE_MESSAGE_CHARS),
+      message: clampText(`${verdict.failure.message} ${shown}`, SCRIPT_MAX_FAILURE_MESSAGE_CHARS),
     },
   };
 }
@@ -1137,14 +1225,14 @@ export function mergedOutputProblem(document: Record<string, unknown>): string |
   try {
     encoded = JSON.stringify(document);
   } catch (err) {
-    return `The flow output could not be encoded after this step: ${errorMessage(err)}`;
+    return `The e2e test output could not be encoded after this step: ${errorMessage(err)}`;
   }
   const bytes = Buffer.byteLength(encoded, "utf8");
   if (bytes > SCRIPT_MAX_OUTPUT_BYTES) {
     return (
-      `After this step the flow output is ${describeBytes(bytes)} encoded; the limit is ` +
+      `After this step the e2e test output is ${describeBytes(bytes)} encoded; the limit is ` +
       `${describeBytes(SCRIPT_MAX_OUTPUT_BYTES)}. A script cannot remove a key, so set one ` +
-      "the flow no longer reads to null."
+      "the e2e test no longer reads to null."
     );
   }
   return documentProblem(document);
@@ -1173,6 +1261,7 @@ export function mergedOutputProblem(document: Record<string, unknown>): string |
  */
 const MAX_OUTPUT_DEPTH = 4096;
 
+/** Enough of a path to place a value. A 4096-deep one is its own repetition. */
 const MAX_PROBLEM_PATH_CHARS = 80;
 
 function clampPath(at: string): string {
@@ -1202,10 +1291,12 @@ const JSON_WINDOW_RE =
  * Every rule the parent applies to a document it did not encode itself, or
  * `undefined` for one it accepts.
  *
- * The `__proto__` rule is a re-check: the runner refuses it before it encodes,
- * and the parent asks again for the same reason it re-checks the size and the
- * failure-text ceilings — the loader resolves whichever `.mjs` sits beside the
- * compiled executor, so a stale or mismatched runner copy reaches this path.
+ * For a `.mjs` document the `__proto__` rule is a re-check: the runner refuses
+ * it before it encodes, and the parent asks again for the same reason it
+ * re-checks the size and the failure-text ceilings — the loader resolves
+ * whichever `.mjs` sits beside the compiled executor, so a stale or mismatched
+ * runner copy reaches this path. For a `.sh` document it is the only check: the
+ * runner reads that text back without parsing it.
  * `JSON.parse` makes `__proto__` an own key, and committing one hands whatever
  * merges the document into flow state a prototype to write rather than a
  * property.
@@ -1260,6 +1351,11 @@ function documentProblem(root: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+/**
+ * One value under a node: refused here, queued for the walk, or neither. The
+ * wording for a number follows the runner's own, so the two interpreters answer
+ * the same document with the same sentence.
+ */
 function childProblem(
   value: unknown,
   at: string,
@@ -1267,6 +1363,8 @@ function childProblem(
   pending: Array<{ node: unknown; at: string; depth: number }>
 ): string | undefined {
   if (typeof value === "number" && !Number.isFinite(value)) {
+    // The runner's own `describeValue` spelling. JSON has no `NaN` literal, so
+    // only the two infinities reach here through `JSON.parse`.
     const spelled = Number.isNaN(value) ? "NaN" : value > 0 ? "Infinity" : "-Infinity";
     return `${clampPath(at)} is ${spelled}; output numbers must be finite.`;
   }
@@ -1303,18 +1401,108 @@ function withoutDocumentExcerpt(err: unknown): string {
 
 const IDENTIFIER_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
+/** Follows the runner's own `memberPath`, which this file cannot import. */
 function memberPath(key: string): string {
   return IDENTIFIER_RE.test(key) ? `.${key}` : `[${JSON.stringify(key)}]`;
 }
 
 function secretForms(secrets: readonly FlowScriptSecret[]): FlowScriptSecret[] {
   const forms = [...secrets];
-  for (const { name, value } of secrets) {
-    for (const form of Object.keys(makeSensitiveBank([value]))) {
-      if (!forms.some((seen) => seen.value === form)) forms.push({ name, value: form });
+  for (const secret of secrets) {
+    for (const form of spellingsOf(secret)) {
+      if (!forms.some((seen) => seen.value === form))
+        forms.push({ name: secret.name, value: form });
     }
   }
   return forms;
+}
+
+/** Kept per secret: the log asks for the forms again on every chunk it reads. */
+const SPELLINGS = new WeakMap<FlowScriptSecret, readonly string[]>();
+
+function spellingsOf(secret: FlowScriptSecret): readonly string[] {
+  let spellings = SPELLINGS.get(secret);
+  if (!spellings) {
+    const { value } = secret;
+    spellings = isLongEnoughToBeSecret(value)
+      ? [...Object.keys(makeSensitiveBank([value])), ...printedSpellings(value)]
+      : [];
+    SPELLINGS.set(secret, spellings);
+  }
+  return spellings;
+}
+
+/** Spellings Node or bash print by default that the package's bank does not hold. */
+function printedSpellings(value: string): string[] {
+  // A URL's user name or password: `@ : / ;` escaped, `$ & + , %` kept.
+  const url = new URL("http://host");
+  url.password = value;
+  return [
+    url.password,
+    // A form body, `URLSearchParams` or `url.searchParams`: `! ' ( ) ~` escaped too.
+    new URLSearchParams([["", value]]).toString().slice(1),
+    // bash: `set -x` single-quotes a word, `declare -p` double-quotes a value,
+    // and from 5.2 writes one that holds a control character as `$'…'`. With
+    // no UTF-8 locale, `$'…'` holds each byte past ASCII in octal, and both
+    // write any value with such a byte that way.
+    value.replaceAll("'", "'\\''"),
+    value.replace(/[\\"$`]/g, "\\$&"),
+    ansiCQuoted(value),
+    ansiCQuoted(value).replace(/[\u{80}-\u{10ffff}]/gu, (char) =>
+      [...Buffer.from(char)].map((byte) => `\\${byte.toString(8)}`).join("")
+    ),
+    // util.inspect, as console.log prints an object: the string quoted and
+    // escaped, by default to its first 10,000 characters and then a count of
+    // the rest.
+    ...[...new Set([value, value.slice(0, INSPECT_MAX_STRING)])].flatMap((shown) => [
+      inspect(shown, INSPECT_WHOLE).slice(1, -1),
+      ...inspectedSplits(shown),
+    ]),
+  ];
+}
+
+/** util.inspect's default `maxStringLength`. */
+const INSPECT_MAX_STRING = 10_000;
+
+/** One quoted string, however long: no split into lines, no cut. */
+const INSPECT_WHOLE = { breakLength: Infinity, maxStringLength: Infinity };
+
+/**
+ * util.inspect writes a long multi-line string as quoted pieces, one per line,
+ * joined by `+` and a line break indented two past the string's own level, two
+ * for each level it is nested at. Ten levels are covered. The quotes at the two
+ * ends are left out, so the form starts and ends with the value's own text.
+ */
+function inspectedSplits(value: string): string[] {
+  const pieces = value.split(/(?<=\n)/).map((line) => inspect(line, INSPECT_WHOLE));
+  if (pieces.length < 2) return [];
+  return Array.from({ length: 11 }, (_, level) =>
+    pieces.join(` +\n${" ".repeat(2 * level + 2)}`).slice(1, -1)
+  );
+}
+
+const ANSI_C_ESCAPES: Readonly<Record<string, string>> = {
+  "\x07": "\\a",
+  "\b": "\\b",
+  "\t": "\\t",
+  "\n": "\\n",
+  "\v": "\\v",
+  "\f": "\\f",
+  "\r": "\\r",
+  "\x1b": "\\E",
+  "'": "\\'",
+  "\\": "\\\\",
+};
+
+// eslint-disable-next-line no-control-regex
+const ANSI_C_ESCAPED_RE = /[\x00-\x1f\x7f'\\]/g;
+
+/** The body of bash's `$'…'`: a control character by its name or in octal. */
+function ansiCQuoted(value: string): string {
+  return value.replace(
+    ANSI_C_ESCAPED_RE,
+    (char) => ANSI_C_ESCAPES[char] ?? `\\${char.charCodeAt(0).toString(8).padStart(3, "0")}`
+  );
 }
 
 export function scrubScriptText(text: string, secrets: readonly FlowScriptSecret[]): string {
@@ -1416,10 +1604,18 @@ function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null
   return `exit code ${exit.code ?? 0}`;
 }
 
+/**
+ * Always set explicitly, never inherited: the tool server's own cwd is whatever
+ * the editor that spawned it chose.
+ *
+ * The existence check is load-bearing: `project_root` names the *calling
+ * agent's* working directory and can be mistyped or since moved, and without it
+ * the child fails with a bare `ENOENT` naming a path the author never wrote.
+ */
 function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): string {
   const candidates: Array<{ label: string; value: string | undefined }> = [
     { label: "project_root", value: request.projectRoot },
-    { label: "the flow file's directory", value: request.flowDir },
+    { label: "the e2e test file's directory", value: request.flowDir },
   ];
   const named = candidates.filter((c) => c.value);
   const problems: string[] = [];
@@ -1436,7 +1632,7 @@ function resolveWorkingDirectory(request: FlowScriptRequest, notes: string[]): s
   throw new ScriptSetupError(
     "invalid",
     named.length === 0
-      ? "No working directory was given for the script (neither project_root nor a flow directory)."
+      ? "No working directory was given for the script (neither project_root nor an e2e test directory)."
       : `No working directory exists on the machine running the tool server: ${problems.join("; ")}.`
   );
 }
@@ -1460,11 +1656,14 @@ function encodeRequestOutput(output: Record<string, unknown> | undefined): strin
   } catch (err) {
     throw new ScriptSetupError(
       "invalid",
-      `The flow output could not be encoded for the script: ${errorMessage(err)}`
+      `The e2e test output could not be encoded for the script: ${errorMessage(err)}`
     );
   }
   if (typeof encoded !== "string") {
-    throw new ScriptSetupError("invalid", "The flow output could not be encoded for the script.");
+    throw new ScriptSetupError(
+      "invalid",
+      "The e2e test output could not be encoded for the script."
+    );
   }
   return encoded;
 }
@@ -1526,6 +1725,13 @@ async function removeExchange(
   try {
     await removeTree(exchange.dir);
   } catch (err) {
+    // What the sweep can and cannot do, because it is the SAME call: both
+    // remove through {@link removeTree}. So a cause that
+    // clears on its own - a Windows EBUSY from a descendant that has since
+    // exited - is swept, and a cause that does not, such as a mode the script
+    // put on the directory itself, is still there after every later step. The
+    // note said "a later bash step sweeps it" for both, and the directory
+    // holding the document sat in $TMPDIR for good.
     notes.push(
       `The script's private directory ${exchange.dir} could not be removed ` +
         `(${scrubScriptText(errorMessage(err), secrets)}); it still holds the document the script wrote. A later bash ` +
@@ -1645,8 +1851,25 @@ async function hoistIfDeep(dir: string, top: string): Promise<string> {
 
 let sweptStaleExchangesAt = 0;
 
+/**
+ * The sweep this process last started, until it finishes. `runOne` waits on it
+ * before any step that got through its setup returns (a `.sh` step, once it has
+ * its exchange directory), so a test can read the root the moment `execute`
+ * resolves - the sweep itself runs beside the step it was started for, not in
+ * front of it.
+ */
 let pendingSweep: Promise<void> | undefined;
 
+/**
+ * Start the sweep, at most once per interval, and never wait for it here. The
+ * throttle bounds how OFTEN the root is read; it does not bound what one read
+ * costs, and in production that root is `os.tmpdir()` - shared with every other
+ * process on the host and bounded by nothing. A `readdirSync` there took 48 ms
+ * on a machine holding 88 000 entries, on the tool server's main thread: no MCP
+ * request, device socket or timer ran during it, and the bash step's own wall
+ * time roughly doubled. The stall grows over a machine's life, since the
+ * directory it reads is one the tool server never prunes.
+ */
 function startStaleExchangeSweep(root: string, sweepIntervalMs: number): void {
   const now = Date.now();
   if (now - sweptStaleExchangesAt < sweepIntervalMs) return;
@@ -1668,7 +1891,7 @@ function startStaleExchangeSweep(root: string, sweepIntervalMs: number): void {
  * so the first step of the next server reads it as live and passes over it. A
  * process that then never looked again left that directory for good, which is
  * not what a reader of this is promised. The interval is what keeps the cost a
- * single `readdir` a minute rather than one per step.
+ * single read of the root a minute rather than one per step.
  *
  * Each directory names the moment it stops being its own step's, and that is
  * what decides. The bound has to come from the OWNER: `$TMPDIR` is shared by
@@ -1680,7 +1903,7 @@ function startStaleExchangeSweep(root: string, sweepIntervalMs: number): void {
  * age is not a bound.
  *
  * The stamp is taken before the read, so a root this process cannot read costs
- * one failed `readdir` a minute and not one per bash step.
+ * one failed `opendir` a minute and not one per bash step.
  *
  * Asynchronous throughout, for the reason {@link startStaleExchangeSweep}
  * gives: every call here is one the event loop can leave.
@@ -1715,11 +1938,19 @@ async function sweepStaleExchanges(root: string): Promise<void> {
   }
 }
 
+/**
+ * The moment the name is stamped with, or `undefined` for a name that carries
+ * no stamp. Digits only, so the value is a non-negative integer and no range
+ * check is owed: a digit string too long to be exact is at least 2^53, which
+ * the caller reads as a directory still owned and leaves alone — the same
+ * branch an unstamped name takes.
+ */
 function exchangeOwnedUntil(entry: string): number | undefined {
   const stamped = /^(\d+)-/.exec(entry.slice(EXCHANGE_DIR_PREFIX.length));
   return stamped ? Number(stamped[1]) : undefined;
 }
 
+/** Exported for the test that pins the sweep against a directory it planted. */
 export function exchangeDirPrefix(): string {
   return EXCHANGE_DIR_PREFIX;
 }
@@ -1736,6 +1967,12 @@ function realPathOrSelf(candidate: string): string {
   }
 }
 
+/**
+ * The three layouts the runner can be in — the published bundle (beside
+ * `tool-server.cjs` in `dist`), the compiled package and the workspace source
+ * — are all `path.join(__dirname, name)`. The tool-server package is CommonJS,
+ * so `__dirname` is available here and under vitest.
+ */
 function resolveRunnerPath(runnerDir: string | undefined): string {
   const dir = runnerDir ?? __dirname;
   const runner = path.join(dir, RUNNER_FILE);
@@ -1752,6 +1989,8 @@ export function buildChildEnv(
   overrides: Record<string, string> | undefined,
   extraAllowed: readonly string[] = []
 ): NodeJS.ProcessEnv {
+  // Windows environment names are case-insensitive, so a host may surface any
+  // of these under non-canonical casing; POSIX names are exact.
   const caseInsensitive = process.platform === "win32";
   const allowed = new Set(
     [...ALLOWED_ENV_NAMES, ...extraAllowed].map((name) =>
@@ -1762,6 +2001,7 @@ export function buildChildEnv(
   const env: NodeJS.ProcessEnv = {};
   for (const [name, value] of Object.entries(process.env)) {
     if (value === undefined) continue;
+    // Ahead of the allowlist, because a prefix admits names nobody listed.
     if (reservedName(name)) continue;
     const key = caseInsensitive ? name.toLowerCase() : name;
     if (allowed.has(key) || ALLOWED_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
@@ -1835,6 +2075,14 @@ function environmentBytes(env: NodeJS.ProcessEnv): number {
   return total;
 }
 
+/**
+ * Refused up front rather than handed to the operating system, which carries an
+ * environment as `NAME=value` strings and has no way to say a name was
+ * malformed: `=` in a name moves the split, so the script is given a variable
+ * the flow never asked for and the step passes anyway, and a name that is empty
+ * or holds a NUL leaves the child with an entry no reader can name. The map
+ * comes from the step's `env:`, so the author is the one who can fix it.
+ */
 function describeEnvNameProblem(name: string): string | null {
   if (name === "") return "is empty";
   if (name.includes("=")) return 'contains "=", which is what separates a name from its value';
@@ -1848,6 +2096,23 @@ function describeEnvNameProblem(name: string): string | null {
   return null;
 }
 
+/**
+ * What the bash lookup cost, when it cost enough to explain a step that ran
+ * longer than its own `timeout`.
+ *
+ * The lookup sits between `startedAt` and the timer `runChild` arms, so its
+ * time is inside `durationMs` and outside `timeoutMs`, and the queue's
+ * `queuedMs` does not carry it either — a step declared at 500 ms took 3.3
+ * seconds behind a slow candidate, and 6.1 behind one that ignores SIGTERM,
+ * with nothing anywhere saying why. `e2e-yaml.mdx` lists the lookup beside the
+ * queue wait as time spent outside `timeout`, and a `.mjs` step has no
+ * equivalent — everything between those two points there is a `statSync` and a
+ * `JSON.stringify`.
+ *
+ * Reported against the step's own limit rather than at a fixed number of
+ * milliseconds, so an ordinary lookup on an ordinary host stays silent and one
+ * that is worth a sentence beside a short `timeout` gets one.
+ */
 function noteInterpreterLookup(lookupMs: number, timeoutMs: number, notes: string[]): void {
   if (lookupMs < Math.max(INTERPRETER_LOOKUP_NOTE_FLOOR_MS, timeoutMs / 2)) return;
   notes.push(
@@ -1857,6 +2122,7 @@ function noteInterpreterLookup(lookupMs: number, timeoutMs: number, notes: strin
   );
 }
 
+/** Below this the lookup is not worth a sentence, however short the `timeout`. */
 const INTERPRETER_LOOKUP_NOTE_FLOOR_MS = 250;
 
 function clampTimeout(
@@ -2032,12 +2298,16 @@ const ARGENT_ENV_PREFIX = "ARGENT_";
 
 /**
  * POSIX names the runner's process group, which outlives the runner and holds
- * every descendant that did not deliberately leave it; an empty group is the
- * proof that the tree is gone. Windows has no such group, so `taskkill /T`
- * walks the live parent-child tree instead: a re-parented grandchild escapes
- * it, and once the child is gone there is nothing left to walk from. A
- * deliberately detached descendant is out of reach on either, which is how a
- * script outlives its step.
+ * every descendant that did not leave it; an empty group is the proof that the
+ * tree is gone. A descendant in a group of its own - GNU `timeout` and its
+ * command, a job under `set -m` - is found through the tree and its group is
+ * stopped beside the runner's, which works only while the runner still leads
+ * to it. Windows has no such group, so `taskkill /T` walks the live
+ * parent-child tree instead: a re-parented grandchild escapes it, and once the
+ * child is gone there is nothing left to walk from. A descendant that started
+ * a session of its own - `setsid`, a daemon such as the adb server, Node's
+ * `detached` - is left alone on POSIX, and so is one that left the group and
+ * whose parent is gone: that is how a script outlives its step.
  */
 async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<void> {
   const pid = child.pid;
@@ -2054,37 +2324,105 @@ async function stopProcessTree(child: ChildProcess, graceMs: number): Promise<vo
         windowsHide: true,
         stdio: "ignore",
       });
+      // A `spawn` that cannot launch reports it through an asynchronous
+      // `error` event, not a throw the `tryKill` above could catch, and an
+      // unhandled `error` would end the tool server.
       killer.on("error", () => {});
       killer.unref();
     });
-    await waitForGroupToEmpty(child, pid, graceMs);
+    await waitForGroupsToEmpty(child, [pid], graceMs);
     if (!hasExited(child)) tryKill(() => child.kill());
     return;
   }
 
   if (!groupHasMembers(pid)) return;
-  killGroup(child, pid, "SIGTERM");
-  await waitForGroupToEmpty(child, pid, graceMs);
-  if (!groupHasMembers(pid)) return;
-  killGroup(child, pid, "SIGKILL");
+  const groups = [pid, ...(hasExited(child) ? [] : await descendantGroups(pid))];
+  signalGroups(child, groups, "SIGTERM");
+  await waitForGroupsToEmpty(child, groups, graceMs);
+  const left = groups.filter(groupHasMembers);
+  if (left.length === 0) return;
+  signalGroups(child, left, "SIGKILL");
   // A SIGKILL is delivered at once but the kernel still has to tear the process
   // down, so the step would otherwise return a moment before the tree is
   // actually gone — and "stopped" is what the verdict claims.
-  await waitForGroupToEmpty(child, pid, FORCE_GRACE_MS);
+  await waitForGroupsToEmpty(child, left, FORCE_GRACE_MS);
 }
 
-async function waitForGroupToEmpty(
+const execFileAsync = promisify(execFile);
+
+/** Absolute where it can be: a tool server started from launchd has no `/bin` on its PATH. */
+const PS_BIN = ["/bin/ps", "/usr/bin/ps"].find((file) => fs.existsSync(file)) ?? "ps";
+
+/**
+ * The groups of `root`'s descendants other than its own, short of a session
+ * leader and all below it; none when `ps` cannot answer.
+ */
+async function descendantGroups(root: number): Promise<number[]> {
+  let table: string;
+  try {
+    ({ stdout: table } = await execFileAsync(PS_BIN, ["-A", "-o", "pid=,ppid=,pgid=,stat="], {
+      timeout: 1_500,
+      maxBuffer: 16 * 1024 * 1024,
+    }));
+  } catch {
+    return [];
+  }
+  const children = new Map<number, number[]>();
+  const groupOf = new Map<number, number>();
+  const sessionLeaders = new Set<number>();
+  for (const line of table.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s*$/.exec(line);
+    if (!match) continue;
+    const [pid, ppid, pgid] = match.slice(1, 4).map(Number) as [number, number, number];
+    groupOf.set(pid, pgid);
+    if (match[4]!.includes("s")) sessionLeaders.add(pid);
+    const siblings = children.get(ppid);
+    if (siblings) siblings.push(pid);
+    else children.set(ppid, [pid]);
+  }
+  const groups = new Set<number>();
+  const pending = [root];
+  const seen = new Set(pending);
+  while (pending.length > 0) {
+    for (const child of children.get(pending.pop()!) ?? []) {
+      if (seen.has(child) || sessionLeaders.has(child)) continue;
+      seen.add(child);
+      pending.push(child);
+      groups.add(groupOf.get(child)!);
+    }
+  }
+  groups.delete(root);
+  return [...groups].filter((group) => group > 1);
+}
+
+function signalGroups(
   child: ChildProcess,
-  pid: number,
+  groups: readonly number[],
+  signal: NodeJS.Signals
+): void {
+  for (const group of groups) {
+    if (group === child.pid) killGroup(child, group, signal);
+    else tryKill(() => process.kill(-group, signal));
+  }
+}
+
+async function waitForGroupsToEmpty(
+  child: ChildProcess,
+  groups: readonly number[],
   graceMs: number
 ): Promise<void> {
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline) {
-    if (process.platform === "win32" ? hasExited(child) : !groupHasMembers(pid)) return;
+    if (process.platform === "win32" ? hasExited(child) : !groups.some(groupHasMembers)) return;
     await sleep(GROUP_POLL_MS);
   }
 }
 
+/**
+ * Signal 0 checks reachability without delivering anything, and `ESRCH` is the
+ * only answer that means "nothing there": `EPERM` means the group exists and
+ * this process may not signal it, which still counts as alive.
+ */
 function groupHasMembers(pid: number): boolean {
   try {
     process.kill(-pid, 0);
@@ -2149,7 +2487,7 @@ class ScriptLogCapture {
   private cut = false;
   private heapFatalFlag = false;
   private heapFatalTail = "";
-  private stderrLastLine = "";
+  private stderrLastLine = NO_STDERR_LINE;
 
   constructor(
     private readonly secrets: () => readonly FlowScriptSecret[],
@@ -2193,7 +2531,8 @@ class ScriptLogCapture {
     return this.heapFatalFlag;
   }
 
-  get lastStderrLine(): string {
+  /** The line stderr gives the reason; see {@link LastLineTracker}. */
+  get lastStderrLine(): StderrLine {
     return this.stderrLastLine;
   }
 
@@ -2203,9 +2542,10 @@ class ScriptLogCapture {
     return Math.min(this.stepRemaining, runRemaining) <= 0;
   }
 
-  get stderrLineSoFar(): string {
+  /** {@link lastStderrLine} as it stands now, the line still being written included. */
+  get stderrLineSoFar(): StderrLine {
     const lastLine = this.streams.get("stderr")?.lastLine;
-    return lastLine ? lastLine.snapshot(secretForms(this.secrets())) : this.stderrLastLine;
+    return lastLine ? lastLine.snapshot() : this.stderrLastLine;
   }
 
   private watchForHeapFatal(text: string): void {
@@ -2241,6 +2581,8 @@ class ScriptLogCapture {
   private consume(state: StreamState, text: string, final: boolean): void {
     if (!text && !final) return;
     if (state.watchForHeapFatal) this.watchForHeapFatal(text);
+    // Ahead of the scrub and the limits, which shape the log and not this: a
+    // script that floods stderr and then says why it failed still says it.
     state.lastLine?.write(text);
     if (this.closed()) {
       if (text || state.holdback) this.truncatedFlag = true;
@@ -2307,6 +2649,12 @@ class ScriptLogCapture {
   }
 }
 
+/**
+ * How much of `buffer` is left once a trailing fragment of a
+ * `{{secret:NAME}}` marker is dropped: an opening the cut never closed, or the
+ * beginning of one. Marker text is ASCII, so byte offsets are character
+ * offsets here.
+ */
 function withoutPartialMarker(buffer: Buffer, taken: number): number {
   const text = buffer.subarray(0, taken).toString("utf8");
   const open = text.lastIndexOf(SECRET_PLACEHOLDER_MARKER);
@@ -2320,20 +2668,23 @@ function withoutPartialMarker(buffer: Buffer, taken: number): number {
 }
 
 /**
- * The last line a stream carried that was not blank: where a bash step that
- * exited non-zero says why, whether that is its own `echo … >&2` or the error of
- * the command `set -e` stopped on. Fed the text as the script wrote it, because
- * what this returns joins the failure message and is redacted with it.
+ * The line a bash step that exited non-zero ends its reason with: the last line
+ * a stream carried that was not blank, whether that is the script's own
+ * `echo … >&2` or the error of the command `set -e` stopped on - or, where that
+ * line is a Node.js, Bun or npm trailer, the error above it (see
+ * {@link reasonLine}). Fed the text as the script wrote it: the line it picks
+ * is redacted by {@link redactedStderrLine} when the verdict is made.
  *
  * Only the head of each line is kept, so a long line is cut at its end: that is
- * where `redactTruncated` looks for the half of a value a cut leaves, and a cut
- * at the start would leave the other half where nothing looks.
+ * where `redactedStderrLine` looks for the half of a value a cut leaves, and a
+ * cut at the start would leave the other half where nothing looks.
  */
 class LastLineTracker {
   private head = "";
   private length = 0;
   private blank = true;
-  private last = "";
+  private readonly heads: string[] = [];
+  private readonly lengths: number[] = [];
 
   write(text: string): void {
     let from = 0;
@@ -2345,42 +2696,248 @@ class LastLineTracker {
     this.extend(text.slice(from));
   }
 
-  end(): string {
+  end(): StderrLine {
     this.close();
-    return this.last;
+    return this.snapshot();
   }
 
-  peek(): string {
-    if (this.blank) return this.last;
-    return this.length > this.head.length ? this.cut() : this.head.trim();
-  }
-
-  snapshot(secrets: readonly FlowScriptSecret[]): string {
-    if (this.blank || this.length > this.head.length) return this.peek();
-    const line = this.head.trim();
-    const partial = partialSecretTail(line, secrets);
-    return partial > 0 ? `${line.slice(0, line.length - partial)}${omissionMarker(partial)}` : line;
+  /** What {@link end} would return now, without closing the line in progress. */
+  snapshot(): StderrLine {
+    const lines = this.heads.map((head, i) => stderrLine(head, this.lengths[i]!));
+    if (this.blank) return reasonLine(lines) ?? NO_STDERR_LINE;
+    const open = stderrLine(this.head, this.length);
+    const reason = reasonLine([...lines, open]) ?? NO_STDERR_LINE;
+    // The line still being written ends where Argent read it, so it is flagged:
+    // `redactedStderrLine` drops and counts the front of a value it had only
+    // begun to write, as it does at the head's own cut.
+    return reason === open && this.length <= this.head.length ? { ...open, open: true } : reason;
   }
 
   private extend(segment: string): void {
     const room = STDERR_REASON_LINE_CHARS - this.head.length;
     if (room > 0) this.head += segment.slice(0, room);
     this.length += segment.length;
+    // Over the WHOLE line, not the head: a line of nothing but whitespace is
+    // blank at any length, and one whose first character comes after the head
+    // is not.
     if (this.blank && /\S/.test(segment)) this.blank = false;
   }
 
+  /** Kept as heads and judged only when read: a flood of lines costs a push each. */
   private close(): void {
-    this.last = this.peek();
+    const previous = this.heads[this.heads.length - 1];
+    if (!this.blank) this.remember(this.head, this.length);
+    else if (previous !== undefined && previous !== "") this.remember("", 0);
     this.head = "";
     this.length = 0;
     this.blank = true;
   }
 
-  private cut(): string {
-    const final = this.head.charCodeAt(this.head.length - 1);
-    const kept = final >= 0xd800 && final <= 0xdbff ? this.head.slice(0, -1) : this.head;
-    return `${kept.trimStart()}${omissionMarker(this.length - kept.length)}`;
+  private remember(head: string, length: number): void {
+    this.heads.push(head);
+    this.lengths.push(length);
+    if (this.heads.length > 2 * STDERR_RECENT_LINES) {
+      this.heads.splice(0, STDERR_RECENT_LINES);
+      this.lengths.splice(0, STDERR_RECENT_LINES);
+    }
   }
+}
+
+interface StderrLine {
+  raw: string;
+  shown: string;
+  length: number;
+  /** Still being written when it was read. */
+  open?: true;
+}
+
+const NO_STDERR_LINE: StderrLine = { raw: "", shown: "", length: 0 };
+
+/** A blank line is `""` in both. */
+function stderrLine(head: string, length: number): StderrLine {
+  if (!head) return NO_STDERR_LINE;
+  if (length <= head.length) return { raw: head, shown: head.trim(), length };
+  // The head, moved back off the first half of a surrogate pair the limit
+  // split, then marked the way `clampText` marks a cut.
+  const final = head.charCodeAt(head.length - 1);
+  const kept = final >= 0xd800 && final <= 0xdbff ? head.slice(0, -1) : head;
+  return {
+    raw: head,
+    shown: `${kept.trimStart()}${omissionMarker(length - kept.length)}`,
+    length,
+  };
+}
+
+/**
+ * The line as the reason shows it, with the values in it hidden before it is
+ * trimmed: a value's leading or trailing whitespace is part of it. The tracker
+ * keeps lines, not the text, so each line of a multi-line value counts as a
+ * value here too, from six characters that are not whitespace. Every character
+ * an occurrence covers is hidden, and occurrences that overlap become one
+ * marker, so neither of two secrets that share text keeps a part the other
+ * took. Where the line was cut at its end, or was still being written, the
+ * front of a value it ends on is dropped and counted.
+ */
+function redactedStderrLine(line: StderrLine, secrets: readonly FlowScriptSecret[]): string {
+  if (!line.raw || secrets.length === 0) return line.shown;
+  const forms = secretForms(secrets).concat(secrets.flatMap(valueLines));
+  const cut = line.length - line.raw.length;
+  const final = line.raw.charCodeAt(line.raw.length - 1);
+  const split = cut > 0 && final >= 0xd800 && final <= 0xdbff ? 1 : 0;
+  const head = line.raw.slice(0, line.raw.length - split);
+  const runs = coveredRuns(head, forms);
+  let keep = head.length;
+  if (cut > 0 || line.open) {
+    const partial = partialSecretTail(head, forms);
+    const last = runs[runs.length - 1];
+    const inside = last !== undefined && last.to === head.length && last.from <= keep - partial;
+    if (!inside) keep -= partial;
+    for (const run of runs) if (run.from < keep && run.to > keep) keep = run.from;
+  }
+  let shown = "";
+  let at = 0;
+  for (const run of runs) {
+    if (run.to > keep) break;
+    shown += `${head.slice(at, run.from)}${SECRET_PLACEHOLDER_MARKER}${run.name}}}`;
+    at = run.to;
+  }
+  shown += head.slice(at, keep);
+  const omitted = cut + split + head.length - keep;
+  return omitted > 0 ? `${shown.trimStart()}${omissionMarker(omitted)}` : shown.trim();
+}
+
+/** Each occurrence of each form in `text`, overlapping ones merged, named for the first. */
+function coveredRuns(
+  text: string,
+  forms: readonly FlowScriptSecret[]
+): Array<{ from: number; to: number; name: string }> {
+  const spans: Array<{ from: number; to: number; name: string }> = [];
+  for (const { name, value } of forms) {
+    if (!value) continue;
+    for (let at = text.indexOf(value); at !== -1; at = text.indexOf(value, at + 1)) {
+      spans.push({ from: at, to: at + value.length, name });
+    }
+  }
+  spans.sort((a, b) => a.from - b.from || b.to - a.to);
+  const runs: typeof spans = [];
+  for (const span of spans) {
+    const last = runs[runs.length - 1];
+    if (last && span.from < last.to) last.to = Math.max(last.to, span.to);
+    else runs.push({ ...span });
+  }
+  return runs;
+}
+
+/** Each line of a multi-line value, as written and as bash quotes it. */
+function valueLines({ name, value }: FlowScriptSecret): FlowScriptSecret[] {
+  if (!value.includes("\n")) return [];
+  const lines = value
+    .split("\n")
+    .filter((line) => isLongEnoughToBeSecret(line.replace(/\s/g, "")))
+    .flatMap((line) => [
+      line.trim(),
+      line.trim().replaceAll("'", "'\\''"),
+      line.trim().replace(/[\\"$`]/g, "\\$&"),
+    ]);
+  return [...new Set(lines)].map((line) => ({ name, value: line }));
+}
+
+/**
+ * The newest line that is not blank, except where a tool ends its output on a
+ * line about itself rather than on its error: Node.js and Bun after an uncaught
+ * error print their version last, and npm the path of its debug log.
+ */
+function reasonLine(lines: readonly StderrLine[]): StderrLine | undefined {
+  const end = newestShown(lines, lines.length - 1);
+  if (end < 0) return undefined;
+  const newest = lines[end]!;
+  if (RUNTIME_TRAILER_RE.test(newest.shown)) return uncaughtErrorLine(lines, end) ?? newest;
+  let hint = end;
+  if (!NPM_LOG_HINT_RE.test(newest.shown)) {
+    // Older npm puts the log's path on a line of its own, under the hint.
+    const above = newestShown(lines, end - 1);
+    const hintAbove = above >= 0 ? lines[above]!.shown : "";
+    if (
+      !NPM_LINE_RE.test(newest.shown) ||
+      !hintAbove.endsWith(":") ||
+      !NPM_LOG_HINT_RE.test(hintAbove)
+    ) {
+      return newest;
+    }
+    hint = above;
+  }
+  return npmErrorLine(lines, hint) ?? newest;
+}
+
+/**
+ * The error above a runtime's version line, found walking up from it. A run of
+ * stack frames leads to the line above it, across blank lines: the error, its
+ * `[cause]`, or the stderr of the command a Node `execSync` ran. A message that
+ * ends on a line with no letter or digit - the `]` of a zod error, the `^` of a
+ * YAML one - gives its first line instead, the one under the caret that marks
+ * the source. A caret met before any frame marks an error without frames, which
+ * is the line under it, and Bun starts one without a caret with `error:`.
+ * Failing those, the newest line not indented and not a lone bracket. The walk
+ * stops at an earlier version line.
+ */
+function uncaughtErrorLine(
+  lines: readonly StderrLine[],
+  trailerAt: number
+): StderrLine | undefined {
+  let fallback: StderrLine | undefined;
+  for (let i = trailerAt - 1; i >= 0; i--) {
+    const { raw, shown } = lines[i]!;
+    if (!shown) continue;
+    if (RUNTIME_TRAILER_RE.test(shown)) break;
+    // Node colours the frames of its own modules when `FORCE_COLOR` is set.
+    const bare = stripVTControlCharacters(raw);
+    if (STACK_FRAME_RE.test(bare)) {
+      let above = i - 1;
+      while (above >= 0 && (!lines[above]!.shown || isFrame(lines[above]!))) above--;
+      if (above < 0) return fallback;
+      const line = lines[above]!;
+      return /[\p{L}\p{N}]/u.test(line.shown) ? line : (firstLineUnderCaret(lines, above) ?? line);
+    }
+    if (SOURCE_CARET_RE.test(bare)) {
+      return lines.slice(i + 1, trailerAt).find((line) => line.shown) ?? fallback;
+    }
+    if (bare.startsWith("error: ")) return lines[i];
+    if (fallback === undefined && !/^\s/.test(bare) && !/^[\]})]+[,;]?$/.test(shown)) {
+      fallback = lines[i];
+    }
+  }
+  return fallback;
+}
+
+function firstLineUnderCaret(lines: readonly StderrLine[], below: number): StderrLine | undefined {
+  for (let i = below - 1; i >= 0 && !RUNTIME_TRAILER_RE.test(lines[i]!.shown); i--) {
+    if (SOURCE_CARET_RE.test(stripVTControlCharacters(lines[i]!.raw))) {
+      return lines.slice(i + 1, below).find((line) => line.shown);
+    }
+  }
+  return undefined;
+}
+
+function isFrame(line: StderrLine): boolean {
+  return STACK_FRAME_RE.test(stripVTControlCharacters(line.raw)) || EMITTED_AT_RE.test(line.shown);
+}
+
+/** The first line of npm's error block above its log hint that says more than a code. */
+function npmErrorLine(lines: readonly StderrLine[], hintAt: number): StderrLine | undefined {
+  const last = newestShown(lines, hintAt - 1);
+  if (last < 0 || !NPM_LINE_RE.test(lines[last]!.shown)) return undefined;
+  let first = last;
+  while (first > 0 && NPM_LINE_RE.test(lines[first - 1]!.shown)) first--;
+  for (let i = first; i <= last; i++) {
+    if (!NPM_DETAIL_RE.test(lines[i]!.shown)) return lines[i];
+  }
+  return undefined;
+}
+
+function newestShown(lines: readonly StderrLine[], from: number): number {
+  let i = from;
+  while (i >= 0 && !lines[i]!.shown) i--;
+  return i;
 }
 
 function partialSecretTail(text: string, secrets: readonly FlowScriptSecret[]): number {
@@ -2404,6 +2961,11 @@ export function utf8SafeCut(buffer: Buffer, max: number): number {
 }
 
 const V8_FRAME_RE = /^\s*\d+:\s+0x[0-9a-f]+/i;
+/**
+ * What a V8 frame dump follows; until one of these prints, nothing is
+ * collapsed. Coarse on purpose: a false arm costs a marker line in place of
+ * frame-shaped output, while a missed dump costs sixty lines of log budget.
+ */
 const ARM_FRAME_COLLAPSE_RE = /FATAL ERROR|Fatal error in|Fatal JavaScript|# Fatal/i;
 const COLLAPSE_THRESHOLD = 3;
 
@@ -2469,6 +3031,13 @@ class V8FrameCollapser {
   }
 }
 
+/**
+ * The result for a failure raised before anything was forked. Every caller is
+ * on that side of the fork — a queue the step never left, a cancellation that
+ * beat the fork, a request that could not be prepared, and a `fork` that threw
+ * — which is what {@link FlowScriptFailure.beforeFork} reports to a caller
+ * that has to say whether there is state to clean up.
+ */
 function emptyResult(
   failure: FlowScriptFailure,
   extras: { notes?: string[]; queuedMs?: number; durationMs?: number } = {}
@@ -2506,6 +3075,8 @@ function describeBytes(bytes: number): string {
 }
 
 function describeDuration(ms: number): string {
+  // A step may ask for `Infinity`, which the clamp handles but no unit does:
+  // rendering it as a number would append the minutes suffix to a word.
   if (!Number.isFinite(ms)) return "unbounded";
   if (ms >= 60_000) {
     const minutes = ms / 60_000;

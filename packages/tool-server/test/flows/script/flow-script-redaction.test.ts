@@ -74,6 +74,15 @@ function shimQuoting(name: string): string {
   return shim;
 }
 
+/**
+ * `scripts.bash` for the duration of `body`, in a home directory of the test's
+ * own.
+ *
+ * The GLOBAL document, because that is the only scope the key takes: a helper
+ * that wrote `<ws>/.argent/config.json` pinned nothing — `readScopeValue`
+ * returns before a project file is read — so the case below ran under the
+ * host's ordinary short bash path and never reached the branch it exists for.
+ */
 async function withPinnedBash<T>(bash: string, body: () => Promise<T>): Promise<T> {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "argent-redaction-home-"));
   const real = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
@@ -100,8 +109,20 @@ function executor(options: FlowScriptExecutorOptions = {}) {
   return new FlowScriptExecutor({ concurrency: 4, maxTimeoutMs: 60_000, ...options });
 }
 
+/**
+ * A bash step reaches redaction through a different channel from a `.mjs` one:
+ * its failure text, on a non-zero exit, ends with a line the script wrote to
+ * stderr - normally the last one that is not blank - which the parent reads off
+ * the pipe and appends to the runner's exit line, and its
+ * document is a file rather than a value the runner encoded.
+ */
 describe("flow script executor — redaction of a bash step", () => {
   const SECRET: FlowScriptSecret = { name: "API_KEY", value: "s3cr3t-token-value" };
+  /**
+   * How much of that stderr line the reason keeps, in step with
+   * `STDERR_REASON_LINE_CHARS` in `flow-script-executor.ts`, which does not
+   * export it.
+   */
   const STDERR_LINE_CHARS = 1_000;
 
   let noBash: string | undefined;
@@ -154,6 +175,269 @@ describe("flow script executor — redaction of a bash step", () => {
     return `printf '%s\\n' ${lines.map((line) => `'${line}'`).join(" ")} >&2
        exit 1`;
   }
+
+  async function failWithCreds(value: string) {
+    const ws = workspace();
+    const script = ws.write(
+      "multi-line.sh",
+      `echo "could not parse credentials:" >&2
+       echo "$AWS_CREDS" >&2
+       exit 1`
+    );
+    return executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { AWS_CREDS: value },
+      secrets: [{ name: "AWS_CREDS", value }],
+    });
+  }
+
+  it.each([
+    ["as it is", "\n"],
+    ["with a line of spaces in it", "\n   \n"],
+    ["with blank lines in it", "\n\n\n\n"],
+  ])(
+    "replaces a multi-line secret in the reason, %s, when its last line is the last stderr line",
+    async (_, gap) => {
+      const value =
+        `[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE${gap}` +
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";
+      const result = await failWithCreds(value);
+
+      const message = result.failure?.message ?? "";
+      expect(message).toMatch(
+        /^The script exited with code 1 \(bash: .+\)\. \{\{secret:AWS_CREDS}}$/
+      );
+      for (const line of value.split("\n")) if (line.trim()) expect(message).not.toContain(line);
+      expect(result.log).toBe("could not parse credentials:\n{{secret:AWS_CREDS}}\n");
+    },
+    30_000
+  );
+
+  it("drops a line of a multi-line secret that the reason cut, when it is the last stderr line", async () => {
+    const key = Buffer.from("kyky".repeat(400)).toString("base64");
+    const result = await failWithCreds(`users:\n- name: dev\n    client-key-data: ${key}`);
+
+    const message = result.failure?.message ?? "";
+    expect(message).toMatch(/\(bash: .+\)\. … \[\d+ more characters omitted]$/);
+    expect(message).not.toContain(key.slice(0, 8));
+    expect(result.log).toBe("could not parse credentials:\n{{secret:AWS_CREDS}}\n");
+  }, 30_000);
+
+  it("reads the secret set at the verdict, so a value added after bash exited still redacts", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "later.sh",
+      `( sleep 1 ) &
+       echo "fatal: token $LATE rejected" >&2
+       exit 2`
+    );
+    const secrets: FlowScriptSecret[] = [];
+    const pending = executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { LATE: "late-value-bbbb" },
+      secrets,
+    });
+    setTimeout(() => secrets.push({ name: "LATE", value: "late-value-bbbb" }), 300);
+    const result = await pending;
+
+    expect(result.failure?.message).toMatch(/\. fatal: token \{\{secret:LATE}} rejected$/);
+  }, 30_000);
+
+  it.each([
+    { name: "TRAIL_PASS", value: "hunter2-staging " },
+    { name: "LEAD_PASS", value: "   leadsecret-7788" },
+    { name: "NL_PASS", value: "hunter2-staging\n" },
+  ])(
+    "replaces $name in the reason, a value the line's split or trim would cut",
+    async (secret) => {
+      const ws = workspace();
+      const script = ws.write(
+        "whitespace.sh",
+        `printf '%s\\n' "$PASS" >&2
+         exit 1`
+      );
+      const result = await executor().execute({
+        scriptPath: script,
+        interpreter: "bash",
+        projectRoot: ws.dir,
+        env: { PASS: secret.value },
+        secrets: [secret],
+      });
+
+      const message = result.failure?.message ?? "";
+      expect(message).toMatch(new RegExp(`\\(bash: .+\\)\\. \\{\\{secret:${secret.name}}}$`));
+      expect(message).not.toContain(secret.value.trim());
+    },
+    30_000
+  );
+
+  async function failOnOpenLine(line: string, secret: FlowScriptSecret) {
+    const ws = workspace();
+    const script = ws.write(
+      "open-line.sh",
+      `( sleep 1 ) &
+       printf '%s' "${line}" >&2
+       exit 1`
+    );
+    return executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { [secret.name]: secret.value },
+      secrets: [secret],
+    });
+  }
+
+  it("replaces a whole secret with whitespace at both ends that ends a line a job holds open", async () => {
+    const secret: FlowScriptSecret = { name: "PASS", value: " hunter2-both " };
+    const result = await failOnOpenLine("login rejected for password: $PASS", secret);
+
+    const message = result.failure?.message ?? "";
+    expect(message).toMatch(/\. login rejected for password: \{\{secret:PASS}}$/);
+    expect(message).not.toContain("hunter2-both");
+  }, 30_000);
+
+  it("keeps the quote a line a job holds open ends on, beside a multi-line secret", async () => {
+    const pem: FlowScriptSecret = {
+      name: "PEM",
+      value:
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7\n" +
+        "-----END PRIVATE KEY-----",
+    };
+    const result = await failOnOpenLine("error: cannot open 'config.yaml'", pem);
+
+    expect(result.failure?.message).toMatch(/\. error: cannot open 'config\.yaml'$/);
+  }, 30_000);
+
+  it.each([
+    [
+      "ends with the front of another",
+      "export DB_PASS=hunter2",
+      "hunter2-staging-9981",
+      "export DB_PASS=hunter2-staging-9981",
+    ],
+    [
+      "holds another whole",
+      "DB_URL=postgres://svc_admin:Zq8mWp2vLx9@db/app",
+      "svc_admin",
+      "DB_URL=postgres://svc_admin:Zq8mWp2vLx9@db/app",
+    ],
+  ])(
+    "hides the two of them where a line of a multi-line secret %s",
+    async (_, line, other, printed) => {
+      const ws = workspace();
+      const script = ws.write(
+        "overlap.sh",
+        `echo "connect failed: $PRINTED" >&2
+         exit 1`
+      );
+      const envFile = `DB_HOST=db.internal\n${line}\nAPI=x`;
+      const result = await executor().execute({
+        scriptPath: script,
+        interpreter: "bash",
+        projectRoot: ws.dir,
+        env: { ENV_FILE: envFile, OTHER: other, PRINTED: printed },
+        secrets: [
+          { name: "ENV_FILE", value: envFile },
+          { name: "OTHER", value: other },
+        ],
+      });
+
+      expect(result.failure?.message).toMatch(/\. connect failed: \{\{secret:ENV_FILE}}$/);
+    },
+    30_000
+  );
+
+  it("replaces a line of a multi-line secret that holds a quote, as set -x quoted it", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "xtrace-lines.sh",
+      `set -x
+       test "$SQ_FILE" = expected`
+    );
+    const value = "DB_HOST=db.internal\nDB_PASS=it's-Zq8mWp2vLx9";
+    const result = await executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { SQ_FILE: value },
+      secrets: [{ name: "SQ_FILE", value }],
+    });
+
+    const message = result.failure?.message ?? "";
+    expect(message).toMatch(/\{\{secret:SQ_FILE}}' = expected$/);
+    expect(message).not.toContain("Zq8mWp2vLx9");
+  }, 30_000);
+
+  it.each([
+    // The front of B is cut, and A runs into it.
+    [
+      "that runs into the front of another",
+      "SECRET-ABC",
+      "ABC-123456",
+      "SECRET-ABC-123456",
+      987,
+      22,
+    ],
+    // A ends at the cut, inside the front of B.
+    [
+      "inside the front of a longer one",
+      "hunter2-9981",
+      "Zq8mWp-hunter2-9981-prod",
+      "Zq8mWp-hunter2-9981-prod",
+      981,
+      29,
+    ],
+  ])(
+    "drops a whole value at the stderr line's cut %s",
+    async (_, a, b, printed, pad, omitted) => {
+      const ws = workspace();
+      const script = ws.write(
+        "cut-overlap.sh",
+        `printf '%${pad}s' '' | tr ' ' 'x' >&2
+         printf '%s more\\n' '${printed}' >&2
+         exit 1`
+      );
+      const result = await executor().execute({
+        scriptPath: script,
+        interpreter: "bash",
+        projectRoot: ws.dir,
+        secrets: [
+          { name: "A", value: a },
+          { name: "B", value: b },
+        ],
+      });
+
+      const message = result.failure?.message ?? "";
+      expect(message).toMatch(new RegExp(`x… \\[${omitted} more characters omitted]$`));
+      expect(message).not.toMatch(/SECRET|Zq8mWp|hunter2/);
+    },
+    30_000
+  );
+
+  it("counts the half of a character the stderr line's cut split", async () => {
+    const ws = workspace();
+    const script = ws.write(
+      "surrogate.sh",
+      `printf '%999s' '' | tr ' ' 'x' >&2
+       printf '\\xf0\\x9f\\x98\\x80' >&2
+       printf '%10s\\n' '' | tr ' ' 'y' >&2
+       exit 1`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { API_KEY: SECRET.value },
+      secrets: [SECRET],
+    });
+
+    expect(result.failure?.message).toMatch(/x… \[12 more characters omitted]$/);
+  }, 30_000);
 
   it("ends the reason with an unrelated last line when a secret came before it", async () => {
     const ws = workspace();
@@ -232,8 +516,18 @@ describe("flow script executor — redaction of a bash step", () => {
     expect(message).not.toContain(SECRET.value.slice(0, 6));
   }, 30_000);
 
+  // A secret cut in half by a truncation is not a secret any scrub can find:
+  // what is left is a PREFIX of one, which matches nothing. The parent drops
+  // that tail wherever an omission marker ends the text, and the cut that keeps
+  // only the head of a long stderr line ends the reason with one. This runs a
+  // real script through the cut, the join and the redaction together, so a
+  // marker the redaction stopped recognising fails here rather than leaking
+  // there.
   it("drops the half of a secret the stderr line's cut left behind", async () => {
     const ws = workspace();
+    // The padding stops ten characters short of the line cap, so the cut lands
+    // INSIDE the secret and what survives is a prefix of one. One line, written
+    // in three pieces, so it reaches the parent in more than one read.
     const pad = STDERR_LINE_CHARS - 10;
     const tail = 2_000;
     const script = ws.write(
@@ -254,11 +548,16 @@ describe("flow script executor — redaction of a bash step", () => {
 
     const message = result.failure?.message ?? "";
     expect(result.failure?.kind).toBe("exit");
+    // Every prefix of the value, down to the shortest that is still the
+    // secret's own: none of them may survive the cut.
     for (let n = SECRET.value.length; n > 3; n -= 1) {
       expect(message).not.toContain(SECRET.value.slice(0, n));
     }
+    // The half is counted with what the cut dropped, so the marker counts
+    // everything from the secret on.
     const marker = `x… [${SECRET.value.length + tail} more characters omitted]`;
     expect(message.slice(-marker.length)).toBe(marker);
+    // The log keeps the whole line, and so the whole value to replace.
     expect(result.log).not.toContain(SECRET.value);
     expect(result.log).toContain("x{{secret:API_KEY}}y");
   }, 30_000);
@@ -266,9 +565,9 @@ describe("flow script executor — redaction of a bash step", () => {
   /**
    * The interpreter path rides in the exit line in front of the stderr line,
    * and it is the one term in the message nothing bounds. A ceiling it can push
-   * the message past cuts the line's own marker off the end — the marker the
-   * parent reads to find where the line was cut, and so where half a secret
-   * may be left. This is the same straddling secret as above, under a bash
+   * the message past cuts the line's own marker off the end, and with it where
+   * the line was cut and how much of it, half a secret included, was dropped.
+   * This is the same straddling secret as above, under a bash
    * whose path is as long as the whole line the reason keeps: the marker at
    * the end must still be the line's own, counting the half it dropped.
    *
@@ -279,6 +578,7 @@ describe("flow script executor — redaction of a bash step", () => {
     "keeps the stderr line's own marker when the interpreter path is long",
     async () => {
       const ws = workspace();
+      // Inside PATH_MAX, which is 1024 on macOS.
       const pinned = bashAtPathOfLength(hostBash, STDERR_LINE_CHARS);
 
       const pad = STDERR_LINE_CHARS - 10;
@@ -303,6 +603,8 @@ describe("flow script executor — redaction of a bash step", () => {
 
       const message = result.failure?.message ?? "";
       expect(result.failure?.kind).toBe("exit");
+      // The pin is what makes the exit line long, so a pin that did not apply
+      // leaves this case asserting nothing the one above does not.
       expect(message).toContain(pinned);
       expect(message.length).toBeLessThanOrEqual(SCRIPT_MAX_FAILURE_MESSAGE_CHARS);
       const marker = `x… [${SECRET.value.length + tail} more characters omitted]`;
@@ -394,6 +696,34 @@ describe("flow script executor — redaction of a bash step", () => {
     expect(message).toMatch(/\. fatal: bad token … \[8 more characters omitted]$/);
     expect(result.log).not.toContain(SECRET.value.slice(0, 8));
     expect(result.log).toContain("{{secret:API_KEY}}");
+  }, 30_000);
+
+  it("walks up from a runtime's version line the stderr line was still being written on", async () => {
+    // Starts with the version's last character, the front of a value the
+    // half-written line could be ending on.
+    const secret: FlowScriptSecret = { name: "API_KEY", value: "0bad-token-value" };
+    const ws = workspace();
+    const script = ws.write(
+      "half-trailer.sh",
+      `(
+         printf 'Error: bad token %s\\n    at main (/app/seed.js:3:9)\\n\\nNode.js v26.7.0' "$API_KEY" >&2
+         sleep 2
+       ) &
+       sleep 0.1
+       exit 3`
+    );
+    const result = await executor().execute({
+      scriptPath: script,
+      interpreter: "bash",
+      projectRoot: ws.dir,
+      env: { API_KEY: secret.value },
+      secrets: [secret],
+    });
+
+    const message = result.failure?.message ?? "";
+    expect(result.failure?.kind).toBe("exit");
+    expect(message).toMatch(/\. Error: bad token \{\{secret:API_KEY}}$/);
+    expect(message).not.toContain(secret.value);
   }, 30_000);
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
@@ -693,6 +1023,10 @@ describe("flow script executor — redaction", () => {
 
   it("keeps a secret that straddles the failure-message ceiling out of the report", async () => {
     const ws = workspace();
+    // The clamp is the child's, and the child has no secret list to clamp
+    // around. The trailing run is what forces a clamp at all; the padding puts
+    // the cut about nine characters into the value, leaving a prefix no
+    // whole-value replacement can match.
     const script = ws.write(
       "long-throw.mjs",
       `throw new Error(

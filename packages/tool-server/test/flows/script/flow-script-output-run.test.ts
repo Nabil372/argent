@@ -76,10 +76,10 @@ async function write(relative: string, contents: string): Promise<string> {
 }
 
 function flow(name: string, ...lines: string[]): Promise<string> {
-  return write(path.join(".argent", "flows", `${name}.yaml`), `${lines.join("\n")}\n`);
+  return write(path.join(".argent", "e2e", `${name}.yaml`), `${lines.join("\n")}\n`);
 }
 
-/** A script under `<root>/scripts`, as a flow in `.argent/flows` spells its path. */
+/** A script under `<root>/scripts`, as a flow in `.argent/e2e` spells its path. */
 function script(name: string): string {
   return `../../scripts/${name}`;
 }
@@ -139,6 +139,14 @@ function argsSentTo(invokeTool: InvokeMock, tool: string): Array<Record<string, 
     .map((call) => call[1] as Record<string, unknown>);
 }
 
+/**
+ * Whether a call is the step's own work: device resolution and the screenshot
+ * the runner attaches to every failed step are not.
+ */
+function isStepTool(id: string): boolean {
+  return id !== "list-devices" && id !== "screenshot";
+}
+
 function toolsCalled(invokeTool: InvokeMock): string[] {
   return invokeTool.mock.calls.map((call) => call[0]);
 }
@@ -160,7 +168,7 @@ function skipWithoutBash(ctx: { skip: (note?: string) => void }): void {
 
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), "flow-output-run-"));
-  await fs.mkdir(path.join(root, ".argent", "flows"), { recursive: true });
+  await fs.mkdir(path.join(root, ".argent", "e2e"), { recursive: true });
   mergeSpy.mockClear();
 });
 afterEach(async () => {
@@ -350,7 +358,7 @@ describe("the run's output document: lifecycle and merge", () => {
     // The spec spells the limit `1 MiB`; the shared `describeBytes` formatter
     // prints `1.0 MiB`, as the per-script limit message has since PR 1.
     expect("problem" in merged && merged.problem).toMatch(
-      /^After this step the flow output is 1\.2 MiB encoded; the limit is 1\.0 MiB\. A script cannot remove a key, so set one the flow no longer reads to null\.$/
+      /^After this step the e2e test output is 1\.2 MiB encoded; the limit is 1\.0 MiB\. A script cannot remove a key, so set one the e2e test no longer reads to null\.$/
     );
   });
 
@@ -518,7 +526,7 @@ describe("the run's output document: lifecycle and merge", () => {
     expect(result.ok).toBe(false);
     expect(result.steps[0].status).toBe("pass");
     expect(result.steps[1].status).toBe("fail");
-    expect(result.steps[1].reason).toMatch(/^After this step the flow output is /);
+    expect(result.steps[1].reason).toMatch(/^After this step the e2e test output is /);
     // The spec spells this `1 MiB`; the shared formatter prints `1.0 MiB`.
     expect(result.steps[1].reason).toContain("the limit is 1.0 MiB");
     expect(result.steps[2]).toMatchObject({ kind: "echo", status: "skip", message: "after" });
@@ -546,7 +554,7 @@ describe("the run's output document: lifecycle and merge", () => {
     const tooBig = (await runFlow("too-big-warned")).result;
 
     expect(tooBig.steps[1].status).toBe("fail");
-    expect(tooBig.steps[1].reason).toMatch(/^After this step the flow output is /);
+    expect(tooBig.steps[1].reason).toMatch(/^After this step the e2e test output is /);
     expect(tooBig.steps[1].warning).toBeUndefined();
 
     const fits = (await runFlow("fits-warned")).result;
@@ -661,7 +669,7 @@ describe("output references in steps", () => {
       reason:
         "`args.text`: {{output:code}} did not resolve: `output` has no `code` (it has no keys)",
     });
-    expect(toolsCalled(invokeTool).filter((id) => id !== "list-devices")).toEqual([]);
+    expect(toolsCalled(invokeTool).filter(isStepTool)).toEqual([]);
   });
 
   it("names the whole-field reference and its type when a tool rejects the typed value", async () => {
@@ -883,7 +891,7 @@ describe("output references in steps", () => {
     expect(result.steps[0].status).toBe("error");
     expect(result.steps[0].reason).toContain("`assert.visible.text`");
     expect(result.steps[0].reason).toContain("visible character");
-    expect(toolsCalled(invokeTool).filter((id) => id !== "list-devices")).toEqual([]);
+    expect(toolsCalled(invokeTool).filter(isStepTool)).toEqual([]);
   });
 
   it("passes an echo whose ?? '' sits between other text", async () => {
@@ -923,7 +931,7 @@ describe("output references in steps", () => {
     ]);
     expect(result.steps.slice(3).map((step) => step.status)).toEqual(["skip", "skip"]);
     expect(result).toMatchObject({ ok: false, errored: 1 });
-    expect(toolsCalled(invokeTool).filter((id) => id !== "list-devices")).toEqual([]);
+    expect(toolsCalled(invokeTool).filter(isStepTool)).toEqual([]);
   });
 
   it("sets a script env value from a reference to what an earlier script wrote", async () => {
