@@ -15,6 +15,7 @@ const telemetryMock = vi.hoisted(() => ({
 
 const registryMock = vi.hoisted(() => ({
   getSnapshot: vi.fn(() => ({ services: new Map() })),
+  beginShutdown: vi.fn(),
   dispose: vi.fn().mockResolvedValue(undefined),
 }));
 

@@ -15,6 +15,7 @@ const telemetryMock = vi.hoisted(() => ({
 
 const registryMock = vi.hoisted(() => ({
   getSnapshot: vi.fn(() => ({ services: new Map() })),
+  beginShutdown: vi.fn(),
   dispose: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -133,6 +134,9 @@ describe("tool-server startup telemetry", () => {
     expect(watcherMock.stop).toHaveBeenCalledOnce();
     expect(httpHandleMock.dispose).toHaveBeenCalledOnce();
     expect(registryMock.dispose).toHaveBeenCalledOnce();
+    expect(registryMock.beginShutdown.mock.invocationCallOrder[0]).toBeLessThan(
+      httpHandleMock.dispose.mock.invocationCallOrder[0]
+    );
     expect(httpHandleMock.dispose.mock.invocationCallOrder[0]).toBeLessThan(
       registryMock.getSnapshot.mock.invocationCallOrder[0]
     );

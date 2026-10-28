@@ -304,6 +304,7 @@ export function start(): void {
     if (shuttingDown) return;
     shuttingDown = true;
     const shutdownStartedAt = performance.now();
+    registry.beginShutdown();
     httpHandle.dispose();
     const recordingShutdown = beginRecordingShutdown(registry);
     clearInterval(frameCleanup);
