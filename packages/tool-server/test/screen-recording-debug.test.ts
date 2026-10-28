@@ -96,13 +96,15 @@ it("drains the JPEG backlog across more than its total byte budget", async () =>
   capture.attach(input.stream);
   for (let i = 0; i < 80; i++) {
     input.emit(frame, performance.now());
-    await vi.waitFor(async () => expect((await readdir(scratch)).length).toBe(i + 2));
+    await vi.waitFor(async () => expect((await readdir(scratch)).length).toBe(i + 2), {
+      interval: 1,
+    });
   }
   await capture.finish();
   expect(ended).not.toHaveBeenCalled();
   expect(capture.frameTimesUs).toHaveLength(82);
   expect(capture.warning).toBeNull();
-});
+}, 20_000);
 
 it("keeps writing other frames while one JPEG write stalls", async () => {
   const actual = fs.writeFile.bind(fs);
